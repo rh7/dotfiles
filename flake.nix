@@ -3,48 +3,53 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    home-manager.url = "github:nix-community/home-manager";
-    flake-utils.url = "github:numtide/flake-utils";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, home-manager, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
+  outputs = { self, nixpkgs, home-manager }:
+    let
+      # Helper to build a home configuration for a given system
+      mkHome = { system, modules }:
+        home-manager.lib.homeManagerConfiguration {
+          pkgs = import nixpkgs { inherit system; };
+          modules = modules;
         };
-        hm = pkgs.callPackage (import home-manager { inherit pkgs; }) {};
-      in {
-        # Build home config for any machine
-        homeConfigurations = {
-          # Mac users
-          mac1 = hm.lib.homeManagerConfiguration {
-            pkgs = pkgs;
-            modules = [
-              ./configurations/macos/home.nix
-              ./modules/common.nix
-              (import ./modules/editors/vim.nix)
-            ];
-          };
-
-          # Linux user
-          linux1 = hm.lib.homeManagerConfiguration {
-            pkgs = pkgs;
-            modules = [
-              ./configurations/linux/home.nix
-              ./modules/common.nix
-              (import ./modules/dev-tools/docker.nix)
-            ];
-          };
+    in {
+      homeConfigurations = {
+        # Mac (Apple Silicon)
+        mac = mkHome {
+          system = "aarch64-darwin";
+          modules = [
+            ./configurations/macos/home.nix
+            ./modules/common.nix
+            ./modules/editors/vim.nix
+          ];
         };
 
-        # For new machines: make it easy
-        packages = {
-          install-macos = pkgs.writeShellScriptBin "install-macos" ''
-            echo "Setting up your macOS machine with Nix..."
-            nix run .#homeConfigurations.mac1 -- switch --flake .
-          '';
+        # Linux (ARM64 — OrbStack VM / Docker)
+        linux = mkHome {
+          system = "aarch64-linux";
+          modules = [
+            ./configurations/linux/home.nix
+            ./modules/common.nix
+            ./modules/editors/vim.nix
+            ./modules/dev-tools/docker.nix
+          ];
         };
-      }
-    );
+      };
+
+      # Dev shell for working on the dotfiles themselves
+      devShells = builtins.listToAttrs (map (system: {
+        name = system;
+        value = {
+          default = let pkgs = import nixpkgs { inherit system; }; in
+            pkgs.mkShell {
+              packages = with pkgs; [ git curl jq ];
+            };
+        };
+      }) [ "aarch64-linux" "aarch64-darwin" "x86_64-linux" ]);
+    };
 }
