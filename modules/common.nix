@@ -14,8 +14,8 @@
   programs.git = {
     enable = true;
     settings = {
-      user.name = "rh7";
-      user.email = "rh7@users.noreply.github.com";
+      user.name = "Pip";
+      user.email = "rpip@fastmail.com";
       init.defaultBranch = "main";
       pull.rebase = true;
     };
