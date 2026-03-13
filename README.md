@@ -1,81 +1,114 @@
 # dotfiles
 
-Declarative home configuration using [Nix flakes](https://wiki.nixos.org/wiki/Flakes) and [home-manager](https://github.com/nix-community/home-manager).
+Declarative Mac + Linux configuration using [Nix flakes](https://wiki.nixos.org/wiki/Flakes), [nix-darwin](https://github.com/LnL7/nix-darwin), and [home-manager](https://github.com/nix-community/home-manager).
 
-## What's included
+## Machines
 
-| Module | Description |
-|---|---|
-| `modules/common.nix` | Core CLI tools (curl, jq, git, ripgrep, fd, tree, htop), git config, bash aliases |
-| `modules/editors/vim.nix` | Neovim with sensible defaults (line numbers, smart tabs, case-insensitive search) |
-| `modules/dev-tools/docker.nix` | docker-compose, lazydocker (Linux only) |
-
-## Configurations
-
-| Name | System | Usage |
+| Hostname | Machine | Role |
 |---|---|---|
-| `linux` | aarch64-linux | OrbStack VM or Docker container |
-| `mac` | aarch64-darwin | macOS Apple Silicon |
+| `m5-air` | MacBook Air M5 | Daily driver |
+| `rouven-air-m3` | MacBook Air M3 | Mobile |
+| `rouven-pro-m4` | MacBook Pro M4 | Mobile |
+| `rouvens-mac-mini` | Mac Mini M4 | Office desktop |
+| `rouvens-mac-studio` | Mac Studio M3 Ultra | AI inference lab |
+| `linux` | OrbStack NixOS VM | Dev services |
+| `jetson` | Jetson AGX Orin | Edge inference |
+| `contabo` | Contabo VPS | Server |
 
-## Usage
-
-### Prerequisites
-
-- [Nix](https://nixos.org/download/) with flakes enabled
-- Add to `/etc/nix/nix.conf`: `experimental-features = nix-command flakes`
-
-### Apply configuration
-
-```bash
-# Clone
-git clone https://github.com/rh7/dotfiles.git
-cd dotfiles
-
-# Linux
-nix run home-manager -- switch --flake .#linux -b backup
-
-# macOS (Apple Silicon)
-nix run home-manager -- switch --flake .#mac -b backup
-```
-
-### Use the dev shell
+## Fresh Mac Setup
 
 ```bash
-cd dotfiles
-nix develop    # drops into a shell with git, curl, jq
+# One command — works on any machine listed above
+bash <(curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/bootstrap.sh)
+
+# After iCloud syncs
+mackup restore
 ```
 
-### Update dependencies
+## Apply Config Changes
 
 ```bash
-nix flake update    # updates flake.lock to latest nixpkgs + home-manager
-nix run home-manager -- switch --flake .#linux -b backup   # re-apply
+darwin-rebuild switch --flake ~/dotfiles   # full form
+nrs                                         # alias (after first setup)
 ```
+
+## Settings Sync Strategy
+
+| What | How |
+|---|---|
+| macOS defaults, dock, keyboard | nix-darwin (`nrs`) |
+| CLI tools, dev toolchains | Nix / Home Manager (`nrs`) |
+| Shell, git, SSH config | Home Manager (`nrs`) |
+| App preferences (Cursor, Zed, Slack...) | mackup → iCloud |
+| SSH keys | 1Password SSH Agent |
+| Cursor settings | Cursor built-in sync (GitHub) |
+| Obsidian vault | iCloud / Dropbox |
+| Arc bookmarks/spaces | Arc account sync |
+| Secrets / env vars | 1Password CLI (`op run`) |
 
 ## Structure
 
 ```
 .
-├── flake.nix                          # Entry point: inputs, outputs, configurations
-├── flake.lock                         # Pinned dependency versions
+├── bootstrap.sh                    # Fresh Mac setup script
+├── flake.nix                       # Entry point: all machines defined here
+├── flake.lock                      # Pinned dependency versions
 ├── configurations/
-│   ├── linux/home.nix                 # Linux-specific: username, home dir
-│   └── macos/home.nix                 # macOS-specific: username, home dir
+│   ├── macos/
+│   │   ├── home.nix                # Shared macOS user config + toolchains
+│   │   ├── macbook.nix             # MacBook-specific apps
+│   │   ├── mac-mini-office.nix     # Office Mac Mini (smart home, Office)
+│   │   └── mac-studio.nix         # AI lab (Ollama native service)
+│   └── linux/
+│       └── home.nix                # Linux user config (OrbStack / Jetson / VPS)
 └── modules/
-    ├── common.nix                     # Shared packages, git config, bash aliases
-    ├── editors/vim.nix                # Neovim configuration
-    └── dev-tools/docker.nix           # Docker tooling (Linux only)
+    ├── common.nix                  # CLI tools + git (all machines)
+    ├── shell/
+    │   └── zsh.nix                 # zsh, starship, aliases, SSH, mackup
+    ├── darwin/
+    │   ├── defaults.nix            # macOS system defaults
+    │   └── homebrew.nix            # Declarative cask management
+    ├── editors/
+    │   └── vim.nix                 # Neovim
+    └── dev-tools/
+        └── docker.nix              # Docker tools (Linux)
 ```
 
-## Adding packages
-
-Edit `modules/common.nix` to add packages available to all configurations:
+## Adding a New App
 
 ```nix
-home.packages = with pkgs; [
-  curl jq git ripgrep fd tree htop
-  # add new packages here
-];
+# modules/darwin/homebrew.nix  → all machines
+casks = [ ... "new-app" ];
+
+# configurations/macos/macbook.nix  → MacBooks only
+homebrew.casks = [ ... "new-app" ];
 ```
 
-Or create a new module file and include it in the relevant configuration in `flake.nix`.
+Then: `nrs`
+
+## Manual Exceptions
+
+These cannot be automated (licensing or no cask available):
+- **Adobe Creative Cloud** — license-managed, install manually
+- **IBKR Desktop** — download from ibkr.com
+- **StarMoney / Finanzguru / Bank X** — German banking apps, no casks
+- **Mac App Store apps** — use `mas install <id>` or install manually
+
+## Update Dependencies
+
+```bash
+nix flake update ~/dotfiles   # nfu alias
+nrs                            # apply updated inputs
+```
+
+## Garbage Collection
+
+Auto-runs weekly (Sunday 3am, keeps 30 days of generations).
+Manual: `ngc`
+
+## Linux / OrbStack VM
+
+```bash
+# Apply on Linux
+nix run home-manager -- switch --flake .#linux -b backup
+```
