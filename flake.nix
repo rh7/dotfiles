@@ -27,6 +27,7 @@
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
+            home-manager.backupFileExtension = "hm-backup";
             home-manager.users.rouvenheck = { pkgs, ... }: {
               imports = [
                 ./configurations/macos/home.nix  # user config + dev tools

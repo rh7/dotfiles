@@ -34,9 +34,9 @@
   # ── Git ──────────────────────────────────────────────────────────────────
   programs.git = {
     enable = true;
-    userName = "Rouven Heck";
-    userEmail = "dev@heck.cc";
-    extraConfig = {
+    settings.user.name = "Rouven Heck";
+    settings.user.email = "dev@heck.cc";
+    settings = {
       init.defaultBranch = "main";
       pull.rebase = true;
       push.autoSetupRemote = true;

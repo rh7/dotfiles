@@ -14,7 +14,6 @@
     };
 
     taps = [
-      "homebrew/bundle"
     ];
 
     # ── CLI tools better installed via Homebrew (faster updates) ───────────
@@ -27,7 +26,7 @@
     # ── GUI apps ───────────────────────────────────────────────────────────
     casks = [
       # ── Core ──
-      "1password"
+      "1password" "google-chrome"
       "arc"
       "obsidian"
       "raycast"
@@ -54,7 +53,6 @@
       "clockify"
       "notion"
       "linear-linear"
-      "trello"
 
       # ── AI ──
       "claude"
@@ -64,16 +62,13 @@
       # ── Media ──
       "spotify"
       "pocket-casts"
-      "endel"
 
       # ── Crypto / Finance ──
-      "ledger-live"
 
       # ── VPN / Network ──
       "expressvpn"
       "private-internet-access"
-      "wireguard-tools"
-      "tailscale"
+      "tailscale-app"
       "tripmode"
     ];
   };

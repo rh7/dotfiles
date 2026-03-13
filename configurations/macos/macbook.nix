@@ -14,6 +14,6 @@
 
     # ── Personal ──
     "vlc"
-    "remarkable"
+    
   ];
 }

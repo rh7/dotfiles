@@ -15,7 +15,7 @@
   # ── Finder ───────────────────────────────────────────────────────────────
   system.defaults.finder = {
     AppleShowAllExtensions = true;
-    FHIShowHiddenFiles = true;
+    AppleShowAllFiles = true;
     ShowPathbar = true;
     ShowStatusBar = true;
     _FXShowPosixPathInTitle = true;
@@ -61,5 +61,6 @@
 
   # Required for nix-darwin
   system.stateVersion = 6;
+  system.primaryUser = "rouvenheck";
   nixpkgs.hostPlatform = "aarch64-darwin";
 }
