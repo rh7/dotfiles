@@ -1,31 +1,19 @@
 { ... }:
 
 {
-  # ── MacBook-specific Homebrew casks ──────────────────────────────────────
+  # ── MacBook-specific casks (not needed on desktop/studio) ────────────────
   homebrew.casks = [
-    # Writing (until fully migrated to Obsidian)
-    "ulysses"
+    # ── Finance (Germany + US + Crypto) ──
+    # "quicken"           # uncomment when needed
+    # "finanzguru"
+    # "starmoney"
+    # "ibkr"              # Interactive Brokers
 
-    # Finance — Germany
-    "quicken"
+    # ── Creative ──
+    # "adobe-creative-cloud"  # manual install recommended (license)
 
-    # Crypto / trading
-    "electrum"
-    "exodus"
-
-    # Dev extras
-    "pgadmin4"
-
-    # Personal
+    # ── Personal ──
     "vlc"
     "remarkable"
-    "headway"
-
-    # Note: Adobe CC — install manually (license-managed, no cask)
-    # Note: IBKR Desktop — install from ibkr.com
-    # Note: StarMoney, Finanzguru, Bank X — no casks available
   ];
-
-  # ── Slightly smaller dock on laptop screens ───────────────────────────────
-  system.defaults.dock.tilesize = 40;
 }

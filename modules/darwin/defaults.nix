@@ -1,54 +1,65 @@
 { ... }:
 
 {
-  # ── macOS system defaults ─────────────────────────────────────────────────
-  system.defaults = {
-    dock = {
-      autohide                  = true;
-      autohide-delay            = 0.0;
-      autohide-time-modifier    = 0.2;
-      show-recents              = false;
-      minimize-to-application   = true;
-      tilesize                  = 48;
-    };
-    finder = {
-      AppleShowAllFiles         = true;
-      ShowPathbar               = true;
-      ShowStatusBar             = true;
-      FXPreferredViewStyle      = "Nlsv"; # list view
-      FXDefaultSearchScope      = "SCcf"; # search current folder
-      _FXShowPosixPathInTitle   = true;
-    };
-    trackpad = {
-      Clicking                  = true;  # tap to click
-      TrackpadThreeFingerDrag   = true;
-    };
-    keyboard = {
-      KeyRepeat                 = 2;
-      InitialKeyRepeat          = 15;
-    };
-    screensaver = {
-      askForPassword            = true;
-      askForPasswordDelay       = 5;
-    };
-    NSGlobalDomain = {
-      AppleInterfaceStyle                   = "Dark";
-      AppleShowAllExtensions                = true;
-      NSAutomaticSpellingCorrectionEnabled  = false;
-      NSAutomaticCapitalizationEnabled      = false;
-      NSAutomaticDashSubstitutionEnabled    = false;
-      NSAutomaticQuoteSubstitutionEnabled   = false;
-      "com.apple.swipescrolldirection"      = false; # disable natural scroll
-    };
-    CustomUserPreferences = {
-      "com.apple.screencapture" = {
-        location        = "~/Screenshots";
-        type            = "png";
-        disable-shadow  = true;
-      };
-    };
+  # ── Dock ─────────────────────────────────────────────────────────────────
+  system.defaults.dock = {
+    autohide = true;
+    autohide-delay = 0.0;
+    autohide-time-modifier = 0.3;
+    show-recents = false;
+    tilesize = 48;
+    orientation = "bottom";
+    mru-spaces = false;  # don't rearrange Spaces based on recent use
   };
 
-  system.stateVersion = 5;
+  # ── Finder ───────────────────────────────────────────────────────────────
+  system.defaults.finder = {
+    AppleShowAllExtensions = true;
+    FHIShowHiddenFiles = true;
+    ShowPathbar = true;
+    ShowStatusBar = true;
+    _FXShowPosixPathInTitle = true;
+    FXDefaultSearchScope = "SCcf";  # search current folder
+    FXPreferredViewStyle = "Nlsv";  # list view
+  };
+
+  # ── Keyboard ─────────────────────────────────────────────────────────────
+  system.defaults.NSGlobalDomain = {
+    AppleShowAllExtensions = true;
+    InitialKeyRepeat = 15;
+    KeyRepeat = 2;
+    NSAutomaticCapitalizationEnabled = false;
+    NSAutomaticSpellingCorrectionEnabled = false;
+    NSAutomaticPeriodSubstitutionEnabled = false;
+    NSAutomaticDashSubstitutionEnabled = false;
+    NSAutomaticQuoteSubstitutionEnabled = false;
+    "com.apple.swipescrolldirection" = true;  # natural scrolling
+  };
+
+  # ── Trackpad ─────────────────────────────────────────────────────────────
+  system.defaults.trackpad = {
+    Clicking = true;  # tap to click
+    TrackpadRightClick = true;
+    TrackpadThreeFingerDrag = true;
+  };
+
+  # ── Screenshots ──────────────────────────────────────────────────────────
+  system.defaults.screencapture = {
+    location = "~/Desktop/Screenshots";
+    type = "png";
+    disable-shadow = true;
+  };
+
+  # ── Login window ─────────────────────────────────────────────────────────
+  system.defaults.loginwindow.GuestEnabled = false;
+
+  # ── System ───────────────────────────────────────────────────────────────
+  security.pam.services.sudo_local.touchIdAuth = true;
+
+  # Determinate Nix manages its own daemon — don't let nix-darwin conflict
+  nix.enable = false;
+
+  # Required for nix-darwin
+  system.stateVersion = 6;
   nixpkgs.hostPlatform = "aarch64-darwin";
 }

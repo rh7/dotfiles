@@ -1,125 +1,81 @@
 { pkgs, ... }:
 
 {
+  # ── Zsh ──────────────────────────────────────────────────────────────────
   programs.zsh = {
     enable = true;
-    autosuggestions.enable = true;
+    autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
-
+    history = {
+      size = 50000;
+      save = 50000;
+      ignoreDups = true;
+      ignoreAllDups = true;
+      share = true;
+    };
     shellAliases = {
-      # Better defaults
-      ll    = "eza -la --git";
-      ls    = "eza";
-      cat   = "bat";
-      cd    = "z";       # zoxide
-      ".."  = "cd ..";
-      "..." = "cd ../..";
+      # Navigation
+      ll  = "eza -la --icons --git";
+      la  = "eza -a --icons";
+      lt  = "eza --tree --level=2 --icons";
+      cat = "bat";
+      # zoxide init already hooks into cd
 
       # Git
       gs  = "git status";
-      ga  = "git add";
-      gc  = "git commit";
       gp  = "git push";
-      gl  = "git log --oneline -20";
+      gl  = "git pull";
       gd  = "git diff";
+      gc  = "git commit";
+      gca = "git commit -a";
       gco = "git checkout";
-      gbr = "git branch";
+      gb  = "git branch";
+      glog = "git log --oneline --graph --decorate -20";
 
-      # Nix / nix-darwin
-      nrs  = "darwin-rebuild switch --flake ~/dotfiles";
-      nrb  = "darwin-rebuild build --flake ~/dotfiles";
-      nfu  = "nix flake update ~/dotfiles";
-      ngc  = "nix-collect-garbage -d";
-      nfmt = "nixpkgs-fmt ~/dotfiles/**/*.nix";
+      # Nix
+      nrs = "sudo darwin-rebuild switch --flake ~/dotfiles";
+      nup = "nix flake update ~/dotfiles";
 
-      # Docker / OrbStack
-      d   = "docker";
-      dc  = "docker compose";
-      dps = "docker ps";
-      dex = "docker exec -it";
-
-      # Tailscale
-      ts  = "tailscale";
-      tss = "tailscale status";
+      # Quick access
+      dots = "cd ~/dotfiles && zed .";
     };
-
     initExtra = ''
-      # zoxide (smarter cd)
-      eval "$(zoxide init zsh)"
-
-      # fzf
-      eval "$(fzf --zsh)"
-
       # 1Password SSH Agent
       export SSH_AUTH_SOCK=~/Library/Group\ Containers/2BUA8C4S2C.com.1password/t/agent.sock
 
-      # Homebrew (Apple Silicon path)
+      # zoxide init
+      eval "$(zoxide init zsh)"
+
+      # direnv hook
+      eval "$(direnv hook zsh)"
+
+      # Homebrew (Apple Silicon)
       eval "$(/opt/homebrew/bin/brew shellenv)"
-
-      # Local scripts on PATH
-      export PATH="$HOME/.local/bin:$PATH"
-
-      # uv — fast Python package manager
-      export UV_PYTHON_PREFERENCE=managed
     '';
   };
 
-  # ── Starship prompt ───────────────────────────────────────────────────────
+  # ── Starship prompt ──────────────────────────────────────────────────────
   programs.starship = {
     enable = true;
     settings = {
-      format = "$directory$git_branch$git_status$nodejs$python$rust$nix_shell$cmd_duration$line_break$character";
-      directory.truncation_length = 3;
-      git_branch.symbol  = " ";
-      nodejs.symbol      = " ";
-      python.symbol      = " ";
-      rust.symbol        = " ";
-      nix_shell.symbol   = "❄️ ";
-      cmd_duration = {
-        min_time = 2000;
-        format   = "took [$duration]($style) ";
+      add_newline = false;
+      character = {
+        success_symbol = "[❯](bold green)";
+        error_symbol   = "[❯](bold red)";
       };
+      directory.truncation_length = 3;
+      git_branch.symbol = " ";
+      nix_shell.symbol = " ";
+      nodejs.symbol = " ";
+      python.symbol = " ";
+      rust.symbol = " ";
     };
   };
 
-  # ── SSH ──────────────────────────────────────────────────────────────────
-  programs.ssh = {
-    enable = true;
-    extraConfig = ''
-      # 1Password SSH agent — handles all keys
-      Host *
-        IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-        ServerAliveInterval 60
-        ServerAliveCountMax 3
-
-      # Tailscale hostnames
-      Host mac-studio
-        HostName rouvens-mac-studio
-        User rouvenheck
-
-      Host mac-mini
-        HostName rouvens-mac-mini
-        User rouvenheck
-
-      Host jetson
-        HostName jetson-rorin2
-        User rouvenheck
-
-      Host contabo
-        HostName contabo-vps-rh7lab
-        User root
-    '';
-  };
-
-  # ── mackup (app settings sync via iCloud) ────────────────────────────────
-  # To migrate to Dropbox: change engine to "dropbox" then run: mackup backup
-  #
-  # Only apps with mackup support listed here.
-  # Unsupported (sync via their own account/iCloud): raycast, obsidian, slack, superhuman, clockify
+  # ── mackup config (iCloud) ──────────────────────────────────────────────
   home.file.".mackup.cfg".text = ''
     [storage]
     engine = icloud
-    directory = mackup
 
     [applications_to_sync]
     cursor

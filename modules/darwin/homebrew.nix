@@ -1,88 +1,80 @@
 { ... }:
 
 {
-  # ── Homebrew — declarative cask management ───────────────────────────────
-  # nix-darwin drives Homebrew; anything NOT listed here gets removed on `nrs`
+  # ── Homebrew (managed declaratively by nix-darwin) ───────────────────────
   homebrew = {
     enable = true;
+
     onActivation = {
-      autoUpdate  = true;
-      upgrade     = true;
-      cleanup     = "zap";  # removes unlisted casks/brews
+      autoUpdate = true;
+      upgrade = true;
+      # "zap" removes anything not listed — uncomment once you're confident
+      # cleanup = "zap";
+      cleanup = "uninstall";  # safe default: removes unlisted but doesn't zap
     };
 
     taps = [
       "homebrew/bundle"
     ];
 
-    # ── Installed on every machine ───────────────────────────────────────
+    # ── CLI tools better installed via Homebrew (faster updates) ───────────
+    brews = [
+      "mas"        # Mac App Store CLI
+      "mackup"     # settings sync
+      "railway"    # Railway CLI
+    ];
+
+    # ── GUI apps ───────────────────────────────────────────────────────────
     casks = [
-      # Security
+      # ── Core ──
       "1password"
-
-      # Browsers
       "arc"
-
-      # Productivity
-      "raycast"
       "obsidian"
-      "notion"
-      "linear-linear"
-      "granola"
-      "superwhisper"
-      "superhuman"
-      "clockify"
+      "raycast"
+      "dropbox"
 
-      # Communication
+      # ── Dev ──
+      "cursor"
+      "zed"
+      "orbstack"
+      "wezterm"
+      "termius"
+
+      # ── Communication ──
       "telegram"
+      "franz"
       "slack"
       "signal"
-      "franz"          # multi-account WhatsApp
       "discord"
       "zoom"
 
-      # Dev
-      "cursor"
-      "zed"
-      "wezterm"
-      "termius"
-      "docker"
-      "orbstack"
+      # ── Productivity ──
+      "superhuman"
+      "granola"
+      "clockify"
+      "notion"
+      "linear-linear"
+      "trello"
 
-      # Storage & sync
-      "dropbox"
-
-      # Finance / crypto
-      "ledger-live"
-      "crypto-pro"
-
-      # VPN / security
-      "expressvpn"
-      "wireguard"
-      "gpg-suite"
-
-      # AI
+      # ── AI ──
       "claude"
       "chatgpt"
+      "superwhisper"
 
-      # Media
+      # ── Media ──
       "spotify"
       "pocket-casts"
       "endel"
 
-      # Utilities
+      # ── Crypto / Finance ──
+      "ledger-live"
+
+      # ── VPN / Network ──
+      "expressvpn"
+      "private-internet-access"
+      "wireguard-tools"
       "tailscale"
       "tripmode"
-
-      # Fonts
-      "font-jetbrains-mono-nerd-font"
-      "font-inter"
-    ];
-
-    # ── CLI tools better managed via Homebrew than Nix on macOS ─────────
-    brews = [
-      "mas"      # Mac App Store CLI
-      "mackup"   # App settings sync
     ];
   };
 }

@@ -1,114 +1,74 @@
-# dotfiles
+# Rouven's Dotfiles
 
-Declarative Mac + Linux configuration using [Nix flakes](https://wiki.nixos.org/wiki/Flakes), [nix-darwin](https://github.com/LnL7/nix-darwin), and [home-manager](https://github.com/nix-community/home-manager).
+Declarative multi-Mac setup using **nix-darwin** + **Home Manager** + **Flakes**.
 
 ## Machines
 
-| Hostname | Machine | Role |
-|---|---|---|
+| Config | Machine | Role |
+|--------|---------|------|
 | `m5-air` | MacBook Air M5 | Daily driver |
-| `rouven-air-m3` | MacBook Air M3 | Mobile |
-| `rouven-pro-m4` | MacBook Pro M4 | Mobile |
-| `rouvens-mac-mini` | Mac Mini M4 | Office desktop |
+| `rouven-air-m3` | MacBook Air M3 | Laptop |
+| `rouven-pro-m4` | MacBook Pro M4 | Laptop |
+| `rouvens-mac-mini` | Mac Mini M4 | Office desktop + smart home |
 | `rouvens-mac-studio` | Mac Studio M3 Ultra | AI inference lab |
-| `linux` | OrbStack NixOS VM | Dev services |
-| `jetson` | Jetson AGX Orin | Edge inference |
-| `contabo` | Contabo VPS | Server |
+| `linux` | OrbStack VM | Dev environment |
 
-## Fresh Mac Setup
+## Quick Start (new Mac)
 
 ```bash
-# One command — works on any machine listed above
-bash <(curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/bootstrap.sh)
+# 1. Install Nix (Determinate)
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
 
-# After iCloud syncs
-mackup restore
+# 2. Clone this repo
+git clone https://github.com/rh7/dotfiles.git ~/dotfiles
+
+# 3. Apply (replace MACHINE with your config name)
+cd ~/dotfiles
+sudo darwin-rebuild switch --flake .#MACHINE
 ```
 
-## Apply Config Changes
+## Daily Usage
 
 ```bash
-darwin-rebuild switch --flake ~/dotfiles   # full form
-nrs                                         # alias (after first setup)
+nrs          # alias: rebuild from ~/dotfiles
+nup          # alias: update flake inputs
+dots         # alias: open dotfiles in Zed
 ```
-
-## Settings Sync Strategy
-
-| What | How |
-|---|---|
-| macOS defaults, dock, keyboard | nix-darwin (`nrs`) |
-| CLI tools, dev toolchains | Nix / Home Manager (`nrs`) |
-| Shell, git, SSH config | Home Manager (`nrs`) |
-| App preferences (Cursor, Zed, Slack...) | mackup → iCloud |
-| SSH keys | 1Password SSH Agent |
-| Cursor settings | Cursor built-in sync (GitHub) |
-| Obsidian vault | iCloud / Dropbox |
-| Arc bookmarks/spaces | Arc account sync |
-| Secrets / env vars | 1Password CLI (`op run`) |
 
 ## Structure
 
 ```
-.
-├── bootstrap.sh                    # Fresh Mac setup script
-├── flake.nix                       # Entry point: all machines defined here
-├── flake.lock                      # Pinned dependency versions
-├── configurations/
-│   ├── macos/
-│   │   ├── home.nix                # Shared macOS user config + toolchains
-│   │   ├── macbook.nix             # MacBook-specific apps
-│   │   ├── mac-mini-office.nix     # Office Mac Mini (smart home, Office)
-│   │   └── mac-studio.nix         # AI lab (Ollama native service)
-│   └── linux/
-│       └── home.nix                # Linux user config (OrbStack / Jetson / VPS)
-└── modules/
-    ├── common.nix                  # CLI tools + git (all machines)
-    ├── shell/
-    │   └── zsh.nix                 # zsh, starship, aliases, SSH, mackup
-    ├── darwin/
-    │   ├── defaults.nix            # macOS system defaults
-    │   └── homebrew.nix            # Declarative cask management
-    ├── editors/
-    │   └── vim.nix                 # Neovim
-    └── dev-tools/
-        └── docker.nix              # Docker tools (Linux)
+flake.nix                          # Entry point - all machines defined
+modules/
+  common.nix                       # CLI tools + git (Home Manager)
+  shell/zsh.nix                    # Zsh, starship, aliases, mackup
+  darwin/
+    defaults.nix                   # macOS system defaults
+    homebrew.nix                   # Declarative Homebrew casks + brews
+configurations/
+  macos/
+    home.nix                       # Dev toolchains (node, python, rust)
+    macbook.nix                    # MacBook-specific apps
+    mac-mini-office.nix            # Smart home apps
+    mac-studio.nix                 # AI lab (ollama, lm-studio)
+  linux/
+    home.nix                       # OrbStack VM config
+mackup/
+  .mackup.cfg                      # Settings sync config (iCloud)
 ```
 
-## Adding a New App
+## Settings Sync
 
-```nix
-# modules/darwin/homebrew.nix  → all machines
-casks = [ ... "new-app" ];
-
-# configurations/macos/macbook.nix  → MacBooks only
-homebrew.casks = [ ... "new-app" ];
-```
-
-Then: `nrs`
-
-## Manual Exceptions
-
-These cannot be automated (licensing or no cask available):
-- **Adobe Creative Cloud** — license-managed, install manually
-- **IBKR Desktop** — download from ibkr.com
-- **StarMoney / Finanzguru / Bank X** — German banking apps, no casks
-- **Mac App Store apps** — use `mas install <id>` or install manually
-
-## Update Dependencies
+**mackup** syncs app preferences via iCloud.
 
 ```bash
-nix flake update ~/dotfiles   # nfu alias
-nrs                            # apply updated inputs
+mackup backup    # on source machine
+mackup restore   # on new machine
 ```
 
-## Garbage Collection
+## Adding an App
 
-Auto-runs weekly (Sunday 3am, keeps 30 days of generations).
-Manual: `ngc`
-
-## Linux / OrbStack VM
-
-```bash
-# Apply on Linux
-nix run home-manager -- switch --flake .#linux -b backup
-```
+- **CLI tool**: add to `modules/common.nix`
+- **GUI app (all machines)**: add to `modules/darwin/homebrew.nix`
+- **GUI app (specific machine)**: add to machine config in `configurations/macos/`
+- **Dev tool**: add to `configurations/macos/home.nix`
