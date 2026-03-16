@@ -71,5 +71,13 @@
       "tailscale-app"
       "tripmode"
     ];
+
+    # ── Mac App Store apps ───────────────────────────────────────────────
+    masApps = {
+      "Perplexity" = 6714467650;
+      "Endel" = 1346247457;
+      "Trello" = 1278508951;
+      "Crypto Pro" = 980888073;
+    };
   };
 }
