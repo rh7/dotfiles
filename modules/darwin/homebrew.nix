@@ -56,7 +56,7 @@
 
       # ── AI ──
       "claude"
-      "chatgpt" "perplexity"
+      "chatgpt" "claude-code"
       "superwhisper"
 
       # ── Media ──

@@ -10,6 +10,18 @@
     tilesize = 48;
     orientation = "bottom";
     mru-spaces = false;  # don't rearrange Spaces based on recent use
+    persistent-apps = [
+      "/Applications/Google Chrome.app"
+      "/Applications/Arc.app"
+      "/System/Library/CoreServices/Finder.app"
+      "/System/Applications/Reminders.app"
+      "/Applications/Notion.app"
+      "/Applications/Telegram.app"
+      "/Applications/Claude.app"
+      "/Applications/Termius.app"
+      "/Applications/Superhuman.app"
+      "/System/Applications/Utilities/Terminal.app"
+    ];
   };
 
   # ── Finder ───────────────────────────────────────────────────────────────

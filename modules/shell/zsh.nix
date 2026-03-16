@@ -33,7 +33,7 @@
       glog = "git log --oneline --graph --decorate -20";
 
       # Nix
-      nrs = "sudo darwin-rebuild switch --flake ~/dotfiles";
+      nrs = "sudo darwin-rebuild switch --flake ~/dotfiles#m5-air";
       nup = "nix flake update ~/dotfiles";
 
       # Quick access
