@@ -10,6 +10,9 @@
     tilesize = 48;
     orientation = "bottom";
     mru-spaces = false;  # don't rearrange Spaces based on recent use
+    wvous-tl-corner = 13;  # Lock Screen
+    wvous-tr-corner = 2;   # Mission Control
+    wvous-br-corner = 3;   # Application Windows
     persistent-apps = [
       "/Applications/Google Chrome.app"
       "/Applications/Arc.app"
