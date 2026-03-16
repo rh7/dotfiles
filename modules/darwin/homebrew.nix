@@ -47,6 +47,9 @@
       "discord"
       "zoom"
 
+      # ── Reading ──
+      "reader"  # Readwise Reader
+
       # ── Productivity ──
       "superhuman"
       "granola"
