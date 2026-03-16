@@ -23,6 +23,8 @@
       "/Applications/Claude.app"
       "/Applications/Termius.app"
       "/Applications/Superhuman.app"
+      "/Applications/Signal.app"
+      "/System/Applications/Messages.app"
       "/System/Applications/Utilities/Terminal.app"
     ];
   };
