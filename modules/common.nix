@@ -42,6 +42,8 @@
       pull.rebase = true;
       push.autoSetupRemote = true;
       core.editor = "zed --wait";
+      credential."https://github.com".helper = "!gh auth git-credential";
+      credential."https://gist.github.com".helper = "!gh auth git-credential";
       # 1Password SSH signing (optional, enable when ready)
       # gpg.format = "ssh";
       # user.signingkey = "ssh-ed25519 ...";  # from 1Password
