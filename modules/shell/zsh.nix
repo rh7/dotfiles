@@ -1,6 +1,8 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
-{
+let
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+in {
   # ── Zsh ──────────────────────────────────────────────────────────────────
   programs.zsh = {
     enable = true;
@@ -19,7 +21,6 @@
       la  = "eza -a --icons";
       lt  = "eza --tree --level=2 --icons";
       cat = "bat";
-      # zoxide init already hooks into cd
 
       # Git
       gs  = "git status";
@@ -33,21 +34,24 @@
       glog = "git log --oneline --graph --decorate -20";
 
       # Nix
-      nrs = "sudo darwin-rebuild switch --flake ~/dotfiles#m5-air";
+      nrs = if isDarwin
+        then "sudo darwin-rebuild switch --flake ~/dotfiles#m5-air"
+        else "sudo nixos-rebuild switch --flake ~/dotfiles";
       nup = "nix flake update ~/dotfiles";
 
       # Quick access
       dots = "cd ~/dotfiles && zed .";
     };
-    initContent = ''
-      # 1Password SSH Agent
-      export SSH_AUTH_SOCK=~/Library/Group\ Containers/2BUA8C4S2C.com.1password/t/agent.sock
 
+    initContent = ''
       # zoxide init
       eval "$(zoxide init zsh)"
 
       # direnv hook
       eval "$(direnv hook zsh)"
+    '' + lib.optionalString isDarwin ''
+      # 1Password SSH Agent (macOS)
+      export SSH_AUTH_SOCK=~/Library/Group\ Containers/2BUA8C4S2C.com.1password/t/agent.sock
 
       # Homebrew (Apple Silicon)
       eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -72,25 +76,27 @@
     };
   };
 
-  # ── mackup config (iCloud) ──────────────────────────────────────────────
-  home.file.".mackup.cfg".text = ''
-    [storage]
-    engine = icloud
+  # ── mackup config (iCloud, macOS only) ─────────────────────────────────
+  home.file = lib.mkIf isDarwin {
+    ".mackup.cfg".text = ''
+      [storage]
+      engine = icloud
 
-    [applications_to_sync]
-    cursor
-    zed
-    terminal
-    ssh
-    git
-    zsh
-    telegram_macos
-    franz
-    spotify
-    wezterm
-    starship
-    gnupg
-    claude-code
-    tripmode
-  '';
+      [applications_to_sync]
+      cursor
+      zed
+      terminal
+      ssh
+      git
+      zsh
+      telegram_macos
+      franz
+      spotify
+      wezterm
+      starship
+      gnupg
+      claude-code
+      tripmode
+    '';
+  };
 }

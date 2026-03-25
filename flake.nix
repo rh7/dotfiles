@@ -39,6 +39,29 @@
         ] ++ extraModules;
       };
 
+    # ── Helper: full NixOS system config (NixOS + home-manager) ─────────────
+    mkNixOS = { hostname, system ? "aarch64-linux", extraModules ? [], extraHomeModules ? [] }:
+      nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          ./modules/nixos/system.nix
+          ./modules/nixos/desktop.nix
+          home-manager.nixosModules.home-manager
+          {
+            home-manager.useGlobalPkgs = true;
+            home-manager.useUserPackages = true;
+            home-manager.backupFileExtension = "hm-backup";
+            home-manager.users.rouvenheck = { pkgs, ... }: {
+              imports = [
+                ./configurations/nixos/home.nix
+                ./modules/common.nix
+              ] ++ extraHomeModules;
+            };
+            networking.hostName = hostname;
+          }
+        ] ++ extraModules;
+      };
+
     # ── Helper: Linux (Home Manager standalone — for OrbStack/servers) ──────
     mkLinux = home-manager.lib.homeManagerConfiguration {
       pkgs = nixpkgs.legacyPackages.aarch64-linux;
@@ -74,6 +97,21 @@
       "rouvens-mac-studio" = mkMac {
         hostname = "rouvens-mac-studio";
         extraModules = [ ./configurations/macos/mac-studio.nix ];
+      };
+    };
+
+    # ── NixOS configurations ─────────────────────────────────────────────────
+    nixosConfigurations = {
+      "nixos-vm" = mkNixOS {
+        hostname = "nixos-vm";
+        system = "aarch64-linux";
+        extraModules = [ ./configurations/nixos/vm.nix ];
+      };
+
+      "thinkpad" = mkNixOS {
+        hostname = "thinkpad";
+        system = "x86_64-linux";
+        extraModules = [ ./configurations/nixos/thinkpad.nix ];
       };
     };
 

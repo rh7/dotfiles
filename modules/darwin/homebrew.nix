@@ -20,6 +20,7 @@
     brews = [
       "mas"        # Mac App Store CLI
       "mackup"     # settings sync
+      "ollama"     # LLM CLI
       "railway"    # Railway CLI
     ];
 
@@ -34,8 +35,10 @@
 
       # ── Dev ──
       "cursor"
+      "ghostty"
       "zed"
       "orbstack"
+      "utm"
       "wezterm"
       "termius"
 
@@ -44,7 +47,9 @@
       "franz"
       "slack"
       "signal"
+      "beeper"
       "discord"
+      "element"
       "zoom"
 
       # ── Reading ──
@@ -60,6 +65,7 @@
       # ── AI ──
       "claude"
       "chatgpt" "claude-code"
+      "ollama"
       "superwhisper"
 
       # ── Media ──

@@ -19,6 +19,7 @@
       "/System/Library/CoreServices/Finder.app"
       "/System/Applications/Reminders.app"
       "/Applications/Notion.app"
+      "/Applications/Slack.app"
       "/Applications/Telegram.app"
       "/Applications/Claude.app"
       "/Applications/Termius.app"
@@ -38,6 +39,16 @@
     _FXShowPosixPathInTitle = true;
     FXDefaultSearchScope = "SCcf";  # search current folder
     FXPreferredViewStyle = "Nlsv";  # list view
+  };
+
+  # ── Desktop stacks ──────────────────────────────────────────────────────
+  system.defaults.CustomUserPreferences."com.apple.finder" = {
+    DesktopViewSettings = {
+      GroupBy = "Kind";
+      IconViewSettings = {
+        arrangeBy = "dateAdded";
+      };
+    };
   };
 
   # ── Keyboard ─────────────────────────────────────────────────────────────
@@ -69,6 +80,11 @@
 
   # ── Login window ─────────────────────────────────────────────────────────
   system.defaults.loginwindow.GuestEnabled = false;
+
+  # ── Activation ──────────────────────────────────────────────────────────
+  system.activationScripts.postActivation.text = ''
+    killall Finder || true
+  '';
 
   # ── System ───────────────────────────────────────────────────────────────
   security.pam.services.sudo_local.touchIdAuth = true;
