@@ -21,6 +21,15 @@
   };
   programs.zsh.enable = true;
 
+  # ── System packages (available before Home Manager activates) ───────────
+  environment.systemPackages = with pkgs; [
+    git
+    curl
+    wget
+    vim
+    claude-code
+  ];
+
   # ── Nix settings ────────────────────────────────────────────────────────
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nixpkgs.config.allowUnfree = true;
