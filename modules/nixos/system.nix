@@ -36,6 +36,9 @@
   # ── Docker ──────────────────────────────────────────────────────────────
   virtualisation.docker.enable = true;
 
+  # ── Tailscale ──────────────────────────────────────────────────────────
+  services.tailscale.enable = true;
+
   # ── SSH ─────────────────────────────────────────────────────────────────
   services.openssh = {
     enable = true;

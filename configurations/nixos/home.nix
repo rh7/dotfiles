@@ -22,8 +22,6 @@
     pre-commit
     docker-compose
 
-    # AI
-    claude-code
   ];
 
   # ── Zed editor config ───────────────────────────────────────────────────
