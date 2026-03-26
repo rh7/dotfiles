@@ -64,13 +64,19 @@
       };
 
     # ── Helper: Linux (Home Manager standalone — for OrbStack/servers) ──────
-    mkLinux = home-manager.lib.homeManagerConfiguration {
-      pkgs = nixpkgs.legacyPackages.aarch64-linux;
-      modules = [
-        ./configurations/linux/home.nix
-        ./modules/common.nix
-      ];
-    };
+    mkLinux = { username ? "rouvenheck", system ? "aarch64-linux" }:
+      home-manager.lib.homeManagerConfiguration {
+        pkgs = nixpkgs.legacyPackages.${system};
+        extraSpecialArgs = { inherit username; };
+        modules = [
+          ./configurations/linux/home.nix
+          ./modules/common.nix
+          {
+            home.username = username;
+            home.homeDirectory = "/home/${username}";
+          }
+        ];
+      };
 
   in {
     # ── Mac configurations ──────────────────────────────────────────────────
@@ -118,6 +124,10 @@
     };
 
     # ── Linux (OrbStack VM / servers) ───────────────────────────────────────
-    homeConfigurations."linux" = mkLinux;
+    homeConfigurations = {
+      "linux" = mkLinux { username = "rouvenheck"; };           # default (OrbStack)
+      "linux-rouven" = mkLinux { username = "rouven"; };        # alternate username
+      "linux-x86" = mkLinux { username = "rouvenheck"; system = "x86_64-linux"; };
+    };
   };
 }
