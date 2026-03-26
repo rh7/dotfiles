@@ -119,6 +119,7 @@
       "thinkpad" = mkNixOS {
         hostname = "thinkpad";
         system = "x86_64-linux";
+        username = "rouven";
         extraModules = [ ./configurations/nixos/thinkpad.nix ];
       };
     };

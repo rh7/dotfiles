@@ -38,7 +38,13 @@
   virtualisation.docker.enable = true;
 
   # ── SSH ─────────────────────────────────────────────────────────────────
-  services.openssh.enable = true;
+  services.openssh = {
+    enable = true;
+    settings.PermitRootLogin = "yes";
+  };
+
+  # ── Root access (set a password after first boot with `sudo passwd root`) ─
+  users.users.root.initialPassword = "nixos";
 
   system.stateVersion = lib.mkDefault "24.11";
 }
