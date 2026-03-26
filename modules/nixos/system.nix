@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, lib, username, ... }:
 
 {
   # ── Boot ────────────────────────────────────────────────────────────────
@@ -9,11 +9,11 @@
   networking.networkmanager.enable = true;
 
   # ── Locale ──────────────────────────────────────────────────────────────
-  time.timeZone = "Europe/Berlin";
+  time.timeZone = lib.mkDefault "Europe/Berlin";
   i18n.defaultLocale = "en_US.UTF-8";
 
   # ── User ────────────────────────────────────────────────────────────────
-  users.users.rouvenheck = {
+  users.users.${username} = {
     isNormalUser = true;
     description = "Rouven Heck";
     extraGroups = [ "networkmanager" "wheel" "docker" ];
@@ -31,5 +31,5 @@
   # ── SSH ─────────────────────────────────────────────────────────────────
   services.openssh.enable = true;
 
-  system.stateVersion = "24.11";
+  system.stateVersion = lib.mkDefault "24.11";
 }

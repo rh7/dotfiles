@@ -3,8 +3,8 @@
 {
   # ── GNOME desktop ───────────────────────────────────────────────────────
   services.xserver.enable = true;
-  services.xserver.displayManager.gdm.enable = true;
-  services.xserver.desktopManager.gnome.enable = true;
+  services.displayManager.gdm.enable = true;
+  services.desktopManager.gnome.enable = true;
 
   # ── Audio (PipeWire) ────────────────────────────────────────────────────
   services.pulseaudio.enable = false;
@@ -18,7 +18,7 @@
   fonts.packages = with pkgs; [
     nerd-fonts.jetbrains-mono
     noto-fonts
-    noto-fonts-emoji
+    noto-fonts-color-emoji
   ];
 
   # ── Desktop apps ────────────────────────────────────────────────────────

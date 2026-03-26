@@ -1,9 +1,8 @@
 { pkgs, ... }:
 
 {
-  home.username      = "rouvenheck";
-  home.homeDirectory = "/home/rouvenheck";
-  home.stateVersion  = "24.11";
+  # username and homeDirectory are set by home-manager.users.<name> in flake.nix
+  home.stateVersion = "24.11";
   programs.home-manager.enable = true;
 
   # ── Dev toolchains (mirrors macOS home.nix) ─────────────────────────────

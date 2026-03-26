@@ -40,9 +40,10 @@
       };
 
     # ── Helper: full NixOS system config (NixOS + home-manager) ─────────────
-    mkNixOS = { hostname, system ? "aarch64-linux", extraModules ? [], extraHomeModules ? [] }:
+    mkNixOS = { hostname, system ? "aarch64-linux", username ? "rouvenheck", extraModules ? [], extraHomeModules ? [] }:
       nixpkgs.lib.nixosSystem {
         inherit system;
+        specialArgs = { inherit username; };
         modules = [
           ./modules/nixos/system.nix
           ./modules/nixos/desktop.nix
@@ -51,7 +52,7 @@
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
             home-manager.backupFileExtension = "hm-backup";
-            home-manager.users.rouvenheck = { pkgs, ... }: {
+            home-manager.users.${username} = { pkgs, ... }: {
               imports = [
                 ./configurations/nixos/home.nix
                 ./modules/common.nix
@@ -105,6 +106,7 @@
       "nixos-vm" = mkNixOS {
         hostname = "nixos-vm";
         system = "aarch64-linux";
+        username = "rouven";
         extraModules = [ ./configurations/nixos/vm.nix ];
       };
 
