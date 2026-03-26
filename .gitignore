@@ -1,0 +1,24 @@
+# Secrets
+*.pem
+*.key
+.env*
+*secret*
+*credentials*
+*.gpg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nix
+result
+result-*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local overrides
+*.local.nix
