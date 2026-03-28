@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Setup sops-nix secrets for the current machine.
 # Run this once per device after the first nix rebuild.
+# Fully automated — no editor required.
 #
 # Usage: ./scripts/setup-secrets.sh
 
@@ -56,58 +57,58 @@ info "Device:     $HOSTNAME"
 info "Public key: $AGE_PUB"
 echo ""
 
-# ── 4. Check if key is already in .sops.yaml ────────────────────────────
+# ── 4. Add key to .sops.yaml automatically ──────────────────────────────
 if grep -q "$AGE_PUB" "$SOPS_YAML" 2>/dev/null; then
   ok "Key already in .sops.yaml"
 else
-  warn "Your key is NOT yet in .sops.yaml"
-  echo ""
-  echo "  Add this line to .sops.yaml under 'keys:':"
-  echo ""
-  echo -e "    ${GREEN}- &${HOSTNAME} ${AGE_PUB}${NC}"
-  echo ""
-  echo "  Then uncomment it in the 'creation_rules' age list."
-  echo ""
+  info "Adding key to .sops.yaml..."
 
-  read -rp "  Open .sops.yaml in your editor now? [Y/n] " choice
-  case "$choice" in
-    [nN]*) ;;
-    *)
-      if command -v zed &>/dev/null; then
-        zed "$SOPS_YAML"
-      elif [[ -n "${EDITOR:-}" ]]; then
-        "$EDITOR" "$SOPS_YAML"
-      else
-        open "$SOPS_YAML"
-      fi
-      echo ""
-      read -rp "  Press Enter after saving .sops.yaml..." _
-      ;;
-  esac
+  # Replace the placeholder admin key if it's still the default
+  if grep -q "age1xxxxxxxxx" "$SOPS_YAML"; then
+    sed -i.bak "s|  - &admin age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|  - \&admin $AGE_PUB|" "$SOPS_YAML"
+    rm -f "$SOPS_YAML.bak"
+    ok "Replaced placeholder admin key with yours"
+  else
+    # Add as a new device key (after the admin key line)
+    sed -i.bak "/^  # ── Per-machine keys/a\\
+  - &${HOSTNAME} ${AGE_PUB}" "$SOPS_YAML"
+    rm -f "$SOPS_YAML.bak"
+
+    # Also add to creation_rules age list
+    sed -i.bak "/^          - \*admin/a\\
+          - *${HOSTNAME}" "$SOPS_YAML"
+    rm -f "$SOPS_YAML.bak"
+    ok "Added $HOSTNAME key to .sops.yaml"
+  fi
 fi
 
 # ── 5. Encrypt secrets file (if not already encrypted) ──────────────────
 if head -1 "$SECRETS_FILE" 2>/dev/null | grep -q "^sops:$\|ENC\[AES256_GCM\|age1"; then
   ok "Secrets file is already encrypted"
 else
-  if grep -q "$AGE_PUB" "$SOPS_YAML" 2>/dev/null; then
-    info "Encrypting secrets file..."
-    sops -e -i "$SECRETS_FILE"
-    ok "Secrets encrypted"
-  else
-    warn "Skipping encryption — add your key to .sops.yaml first, then run:"
-    echo "  sops -e -i $SECRETS_FILE"
-  fi
+  info "Encrypting secrets file..."
+  sops -e -i "$SECRETS_FILE"
+  ok "Secrets encrypted"
 fi
 
-# ── 6. Summary ──────────────────────────────────────────────────────────
+# ── 6. Commit changes ──────────────────────────────────────────────────
+cd "$DOTFILES_DIR"
+if git diff --quiet .sops.yaml secrets/secrets.yaml 2>/dev/null; then
+  ok "No changes to commit"
+else
+  info "Committing sops changes..."
+  git add .sops.yaml secrets/secrets.yaml
+  git commit -m "Add age key for $HOSTNAME and encrypt secrets"
+  git push
+  ok "Changes pushed"
+fi
+
+# ── 7. Summary ──────────────────────────────────────────────────────────
 echo ""
-echo "=== Setup Complete ==="
+echo "=== Secrets Setup Complete ==="
 echo ""
-echo "  To edit secrets:    sops $SECRETS_FILE"
-echo "  To add a secret:    sops $SECRETS_FILE  (add key: value, save)"
-echo "  To re-encrypt:      sops updatekeys $SECRETS_FILE"
-echo "  To add a new device: run this script on that device,"
-echo "                       add its key to .sops.yaml, then:"
-echo "                       sops updatekeys $SECRETS_FILE"
+echo "  Edit secrets:       sops $SECRETS_FILE"
+echo "  Add a secret:       sops $SECRETS_FILE  (add key: value, save)"
+echo "  Add new device:     run this script on that device"
+echo "  Re-encrypt:         sops updatekeys $SECRETS_FILE"
 echo ""
