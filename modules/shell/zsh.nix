@@ -46,9 +46,6 @@ in {
     initContent = ''
       # zoxide init
       eval "$(zoxide init zsh)"
-
-      # direnv hook
-      eval "$(direnv hook zsh)"
     '' + lib.optionalString isDarwin ''
       # 1Password SSH Agent (macOS)
       export SSH_AUTH_SOCK=~/Library/Group\ Containers/2BUA8C4S2C.com.1password/t/agent.sock

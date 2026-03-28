@@ -23,7 +23,6 @@
     # Dev
     gnupg
     mkcert
-    direnv       # per-project env/shells
     nixpkgs-fmt  # Nix formatter
     nil          # Nix LSP
 
@@ -61,6 +60,12 @@
       "__pycache__"
       ".venv"
     ];
+  };
+
+  # ── direnv (per-project env/shells) ────────────────────────────────────
+  programs.direnv = {
+    enable = true;
+    nix-direnv.enable = true;  # faster nix integration
   };
 
   # ── Shell — import from shell module ─────────────────────────────────────
