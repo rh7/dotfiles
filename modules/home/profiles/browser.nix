@@ -45,7 +45,7 @@ in {
 
       # ── Search ─────────────────────────────────────────────────────────
       search = {
-        default = "DuckDuckGo";
+        default = "ddg";
         force = true;
       };
     };
