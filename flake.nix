@@ -16,21 +16,29 @@
   outputs = { self, nixpkgs, nix-darwin, home-manager, ... }:
   let
     # ── Helper: full macOS system config (nix-darwin + home-manager) ─────────
-    mkMac = { hostname, extraModules ? [], extraHomeModules ? [] }:
+    # Now accepts a `role` module and optional extra modules.
+    mkMac = {
+      hostname,
+      username ? "rouvenheck",
+      role ? ./modules/roles/workstation-mac.nix,
+      extraModules ? [],
+      extraHomeModules ? [],
+    }:
       nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
         modules = [
-          # System-level only (no home.* options here)
+          # System-level
           ./modules/darwin/defaults.nix
           ./modules/darwin/homebrew.nix
+          role
           home-manager.darwinModules.home-manager
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
             home-manager.backupFileExtension = "hm-backup";
-            home-manager.users.rouvenheck = { pkgs, ... }: {
+            home-manager.users.${username} = { pkgs, ... }: {
               imports = [
-                ./configurations/macos/home.nix  # user config + dev tools
+                ./configurations/macos/home.nix  # user config (imports profiles)
                 ./modules/common.nix             # CLI tools + git + shell
               ] ++ extraHomeModules;
             };
@@ -40,13 +48,20 @@
       };
 
     # ── Helper: full NixOS system config (NixOS + home-manager) ─────────────
-    mkNixOS = { hostname, system ? "aarch64-linux", username ? "rouvenheck", extraModules ? [], extraHomeModules ? [] }:
+    mkNixOS = {
+      hostname,
+      system ? "aarch64-linux",
+      username ? "rouvenheck",
+      role ? ./modules/roles/workstation-linux.nix,
+      extraModules ? [],
+      extraHomeModules ? [],
+    }:
       nixpkgs.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit username; };
         modules = [
           ./modules/nixos/system.nix
-          ./modules/nixos/desktop.nix
+          role
           home-manager.nixosModules.home-manager
           {
             home-manager.useGlobalPkgs = true;
@@ -81,6 +96,7 @@
   in {
     # ── Mac configurations ──────────────────────────────────────────────────
     darwinConfigurations = {
+      # ── MacBooks (all use workstation role) ──
       "m5-air" = mkMac {
         hostname = "m5-air";
         extraModules = [ ./configurations/macos/macbook.nix ];
@@ -96,15 +112,34 @@
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
+      # ── Mac Mini (workstation + smart home) ──
       "rouvens-mac-mini" = mkMac {
         hostname = "rouvens-mac-mini";
-        extraModules = [ ./configurations/macos/mac-mini-office.nix ];
+        extraModules = [
+          ./configurations/macos/mac-mini-office.nix
+          ./modules/roles/smart-home.nix
+        ];
       };
 
+      # ── Mac Studio (workstation + AI inference) ──
       "rouvens-mac-studio" = mkMac {
         hostname = "rouvens-mac-studio";
-        extraModules = [ ./configurations/macos/mac-studio.nix ];
+        extraModules = [
+          ./configurations/macos/mac-studio.nix
+          ./modules/roles/ai-inference.nix
+        ];
       };
+
+      # ── Wife's MacBook (personal role — lighter setup) ──
+      # Uncomment when ready:
+      # "wife-macbook" = mkMac {
+      #   hostname = "wife-macbook";
+      #   username = "wife";  # adjust to actual username
+      #   role = ./modules/roles/personal-mac.nix;
+      #   extraHomeModules = [
+      #     # Override home.nix with personal-specific config
+      #   ];
+      # };
     };
 
     # ── NixOS configurations ─────────────────────────────────────────────────

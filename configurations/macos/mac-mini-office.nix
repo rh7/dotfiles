@@ -1,12 +1,7 @@
 { ... }:
 
 {
-  # ── Mac Mini office-specific casks ───────────────────────────────────────
-  homebrew.casks = [
-    # Smart home (this Mac is the hub)
-    # "home-assistant"    # if you run the desktop app
-    "sensibo"
-    "sonos"
-    "homey"
-  ];
+  # ── Mac Mini office-specific overrides ───────────────────────────────────
+  # Smart home apps are in modules/roles/smart-home.nix (imported via flake.nix)
+  # Add any Mac Mini-only overrides here.
 }

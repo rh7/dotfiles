@@ -1,7 +1,9 @@
 { ... }:
 
 {
-  # ── Homebrew (managed declaratively by nix-darwin) ───────────────────────
+  # ── Homebrew scaffold (managed declaratively by nix-darwin) ──────────────
+  # App lists have been moved to modules/darwin/profiles/ and modules/roles/.
+  # This file only configures Homebrew behavior.
   homebrew = {
     enable = true;
 
@@ -15,78 +17,5 @@
 
     taps = [
     ];
-
-    # ── CLI tools better installed via Homebrew (faster updates) ───────────
-    brews = [
-      "mas"        # Mac App Store CLI
-      "mackup"     # settings sync
-      "ollama"     # LLM CLI
-      "railway"    # Railway CLI
-    ];
-
-    # ── GUI apps ───────────────────────────────────────────────────────────
-    casks = [
-      # ── Core ──
-      "1password" "google-chrome"
-      "arc"
-      "obsidian"
-      "raycast"
-      "dropbox"
-
-      # ── Dev ──
-      "cursor"
-      "ghostty"
-      "zed"
-      "orbstack"
-      "utm"
-      "wezterm"
-      "termius"
-
-      # ── Communication ──
-      "telegram"
-      "franz"
-      "slack"
-      "signal"
-      "beeper"
-      "discord"
-      "element"
-      "zoom"
-
-      # ── Reading ──
-      "reader"  # Readwise Reader
-
-      # ── Productivity ──
-      "superhuman"
-      "granola"
-      "clockify"
-      "notion"
-      "linear-linear"
-
-      # ── AI ──
-      "claude"
-      "chatgpt" "claude-code"
-      "ollama"
-      "superwhisper"
-
-      # ── Media ──
-      "spotify"
-      "pocket-casts"
-
-      # ── Crypto / Finance ──
-
-      # ── VPN / Network ──
-      "expressvpn"
-      "private-internet-access"
-      "tailscale-app"
-      "tripmode"
-    ];
-
-    # ── Mac App Store apps ───────────────────────────────────────────────
-    masApps = {
-      "Perplexity" = 6714467650;
-      "Endel" = 1346247457;
-      "Trello" = 1278508951;
-      "Crypto Pro" = 980888073;
-    };
   };
 }

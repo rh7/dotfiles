@@ -21,30 +21,11 @@
     noto-fonts-color-emoji
   ];
 
-  # ── Desktop apps ────────────────────────────────────────────────────────
+  # ── Core desktop apps ───────────────────────────────────────────────────
   environment.systemPackages = with pkgs; [
     firefox
     google-chrome
     gnome-tweaks
-    wezterm
-    ghostty
-    zed-editor
-
-    # Communication
-    telegram-desktop
-    slack
-    signal-desktop
-    discord
-    element-desktop
-    zoom-us
-
-    # Productivity
-    obsidian
-    notion-app-enhanced
-
-    # Media
-    spotify
-    vlc
   ];
 
   # ── Remove default GNOME bloat ─────────────────────────────────────────
@@ -54,4 +35,7 @@
     geary           # email
     gnome-music
   ];
+
+  # ── App profiles are imported via roles, not here ───────────────────────
+  # See modules/roles/workstation-linux.nix for the full app set.
 }
