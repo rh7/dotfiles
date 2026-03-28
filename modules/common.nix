@@ -62,11 +62,11 @@
     ];
   };
 
-  # ── direnv (per-project env/shells) ────────────────────────────────────
-  programs.direnv = {
-    enable = true;
-    nix-direnv.enable = true;  # faster nix integration
-  };
+  # ── direnv — installed via Homebrew on macOS due to nixpkgs build bug
+  # programs.direnv = {
+  #   enable = true;
+  #   nix-direnv.enable = true;
+  # };
 
   # ── Shell — import from shell module ─────────────────────────────────────
   imports = [ ./shell/zsh.nix ];

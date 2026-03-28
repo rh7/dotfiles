@@ -13,6 +13,7 @@
   ];
 
   homebrew.brews = [
+    "direnv"     # per-project env/shells (nixpkgs build broken)
     "railway"    # Railway CLI
   ];
 }
