@@ -1,10 +1,14 @@
-# Secrets
+# Secrets (raw)
 *.pem
 *.key
 .env*
-*secret*
 *credentials*
 *.gpg
+
+# Allow sops-nix encrypted secrets and the nix module
+!secrets/
+!secrets/*.yaml
+!modules/secrets.nix
 
 # OS
 .DS_Store
