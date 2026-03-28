@@ -33,9 +33,9 @@ in {
       gb  = "git branch";
       glog = "git log --oneline --graph --decorate -20";
 
-      # Nix
+      # Nix (uses hostname to pick the right flake config)
       nrs = if isDarwin
-        then "sudo darwin-rebuild switch --flake ~/dotfiles#m5-air"
+        then "sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)"
         else "sudo nixos-rebuild switch --flake ~/dotfiles";
       nup = "nix flake update ~/dotfiles";
 
