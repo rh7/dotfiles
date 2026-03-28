@@ -13,7 +13,7 @@
 
 keys:
   # ── Admin key (your primary machine — can decrypt all secrets) ──
-  - &admin age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  - &admin age1ngfmg6aysv6t26p5a30cdj5enp7frnrya6zpgc4vfgftdah06fwqq4pqd0
 
   # ── Per-machine keys (add real public keys as you bootstrap each device) ──
   # - &m5-air age1...
