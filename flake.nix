@@ -11,9 +11,13 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, nix-darwin, home-manager, ... }:
+  outputs = { self, nixpkgs, nix-darwin, home-manager, sops-nix, ... }:
   let
     # ── Helper: full macOS system config (nix-darwin + home-manager) ─────────
     # Now accepts a `role` module and optional extra modules.
@@ -31,6 +35,8 @@
           ./modules/darwin/defaults.nix
           ./modules/darwin/homebrew.nix
           role
+          sops-nix.darwinModules.sops
+          ./modules/secrets.nix
           home-manager.darwinModules.home-manager
           {
             home-manager.useGlobalPkgs = true;
@@ -62,6 +68,8 @@
         modules = [
           ./modules/nixos/system.nix
           role
+          sops-nix.nixosModules.sops
+          ./modules/secrets.nix
           home-manager.nixosModules.home-manager
           {
             home-manager.useGlobalPkgs = true;
