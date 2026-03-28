@@ -1,0 +1,35 @@
+# sops-nix configuration
+# Each machine has its own age key. Secrets are encrypted for specific hosts.
+#
+# To add a new machine:
+#   1. Generate key on the device: age-keygen -o ~/.config/sops/age/keys.txt
+#   2. Get the public key: age-keygen -y ~/.config/sops/age/keys.txt
+#   3. Add the public key below under the machine's name
+#   4. Re-encrypt secrets: sops updatekeys secrets/secrets.yaml
+#
+# To add a secret:
+#   1. sops secrets/secrets.yaml   (opens in $EDITOR, encrypted at rest)
+#   2. Reference in Nix: sops.secrets."secret-name".owner = "rouvenheck";
+
+keys:
+  # ── Admin key (your primary machine — can decrypt all secrets) ──
+  - &admin age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+  # ── Per-machine keys (add real public keys as you bootstrap each device) ──
+  # - &m5-air age1...
+  # - &mac-mini age1...
+  # - &mac-studio age1...
+  # - &thinkpad age1...
+  # - &vps-hetzner age1...
+
+creation_rules:
+  # All secrets — encrypted for admin key (add per-machine keys as needed)
+  - path_regex: secrets/secrets\.yaml$
+    key_groups:
+      - age:
+          - *admin
+          # - *m5-air
+          # - *mac-mini
+          # - *mac-studio
+          # - *thinkpad
+          # - *vps-hetzner
