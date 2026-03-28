@@ -26,6 +26,10 @@
     nixpkgs-fmt  # Nix formatter
     nil          # Nix LSP
 
+    # Secrets
+    age          # encryption for sops-nix
+    sops         # secret management
+
     # Network
     nmap
     gh
