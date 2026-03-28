@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Device management CLI — setup, update, status, register.
+#
+# Usage:
+#   ./scripts/device setup              # first-time: rebuild + secrets + register
+#   ./scripts/device update             # pull + rebuild (daily use, replaces nrs)
+#   ./scripts/device update --full      # pull + flake update + rebuild
+#   ./scripts/device status             # show device info + config service status
+#   ./scripts/device register           # register/heartbeat with config service
+#   ./scripts/device secrets            # setup or edit secrets
+
+set -euo pipefail
+
+DOTFILES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# ── Find config service ─────────────────────────────────────────────────
+find_config_service() {
+  # Try localhost first (running on this machine)
+  if curl -sf "http://localhost:3456/api/health" --max-time 2 &>/dev/null; then
+    echo "http://localhost:3456"; return
+  fi
+  # Try Tailscale MagicDNS names
+  for host in rouvens-mac-studio mac-studio config; do
+    if curl -sf "http://${host}:3456/api/health" --max-time 3 &>/dev/null; then
+      echo "http://${host}:3456"; return
+    fi
+  done
+  echo ""
+}
+
+# ── Rebuild system ──────────────────────────────────────────────────────
+do_rebuild() {
+  info "Rebuilding for $HOSTNAME..."
+  case "$OS" in
+    Darwin)
+      sudo darwin-rebuild switch --flake "$DOTFILES_DIR#$HOSTNAME"
+      ;;
+    Linux)
+      if command -v nixos-rebuild &>/dev/null; then
+        sudo nixos-rebuild switch --flake "$DOTFILES_DIR#$HOSTNAME"
+      else
+        home-manager switch --flake "$DOTFILES_DIR#$(whoami)@$HOSTNAME"
+      fi
+      ;;
+  esac
+  ok "System rebuilt"
+}
+
+# ── Register with config service ────────────────────────────────────────
+do_register() {
+  local config_url
+  config_url=$(find_config_service)
+
+  if [[ -z "$config_url" ]]; then
+    warn "Config service not reachable"
+    return 1
+  fi
+
+  local age_pub ts_ip nix_ver
+  age_pub=$(age-keygen -y "$HOME/.config/sops/age/keys.txt" 2>/dev/null || echo "")
+  ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+  nix_ver=$(nix --version 2>/dev/null || echo "")
+
+  curl -sf -X POST "${config_url}/api/devices/register" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"hostname\": \"$HOSTNAME\",
+      \"os\": \"$OS\",
+      \"arch\": \"$ARCH\",
+      \"role\": \"workstation\",
+      \"tailscale_ip\": \"$ts_ip\",
+      \"age_public_key\": \"$age_pub\",
+      \"nix_version\": \"$nix_ver\"
+    }" --max-time 5 >/dev/null
+
+  ok "Registered $HOSTNAME with config service at $config_url"
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# Commands
+# ══════════════════════════════════════════════════════════════════════════
+
+cmd_setup() {
+  echo ""
+  echo -e "${BOLD}=== Device Setup: $HOSTNAME ($OS/$ARCH) ===${NC}"
+  echo ""
+
+  # Pull
+  info "Pulling latest dotfiles..."
+  git -C "$DOTFILES_DIR" pull --ff-only || warn "Pull failed"
+
+  # Flake update
+  info "Updating flake inputs..."
+  nix flake update "$DOTFILES_DIR"
+  ok "Flake updated"
+
+  # Rebuild
+  do_rebuild
+
+  # Secrets
+  bash "$DOTFILES_DIR/scripts/setup-secrets.sh"
+
+  # Register
+  do_register 2>/dev/null || info "Config service not available — skip registration"
+
+  echo ""
+  echo -e "${BOLD}=== $HOSTNAME setup complete ===${NC}"
+  echo ""
+  echo "  Daily update:       ./scripts/device update"
+  echo "  Edit secrets:       sops ~/dotfiles/secrets/secrets.yaml"
+  echo "  Rebuild:            nrs"
+  echo ""
+}
+
+cmd_update() {
+  local full=false
+  [[ "${1:-}" == "--full" ]] && full=true
+
+  echo ""
+  echo -e "${BOLD}=== Updating $HOSTNAME ===${NC}"
+  echo ""
+
+  # Pull
+  info "Pulling latest dotfiles..."
+  git -C "$DOTFILES_DIR" pull --ff-only || warn "Pull failed"
+
+  # Flake update (only with --full)
+  if $full; then
+    info "Updating flake inputs..."
+    nix flake update "$DOTFILES_DIR"
+    ok "Flake updated"
+  fi
+
+  # Rebuild
+  do_rebuild
+
+  # Heartbeat to config service
+  do_register 2>/dev/null || true
+
+  echo ""
+  ok "Update complete"
+}
+
+cmd_status() {
+  echo ""
+  echo -e "${BOLD}=== Device: $HOSTNAME ===${NC}"
+  echo ""
+  echo "  OS:           $OS $ARCH"
+  echo "  Hostname:     $HOSTNAME"
+  echo "  Nix:          $(nix --version 2>/dev/null || echo 'not installed')"
+  echo "  Tailscale:    $(tailscale ip -4 2>/dev/null || echo 'not connected')"
+  echo "  Age key:      $([ -f "$HOME/.config/sops/age/keys.txt" ] && echo 'present' || echo 'missing')"
+
+  if [[ -f "$HOME/.config/sops/age/keys.txt" ]]; then
+    echo "  Age pubkey:   $(age-keygen -y "$HOME/.config/sops/age/keys.txt" 2>/dev/null || echo 'error')"
+  fi
+
+  echo ""
+  echo -e "${BOLD}  Config Service${NC}"
+  local config_url
+  config_url=$(find_config_service)
+  if [[ -n "$config_url" ]]; then
+    echo "  URL:          $config_url"
+    echo "  Status:       $(curl -sf "$config_url/api/health" --max-time 3 | grep -o '"status":"[^"]*"' || echo 'error')"
+
+    # Show fleet summary
+    local overview
+    overview=$(curl -sf "$config_url/api/fleet/overview" --max-time 3 2>/dev/null)
+    if [[ -n "$overview" ]]; then
+      echo ""
+      echo -e "${BOLD}  Fleet Overview${NC}"
+      echo "$overview" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+s = d['summary']
+print(f\"  Devices:      {s['total_devices']} total ({s['online']} online, {s['stale']} stale, {s['offline']} offline)\")
+for dev in d['devices']:
+    icon = '🟢' if dev['connectivity'] == 'online' else ('🟡' if dev['connectivity'] == 'stale' else '🔴')
+    agents = f\"{dev['agents_running']}/{dev['agent_count']} agents\" if dev['agent_count'] > 0 else 'no agents'
+    print(f\"  {icon} {dev['hostname']:20s} {dev['os']:8s} {dev['role']:15s} {agents}\")
+" 2>/dev/null || echo "  (couldn't parse fleet data)"
+    fi
+  else
+    echo "  Status:       not reachable"
+  fi
+  echo ""
+}
+
+cmd_register() {
+  do_register
+}
+
+cmd_secrets() {
+  bash "$DOTFILES_DIR/scripts/setup-secrets.sh"
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# Main
+# ══════════════════════════════════════════════════════════════════════════
+
+case "${1:-help}" in
+  setup)    cmd_setup ;;
+  update)   cmd_update "${2:-}" ;;
+  status)   cmd_status ;;
+  register) cmd_register ;;
+  secrets)  cmd_secrets ;;
+  *)
+    echo ""
+    echo "Usage: device <command>"
+    echo ""
+    echo "Commands:"
+    echo "  setup              First-time setup (rebuild + secrets + register)"
+    echo "  update             Pull + rebuild (daily use)"
+    echo "  update --full      Pull + flake update + rebuild"
+    echo "  status             Show device info + fleet overview"
+    echo "  register           Register/heartbeat with config service"
+    echo "  secrets            Setup or re-run secrets configuration"
+    echo ""
+    ;;
+esac
