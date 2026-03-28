@@ -10,5 +10,6 @@
   imports = [
     ../../modules/home/profiles/development.nix
     ../../modules/home/profiles/editor.nix
+    ../../modules/home/profiles/browser.nix
   ];
 }
