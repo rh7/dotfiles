@@ -209,16 +209,42 @@ cmd_secrets() {
   bash "$DOTFILES_DIR/scripts/setup-secrets.sh"
 }
 
+cmd_heartbeat() {
+  local install=false
+  [[ "${1:-}" == "--install" ]] && install=true
+
+  if $install; then
+    local cron_line="*/5 * * * * $DOTFILES_DIR/scripts/heartbeat.sh"
+    if crontab -l 2>/dev/null | grep -qF "heartbeat.sh"; then
+      ok "Heartbeat cron already installed"
+    else
+      (crontab -l 2>/dev/null; echo "$cron_line") | crontab -
+      ok "Heartbeat cron installed (every 5 minutes)"
+    fi
+    return
+  fi
+
+  if [[ "${1:-}" == "--uninstall" ]]; then
+    crontab -l 2>/dev/null | grep -vF "heartbeat.sh" | crontab -
+    ok "Heartbeat cron removed"
+    return
+  fi
+
+  # Run once
+  bash "$DOTFILES_DIR/scripts/heartbeat.sh" && ok "Heartbeat sent" || warn "Heartbeat failed"
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════
 
 case "${1:-help}" in
-  setup)    cmd_setup ;;
-  update)   cmd_update "${2:-}" ;;
-  status)   cmd_status ;;
-  register) cmd_register ;;
-  secrets)  cmd_secrets ;;
+  setup)     cmd_setup ;;
+  update)    cmd_update "${2:-}" ;;
+  status)    cmd_status ;;
+  register)  cmd_register ;;
+  secrets)   cmd_secrets ;;
+  heartbeat) cmd_heartbeat "${2:-}" ;;
   *)
     echo ""
     echo "Usage: device <command>"
@@ -229,6 +255,9 @@ case "${1:-help}" in
     echo "  update --full      Pull + flake update + rebuild"
     echo "  status             Show device info + fleet overview"
     echo "  register           Register/heartbeat with config service"
+    echo "  heartbeat          Send one heartbeat to config service"
+    echo "  heartbeat --install   Install 5-minute cron heartbeat"
+    echo "  heartbeat --uninstall Remove cron heartbeat"
     echo "  secrets            Setup or re-run secrets configuration"
     echo ""
     ;;
