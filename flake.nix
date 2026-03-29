@@ -110,6 +110,11 @@
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
+      "rouven-air-m2" = mkMac {
+        hostname = "rouven-air-m2";
+        extraModules = [ ./configurations/macos/macbook.nix ];
+      };
+
       "rouven-air-m3" = mkMac {
         hostname = "rouven-air-m3";
         extraModules = [ ./configurations/macos/macbook.nix ];
