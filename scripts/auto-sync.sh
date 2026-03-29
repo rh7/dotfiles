@@ -6,7 +6,8 @@
 # Uninstall: ./scripts/device sync --uninstall
 # Run once:  ./scripts/device sync
 
-set -euo pipefail
+set -uo pipefail
+# Note: no -e — steps are allowed to fail individually
 
 DOTFILES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
@@ -25,11 +26,11 @@ step() {
   local name="$1"; shift
   if "$@" >/dev/null 2>&1; then
     RESULTS+=("+ $name")
-    ((ok_count++))
+    ok_count=$((ok_count + 1))
     log "$name: ok"
   else
     RESULTS+=("x $name")
-    ((fail_count++))
+    fail_count=$((fail_count + 1))
     log "$name: failed"
   fi
 }
