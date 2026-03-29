@@ -69,7 +69,7 @@ modules/
     docker.nix                         #   docker-compose (Linux only)
 
   nixos/
-    system.nix                         # NixOS system base (boot, networking, users)
+    system.nix                         # NixOS system base (boot, networking, users, cron)
     desktop.nix                        # GNOME desktop, fonts, core apps
     profiles/                          # NixOS app profiles
       communication.nix                #   telegram, slack, signal, discord, zoom
@@ -91,7 +91,7 @@ configurations/
     mac-mini-office.nix                # Mac Mini overrides
     mac-studio.nix                     # Mac Studio overrides
   nixos/
-    home.nix                           # NixOS user config (imports dev + editor + docker)
+    home.nix                           # NixOS user config (imports dev + editor + docker + Search Light)
     vm.nix                             # UTM VM hardware
     thinkpad.nix                       # ThinkPad hardware + power mgmt
   linux/
