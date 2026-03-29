@@ -226,8 +226,14 @@ cmd_heartbeat() {
     if crontab -l 2>/dev/null | grep -qF "heartbeat.sh"; then
       ok "Heartbeat cron already installed"
     else
-      (crontab -l 2>/dev/null; echo "$cron_line") | crontab -
-      ok "Heartbeat cron installed (every 5 minutes)"
+      info "This will add: $cron_line"
+      info "Sends device stats to config service every 5 min (no sudo, no changes)"
+      read -rp "  Install? [y/N] " choice
+      case "$choice" in
+        [yY]*) (crontab -l 2>/dev/null; echo "$cron_line") | crontab - && ok "Heartbeat cron installed" \
+               || err "Failed — grant Full Disk Access to your terminal app" ;;
+        *) info "Skipped" ;;
+      esac
     fi
     return
   fi
@@ -251,23 +257,62 @@ cmd_sync() {
 
   if [[ "$mode" == "--install" ]]; then
     local cron_line="*/30 * * * * $DOTFILES_DIR/scripts/auto-sync.sh"
+
     if crontab -l 2>/dev/null | grep -qF "auto-sync.sh"; then
       ok "Auto-sync cron already installed"
+      info "View with: crontab -l"
+      info "Remove with: ./scripts/device sync --uninstall"
     else
-      (crontab -l 2>/dev/null; echo "$cron_line") | crontab -
-      ok "Auto-sync cron installed (every 30 minutes)"
-      info "Pulls dotfiles, re-runs audit, sends heartbeat"
-      info "Logs at ~/.local/share/device-sync/sync.log"
+      echo ""
+      info "This will add the following cron job to your crontab:"
+      echo ""
+      echo "  $cron_line"
+      echo ""
+      info "What it does (every 30 min):"
+      echo "    1. Pull latest dotfiles (gh repo sync)"
+      echo "    2. Re-run device audit (upload to config service)"
+      echo "    3. Send heartbeat to config service"
+      echo ""
+      info "Logs go to: ~/.local/share/device-sync/sync.log"
+      info "Remove anytime with: ./scripts/device sync --uninstall"
+      echo ""
+      read -rp "  Install this cron job? [y/N] " choice
+      case "$choice" in
+        [yY]*)
+          if (crontab -l 2>/dev/null; echo "$cron_line") | crontab - 2>&1; then
+            ok "Cron installed"
+          else
+            err "Failed to install cron."
+            echo ""
+            echo "  On macOS, your terminal app needs Full Disk Access:"
+            echo "    System Settings → Privacy & Security → Full Disk Access"
+            echo "    Add your terminal app (Terminal, Ghostty, WezTerm, etc.)"
+            echo "    Restart the terminal and try again."
+            echo ""
+            echo "  Or install manually:"
+            echo "    crontab -e"
+            echo "    Add this line: $cron_line"
+            echo ""
+            return 1
+          fi
+          ;;
+        *) info "Skipped. Run './scripts/device sync' anytime to sync manually."; return ;;
+      esac
     fi
-    # Always run an immediate sync on install
+
+    # Run an immediate sync
     info "Running first sync now..."
     bash "$DOTFILES_DIR/scripts/auto-sync.sh" && ok "First sync complete" || warn "Sync had errors"
     return
   fi
 
   if [[ "$mode" == "--uninstall" ]]; then
-    crontab -l 2>/dev/null | grep -vF "auto-sync.sh" | crontab -
-    ok "Auto-sync cron removed"
+    if crontab -l 2>/dev/null | grep -qF "auto-sync.sh"; then
+      crontab -l 2>/dev/null | grep -vF "auto-sync.sh" | crontab -
+      ok "Auto-sync cron removed"
+    else
+      info "No auto-sync cron found"
+    fi
     return
   fi
 
@@ -295,6 +340,7 @@ case "${1:-help}" in
   backup)    cmd_backup "${2:-}" ;;
   audit)     bash "$DOTFILES_DIR/scripts/audit-device.sh" "${2:-}" ;;
   sync)      cmd_sync "${2:-}" ;;
+  fleet)     bash "$DOTFILES_DIR/scripts/fleet-status.sh" "${2:-}" ;;
   *)
     echo ""
     echo "Usage: device <command>"
@@ -318,6 +364,9 @@ case "${1:-help}" in
     echo "  sync --install     Install 30-minute auto-sync cron"
     echo "  sync --uninstall   Remove auto-sync cron"
     echo "  sync --logs        Show recent sync logs"
+    echo "  fleet              Fleet-wide status from config service"
+    echo "  fleet --detail     Include hardware + AI infrastructure"
+    echo "  fleet --stale      Only show devices with old audits"
     echo ""
     ;;
 esac
