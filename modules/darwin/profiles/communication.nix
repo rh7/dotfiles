@@ -13,5 +13,6 @@
     "wire"
     "canary-mail"
     "proton-mail"
+    "telegram-lite"
   ];
 }

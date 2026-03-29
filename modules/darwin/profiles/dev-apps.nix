@@ -13,6 +13,7 @@
     "termius"
     "pgadmin4"
     "commander-one"
+    "parallels"
   ];
 
   homebrew.brews = [

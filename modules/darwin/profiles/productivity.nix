@@ -12,6 +12,7 @@
     "ulysses"
     "remarkable"
     "session"
+    "grammarly-desktop"
   ];
 
   homebrew.masApps = {

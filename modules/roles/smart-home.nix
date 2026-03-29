@@ -6,5 +6,6 @@
     "sensibo"
     "sonos"
     "homey"
+    "home-assistant"
   ];
 }
