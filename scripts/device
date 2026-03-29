@@ -254,6 +254,7 @@ case "${1:-help}" in
   secrets)   cmd_secrets ;;
   heartbeat) cmd_heartbeat "${2:-}" ;;
   backup)    cmd_backup "${2:-}" ;;
+  audit)     bash "$DOTFILES_DIR/scripts/audit-device.sh" "${2:-}" ;;
   *)
     echo ""
     echo "Usage: device <command>"
@@ -270,6 +271,9 @@ case "${1:-help}" in
     echo "  secrets            Setup or re-run secrets configuration"
     echo "  backup             Backup current system state (Homebrew, defaults, apps)"
     echo "  backup /path       Backup to custom location"
+    echo "  audit              Audit device and upload inventory to config service"
+    echo "  audit --local      Audit only, print JSON (no upload)"
+    echo "  audit --save       Audit and save to ~/dotfiles-backups/audit/"
     echo ""
     ;;
 esac
