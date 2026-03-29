@@ -29,6 +29,23 @@ find_config_service() {
 # ══════════════════════════════════════════════════════════════════════════
 
 collect_system() {
+  local hw_model="" hw_chip="" hw_memory="" hw_serial=""
+  if [[ "$OS" == "Darwin" ]]; then
+    hw_model=$(sysctl -n hw.model 2>/dev/null || echo "")
+    hw_chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")
+    # Apple Silicon: get chip name from system_profiler
+    if [[ -z "$hw_chip" ]] || [[ "$hw_chip" == *"Apple"* ]]; then
+      hw_chip=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Chip:" | sed 's/.*Chip: //' || echo "$hw_chip")
+    fi
+    hw_memory=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo "")
+    hw_serial=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Serial Number" | sed 's/.*: //' || echo "")
+  elif [[ "$OS" == "Linux" ]]; then
+    hw_model=$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null || echo "")
+    hw_chip=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | sed 's/.*: //' || echo "")
+    hw_memory=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{printf "%.0f", $2/1048576}' || echo "")
+    hw_serial=$(cat /sys/devices/virtual/dmi/id/product_serial 2>/dev/null || echo "")
+  fi
+
   cat <<JSON
 {
   "hostname": "$HOSTNAME",
@@ -38,7 +55,13 @@ collect_system() {
   "kernel": "$(uname -r)",
   "uptime": "$(uptime | sed 's/.*up //' | sed 's/,.*//')",
   "shell": "$SHELL",
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "hardware": {
+    "model": "$hw_model",
+    "chip": "$hw_chip",
+    "memory_gb": $([[ -n "$hw_memory" ]] && echo "$hw_memory" || echo "0"),
+    "serial": "$hw_serial"
+  }
 }
 JSON
 }
@@ -1032,59 +1055,8 @@ print(json.dumps(sorted(fonts)))
 "
 }
 
-collect_docker() {
-  if ! command -v docker &>/dev/null; then echo '{"installed": false}'; return; fi
-  if ! docker info &>/dev/null 2>&1; then echo '{"installed": true, "running": false}'; return; fi
-
-  local containers
-  containers=$(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | python3 -c "
-import sys, json
-containers = []
-for line in sys.stdin:
-    parts = line.strip().split('\t')
-    if len(parts) >= 3:
-        containers.append({'name': parts[0], 'image': parts[1], 'status': parts[2], 'ports': parts[3] if len(parts) > 3 else ''})
-print(json.dumps(containers))
-" 2>/dev/null || echo '[]')
-
-  local images
-  images=$(docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}' 2>/dev/null | head -20 | python3 -c "
-import sys, json
-imgs = []
-for line in sys.stdin:
-    parts = line.strip().split('\t')
-    if len(parts) >= 2:
-        imgs.append({'name': parts[0], 'size': parts[1]})
-print(json.dumps(imgs))
-" 2>/dev/null || echo '[]')
-
-  echo "{\"installed\": true, \"running\": true, \"containers\": $containers, \"images\": $images}"
-}
-
-collect_orbstack() {
-  if ! command -v orb &>/dev/null; then echo '{"installed": false}'; return; fi
-
-  local vms
-  vms=$(orb list --format json 2>/dev/null || echo '[]')
-  echo "{\"installed\": true, \"vms\": $vms}"
-}
-
-collect_ollama_models() {
-  if ! command -v ollama &>/dev/null; then echo '{"installed": false}'; return; fi
-
-  local models
-  models=$(ollama list 2>/dev/null | tail -n +2 | python3 -c "
-import sys, json
-models = []
-for line in sys.stdin:
-    parts = line.strip().split()
-    if len(parts) >= 3:
-        models.append({'name': parts[0], 'id': parts[1], 'size': parts[2]})
-print(json.dumps(models))
-" 2>/dev/null || echo '[]')
-
-  echo "{\"installed\": true, \"models\": $models}"
-}
+# Note: collect_docker, collect_orbstack, collect_ollama are defined above
+# (comprehensive versions in the main collector section)
 
 # ══════════════════════════════════════════════════════════════════════════
 # Assemble full audit
@@ -1141,8 +1113,6 @@ $(collect_fonts)
 $(collect_docker)
 ---SECTION: orbstack
 $(collect_orbstack)
----SECTION: ollama
-$(collect_ollama_models)
 ---SECTION: nix
 $(collect_nix_state)
 ---SECTION: ai_infrastructure

@@ -246,6 +246,42 @@ cmd_heartbeat() {
 # Main
 # ══════════════════════════════════════════════════════════════════════════
 
+cmd_sync() {
+  local mode="${1:-}"
+
+  if [[ "$mode" == "--install" ]]; then
+    local cron_line="*/30 * * * * $DOTFILES_DIR/scripts/auto-sync.sh"
+    if crontab -l 2>/dev/null | grep -qF "auto-sync.sh"; then
+      ok "Auto-sync cron already installed"
+    else
+      (crontab -l 2>/dev/null; echo "$cron_line") | crontab -
+      ok "Auto-sync cron installed (every 30 minutes)"
+      info "Pulls dotfiles, re-runs audit, sends heartbeat"
+      info "Logs at ~/.local/share/device-sync/sync.log"
+    fi
+    return
+  fi
+
+  if [[ "$mode" == "--uninstall" ]]; then
+    crontab -l 2>/dev/null | grep -vF "auto-sync.sh" | crontab -
+    ok "Auto-sync cron removed"
+    return
+  fi
+
+  if [[ "$mode" == "--logs" ]]; then
+    local logfile="$HOME/.local/share/device-sync/sync.log"
+    if [[ -f "$logfile" ]]; then
+      tail -30 "$logfile"
+    else
+      info "No sync logs yet"
+    fi
+    return
+  fi
+
+  # Run once
+  bash "$DOTFILES_DIR/scripts/auto-sync.sh" && ok "Sync complete" || warn "Sync had errors"
+}
+
 case "${1:-help}" in
   setup)     cmd_setup ;;
   update)    cmd_update "${2:-}" ;;
@@ -255,6 +291,7 @@ case "${1:-help}" in
   heartbeat) cmd_heartbeat "${2:-}" ;;
   backup)    cmd_backup "${2:-}" ;;
   audit)     bash "$DOTFILES_DIR/scripts/audit-device.sh" "${2:-}" ;;
+  sync)      cmd_sync "${2:-}" ;;
   *)
     echo ""
     echo "Usage: device <command>"
@@ -274,6 +311,10 @@ case "${1:-help}" in
     echo "  audit              Audit device and upload inventory to config service"
     echo "  audit --local      Audit only, print JSON (no upload)"
     echo "  audit --save       Audit and save to ~/dotfiles-backups/audit/"
+    echo "  sync               Pull dotfiles + audit + heartbeat (one-shot)"
+    echo "  sync --install     Install 30-minute auto-sync cron"
+    echo "  sync --uninstall   Remove auto-sync cron"
+    echo "  sync --logs        Show recent sync logs"
     echo ""
     ;;
 esac
