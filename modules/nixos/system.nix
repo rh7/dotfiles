@@ -9,7 +9,7 @@
   networking.networkmanager.enable = true;
 
   # ── Locale ──────────────────────────────────────────────────────────────
-  time.timeZone = lib.mkDefault "Europe/Berlin";
+  time.timeZone = lib.mkDefault "America/Puerto_Rico";
   i18n.defaultLocale = "en_US.UTF-8";
 
   # ── User ────────────────────────────────────────────────────────────────
