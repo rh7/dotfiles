@@ -13,8 +13,19 @@
     ../../modules/home/profiles/browser.nix
   ];
 
+  # ── GNOME Search Light (Spotlight-style launcher) ────────────────────────
+  dconf.settings = {
+    "org/gnome/shell" = {
+      enabled-extensions = [ "search-light@icedman.github.com" ];
+    };
+    "org/gnome/shell/extensions/search-light" = {
+      shortcut-search = [ "<Super>space" ];
+    };
+  };
+
   # ── NixOS-specific tools ─────────────────────────────────────────────────
   home.packages = with pkgs; [
     claude-code
+    gnomeExtensions.search-light
   ];
 }
