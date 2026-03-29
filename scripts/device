@@ -95,10 +95,18 @@ do_register() {
 # Commands
 # ══════════════════════════════════════════════════════════════════════════
 
+cmd_backup() {
+  bash "$DOTFILES_DIR/scripts/backup-system.sh" "${1:-}"
+}
+
 cmd_setup() {
   echo ""
   echo -e "${BOLD}=== Device Setup: $HOSTNAME ($OS/$ARCH) ===${NC}"
   echo ""
+
+  # Backup current state before any changes
+  info "Backing up current system state..."
+  bash "$DOTFILES_DIR/scripts/backup-system.sh"
 
   # Pull
   info "Pulling latest dotfiles..."
@@ -245,12 +253,13 @@ case "${1:-help}" in
   register)  cmd_register ;;
   secrets)   cmd_secrets ;;
   heartbeat) cmd_heartbeat "${2:-}" ;;
+  backup)    cmd_backup "${2:-}" ;;
   *)
     echo ""
     echo "Usage: device <command>"
     echo ""
     echo "Commands:"
-    echo "  setup              First-time setup (rebuild + secrets + register)"
+    echo "  setup              First-time setup (backup + rebuild + secrets + register)"
     echo "  update             Pull + rebuild (daily use)"
     echo "  update --full      Pull + flake update + rebuild"
     echo "  status             Show device info + fleet overview"
@@ -259,6 +268,8 @@ case "${1:-help}" in
     echo "  heartbeat --install   Install 5-minute cron heartbeat"
     echo "  heartbeat --uninstall Remove cron heartbeat"
     echo "  secrets            Setup or re-run secrets configuration"
+    echo "  backup             Backup current system state (Homebrew, defaults, apps)"
+    echo "  backup /path       Backup to custom location"
     echo ""
     ;;
 esac
