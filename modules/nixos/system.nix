@@ -36,6 +36,9 @@
     nativeMessagingHosts.packages = [ pkgs.firefoxpwa ];
   };
 
+  # ── Cron ───────────────────────────────────────────────────────────────
+  services.cron.enable = true;
+
   # ── Nix settings ────────────────────────────────────────────────────────
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nixpkgs.config.allowUnfree = true;
