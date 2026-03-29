@@ -113,6 +113,24 @@ mackup/
 | New role bundle | Create `modules/roles/your-role.nix`, import profiles |
 | New machine | Add entry in `flake.nix` with hostname, role, and extras |
 
+## Device Management
+
+See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, including:
+- Setting up a **brand new** device (one command)
+- Onboarding an **existing** device (audit first, then deploy)
+- Comparing devices and finding gaps
+- Config service API reference
+
+### Quick Reference
+
+```bash
+./scripts/device setup             # new device: backup → rebuild → secrets → register
+./scripts/device audit             # existing device: collect inventory first
+./scripts/device update            # daily: pull → rebuild
+./scripts/device status            # fleet overview
+./scripts/device heartbeat --install  # install 5-min monitoring cron
+```
+
 ## Settings Sync
 
 **mackup** syncs app preferences via iCloud.
@@ -126,3 +144,4 @@ mackup restore   # on new machine
 
 - [`rh7/rh-device-management`](https://github.com/rh7/rh-device-management) — Private config service, agent registry, fleet orchestration
 - [`rhclaw/catalog-agent`](https://github.com/rhclaw/catalog-agent) — Lightweight service discovery agent
+- [Device Management Guide](docs/device-guide.md) — Full onboarding and audit workflow
