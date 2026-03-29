@@ -1032,6 +1032,60 @@ print(json.dumps(sorted(fonts)))
 "
 }
 
+collect_docker() {
+  if ! command -v docker &>/dev/null; then echo '{"installed": false}'; return; fi
+  if ! docker info &>/dev/null 2>&1; then echo '{"installed": true, "running": false}'; return; fi
+
+  local containers
+  containers=$(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | python3 -c "
+import sys, json
+containers = []
+for line in sys.stdin:
+    parts = line.strip().split('\t')
+    if len(parts) >= 3:
+        containers.append({'name': parts[0], 'image': parts[1], 'status': parts[2], 'ports': parts[3] if len(parts) > 3 else ''})
+print(json.dumps(containers))
+" 2>/dev/null || echo '[]')
+
+  local images
+  images=$(docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}' 2>/dev/null | head -20 | python3 -c "
+import sys, json
+imgs = []
+for line in sys.stdin:
+    parts = line.strip().split('\t')
+    if len(parts) >= 2:
+        imgs.append({'name': parts[0], 'size': parts[1]})
+print(json.dumps(imgs))
+" 2>/dev/null || echo '[]')
+
+  echo "{\"installed\": true, \"running\": true, \"containers\": $containers, \"images\": $images}"
+}
+
+collect_orbstack() {
+  if ! command -v orb &>/dev/null; then echo '{"installed": false}'; return; fi
+
+  local vms
+  vms=$(orb list --format json 2>/dev/null || echo '[]')
+  echo "{\"installed\": true, \"vms\": $vms}"
+}
+
+collect_ollama_models() {
+  if ! command -v ollama &>/dev/null; then echo '{"installed": false}'; return; fi
+
+  local models
+  models=$(ollama list 2>/dev/null | tail -n +2 | python3 -c "
+import sys, json
+models = []
+for line in sys.stdin:
+    parts = line.strip().split()
+    if len(parts) >= 3:
+        models.append({'name': parts[0], 'id': parts[1], 'size': parts[2]})
+print(json.dumps(models))
+" 2>/dev/null || echo '[]')
+
+  echo "{\"installed\": true, \"models\": $models}"
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # Assemble full audit
 # ══════════════════════════════════════════════════════════════════════════
@@ -1085,6 +1139,10 @@ $(collect_ssh_keys)
 $(collect_fonts)
 ---SECTION: docker
 $(collect_docker)
+---SECTION: orbstack
+$(collect_orbstack)
+---SECTION: ollama
+$(collect_ollama_models)
 ---SECTION: nix
 $(collect_nix_state)
 ---SECTION: ai_infrastructure
@@ -1105,8 +1163,6 @@ $(collect_editor_extensions)
 $(collect_toolchains)
 ---SECTION: certificates
 $(collect_certificates)
----SECTION: orbstack
-$(collect_orbstack)
 AUDIT_DATA
 )
 
