@@ -259,6 +259,9 @@ cmd_sync() {
       info "Pulls dotfiles, re-runs audit, sends heartbeat"
       info "Logs at ~/.local/share/device-sync/sync.log"
     fi
+    # Always run an immediate sync on install
+    info "Running first sync now..."
+    bash "$DOTFILES_DIR/scripts/auto-sync.sh" && ok "First sync complete" || warn "Sync had errors"
     return
   fi
 
