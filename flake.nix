@@ -15,9 +15,10 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-flatpak.url = "github:gmodena/nix-flatpak";
   };
 
-  outputs = { self, nixpkgs, nix-darwin, home-manager, sops-nix, ... }:
+  outputs = { self, nixpkgs, nix-darwin, home-manager, sops-nix, nix-flatpak, ... }:
   let
     # ── Helper: full macOS system config (nix-darwin + home-manager) ─────────
     # Now accepts a `role` module and optional extra modules.
@@ -68,6 +69,7 @@
         modules = [
           ./modules/nixos/system.nix
           role
+          nix-flatpak.nixosModules.nix-flatpak
           sops-nix.nixosModules.sops
           ./modules/secrets.nix
           home-manager.nixosModules.home-manager
