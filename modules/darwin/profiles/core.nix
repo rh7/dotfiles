@@ -6,10 +6,13 @@
     "1password"
     "google-chrome"
     "arc"
+    "firefox"
+    "dia"
     "raycast"
     "dropbox"
     "obsidian"
     "tailscale-app"
+    "speedtest"
   ];
 
   homebrew.brews = [

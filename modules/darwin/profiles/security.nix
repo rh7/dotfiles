@@ -5,6 +5,10 @@
   homebrew.casks = [
     "expressvpn"
     "private-internet-access"
+    "protonvpn"
+    "tunnelblick"
+    "wireguard-tools"
+    "cryptomator"
     "tripmode"
   ];
 

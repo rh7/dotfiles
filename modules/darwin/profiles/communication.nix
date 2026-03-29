@@ -7,9 +7,11 @@
     "franz"
     "slack"
     "signal"
-    "beeper"
     "discord"
     "element"
     "zoom"
+    "wire"
+    "canary-mail"
+    "proton-mail"
   ];
 }

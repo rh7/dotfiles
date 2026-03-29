@@ -6,10 +6,13 @@
     "cursor"
     "ghostty"
     "zed"
+    "visual-studio-code"
     "orbstack"
     "utm"
     "wezterm"
     "termius"
+    "pgadmin4"
+    "commander-one"
   ];
 
   homebrew.brews = [
