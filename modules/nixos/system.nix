@@ -27,7 +27,14 @@
     curl
     wget
     vim
+    firefoxpwa
   ];
+
+  # ── Firefox PWA support ────────────────────────────────────────────────
+  programs.firefox = {
+    enable = true;
+    nativeMessagingHosts.packages = [ pkgs.firefoxpwa ];
+  };
 
   # ── Nix settings ────────────────────────────────────────────────────────
   nix.settings.experimental-features = [ "nix-command" "flakes" ];

@@ -6,8 +6,16 @@ in {
   # ── Firefox (declarative config via Home Manager) ────────────────────────
   programs.firefox = {
     enable = !isDarwin;  # On macOS, Firefox is installed via Homebrew
+    nativeMessagingHosts = [
+      pkgs.firefoxpwa
+    ] ++ lib.optionals (!isDarwin) [
+      pkgs._1password-gui
+    ];
     profiles.default = {
       isDefault = true;
+
+      # Let Firefox keep user-installed extensions (don't wipe on rebuild)
+      settings.extensions.autoDisableScopes = 0;
 
       # ── Privacy & UX settings ──────────────────────────────────────────
       settings = {
