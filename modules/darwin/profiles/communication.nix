@@ -9,6 +9,7 @@
     "signal"
     "discord"
     "element"
+    "element-x"
     "zoom"
     "wire"
     "canary-mail"

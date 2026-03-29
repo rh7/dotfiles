@@ -55,4 +55,12 @@
   #   "hp"               # printer driver
   #   "audkit-spotify-music-converter"
   #   "comet"            # AI tool
+  #
+  # Hypervisors (keeping Parallels + UTM in dev-apps):
+  #   "vmware-fusion"    # switched to Parallels/UTM
+  #   "virtualbox"       # switched to Parallels/UTM
+  #
+  # Dev tools:
+  #   "mongodb-compass"  # barely used
+  #   "langgraph-studio" # in ai-lab.nix if needed
 }

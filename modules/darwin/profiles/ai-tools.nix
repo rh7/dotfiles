@@ -1,23 +1,16 @@
 { ... }:
 
 {
-  # ── AI apps — day-to-day ──────────────────────────────────────────────
+  # ── AI apps — day-to-day only ─────────────────────────────────────────
+  # For experimental/lab AI tools, see ai-lab.nix
   homebrew.casks = [
     "claude"
     "chatgpt"
     "claude-code"
     "superwhisper"
-
-    # AI lab / experimental
-    "anythingllm"
-    "enchanted"
-    "gpt4all"
-    "mindmac"
   ];
 
   homebrew.brews = [
     "ollama"     # LLM CLI / inference
   ];
-
-  # Note: Goose, MORagents, OpenCode, Hyprnote — not in Homebrew, manual install
 }
