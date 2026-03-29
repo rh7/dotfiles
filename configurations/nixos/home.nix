@@ -13,13 +13,10 @@
     ../../modules/home/profiles/browser.nix
   ];
 
-  # ── GNOME Search Light (Spotlight-style launcher) ────────────────────────
+  # ── GNOME Search Light (Spotlight-style launcher: Ctrl+Super+Space) ─────
   dconf.settings = {
     "org/gnome/shell" = {
       enabled-extensions = [ "search-light@icedman.github.com" ];
-    };
-    "org/gnome/shell/extensions/search-light" = {
-      shortcut-search = [ "<Super>space" ];
     };
   };
 
