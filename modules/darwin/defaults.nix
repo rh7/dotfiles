@@ -55,7 +55,7 @@
   system.defaults.trackpad = {
     Clicking = false;  # no tap to click
     TrackpadRightClick = true;
-    TrackpadThreeFingerDrag = false;
+    TrackpadThreeFingerDrag = true;
   };
 
   # ── Screenshots ──────────────────────────────────────────────────────────
