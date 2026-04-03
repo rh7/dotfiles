@@ -326,10 +326,10 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
       if nix build ".#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
         info "Running darwin-rebuild switch..."
         if command -v darwin-rebuild &>/dev/null; then
-          darwin-rebuild switch --flake ".#${HOSTNAME}"
+          sudo darwin-rebuild switch --flake ".#${HOSTNAME}"
         else
           nix build ".#darwinConfigurations.${HOSTNAME}.system"
-          ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}"
+          sudo ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}"
         fi
         NIX_BUILD_OK=true
         ok "Configuration applied — all apps installed"
