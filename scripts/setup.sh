@@ -153,7 +153,7 @@ elif $INTERACTIVE; then
   echo "    ${BOLD}k)${NC} Keep current: $CURRENT_HOSTNAME"
   echo ""
   prompt "  Select [1-${#KNOWN_PROFILES[@]}/n/k]:"
-  read -r choice
+  read -r choice < /dev/tty
 
   case "$choice" in
     [1-9])
@@ -166,7 +166,7 @@ elif $INTERACTIVE; then
       fi
       ;;
     k|K) HOSTNAME="$CURRENT_HOSTNAME" ;;
-    n|N) prompt "  Enter hostname:"; read -r HOSTNAME ;;
+    n|N) prompt "  Enter hostname:"; read -r HOSTNAME < /dev/tty ;;
     *)   HOSTNAME="$choice" ;;
   esac
 else
@@ -204,7 +204,7 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
     echo ""
     if $INTERACTIVE; then
       prompt "  Continue anyway? [y/n]:"
-      read -r cont
+      read -r cont < /dev/tty
       [[ "$cont" != "y" && "$cont" != "Y" ]] && { info "Re-run after fixing username."; exit 0; }
     fi
   fi
@@ -221,7 +221,7 @@ if [[ -z "$ROLE_ARG" ]]; then
       printf "    ${BOLD}%d)${NC} %s\n" "$((i+1))" "${ROLES[$i]}"
     done
     prompt "  Select role [1-${#ROLES[@]}]:"
-    read -r rc
+    read -r rc < /dev/tty
     idx=$((rc - 1))
     ROLE_ARG="${ROLES[$idx]:-workstation}"
   else
@@ -360,7 +360,7 @@ if [[ -d "/Applications/1Password.app" ]] || [[ -d "$HOME/Applications/1Password
     echo "  You'll need GitHub credentials for the next step."
     echo ""
     prompt "  Press Enter when 1Password is ready..."
-    read -r
+    read -r < /dev/tty
   fi
 else
   warn "1Password not installed. Install it manually or check flake.nix."
@@ -427,7 +427,7 @@ else
     echo "  This joins the device to your private network."
     echo ""
     prompt "  Press Enter when Tailscale is connected..."
-    read -r
+    read -r < /dev/tty
   fi
 
   if [[ -n "$TS_AUTH_KEY" ]]; then
