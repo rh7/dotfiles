@@ -43,9 +43,9 @@
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
             home-manager.backupFileExtension = "hm-backup";
-            home-manager.users.${username} = { pkgs, ... }: {
-              home.username = username;
-              home.homeDirectory = "/Users/${username}";
+            home-manager.users.${username} = { pkgs, lib, ... }: {
+              home.username = lib.mkForce username;
+              home.homeDirectory = lib.mkForce "/Users/${username}";
               imports = [
                 ./configurations/macos/home.nix  # user config (imports profiles)
                 ./modules/common.nix             # CLI tools + git + shell
