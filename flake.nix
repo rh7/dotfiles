@@ -112,6 +112,12 @@
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
+      "rouven-m5-pro" = mkMac {
+        hostname = "rouven-m5-pro";
+        username = "rouven";
+        extraModules = [ ./configurations/macos/macbook.nix ];
+      };
+
       "rouven-air-m2" = mkMac {
         hostname = "rouven-air-m2";
         extraModules = [ ./configurations/macos/macbook.nix ];
@@ -148,15 +154,13 @@
         ];
       };
 
-      # ── Wife's MacBook (personal role — lighter setup) ──
-      # Uncomment when ready:
-      # "wife-macbook" = mkMac {
-      #   hostname = "wife-macbook";
-      #   username = "wife";  # adjust to actual username
+      # ── Kassie's MacBook Air (personal role — lighter setup) ──
+      # Uncomment when ready (adjust username to her macOS username):
+      # "Kassie-M5-Air13" = mkMac {
+      #   hostname = "Kassie-M5-Air13";
+      #   username = "kassie";
       #   role = ./modules/roles/personal-mac.nix;
-      #   extraHomeModules = [
-      #     # Override home.nix with personal-specific config
-      #   ];
+      #   extraModules = [ ./configurations/macos/macbook.nix ];
       # };
     };
 
