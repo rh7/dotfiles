@@ -136,7 +136,7 @@ if [[ -n "$HOSTNAME_ARG" ]]; then
   HOSTNAME="$HOSTNAME_ARG"
   info "Using hostname: $HOSTNAME"
 elif $INTERACTIVE; then
-  echo "  Current hostname: ${BOLD}$CURRENT_HOSTNAME${NC}"
+  echo -e "  Current hostname: ${BOLD}$CURRENT_HOSTNAME${NC}"
   echo ""
   echo "  Known profiles (from flake.nix):"
   echo ""
@@ -146,11 +146,11 @@ elif $INTERACTIVE; then
     if [[ -n "$expected_user" && "$expected_user" != "$USERNAME" ]]; then
       user_hint=" ${YELLOW}(user: $expected_user)${NC}"
     fi
-    printf "    ${BOLD}%d)${NC} %-25s ${CYAN}%-15s${NC} %s${user_hint}\n" "$((i+1))" "$name" "[$role]" "$desc"
+    printf "    ${BOLD}%d)${NC} %-25s ${CYAN}%-15s${NC} %s%b\n" "$((i+1))" "$name" "[$role]" "$desc" "$user_hint"
   done
   echo ""
-  echo "    ${BOLD}n)${NC} New hostname (enter manually)"
-  echo "    ${BOLD}k)${NC} Keep current: $CURRENT_HOSTNAME"
+  echo -e "    ${BOLD}n)${NC} New hostname (enter manually)"
+  echo -e "    ${BOLD}k)${NC} Keep current: $CURRENT_HOSTNAME"
   echo ""
   prompt "  Select [1-${#KNOWN_PROFILES[@]}/n/k]:"
   read -r choice < /dev/tty
@@ -261,9 +261,9 @@ else
   case "$OS" in
     Darwin)
       info "Installing Nix via Determinate macOS package..."
-      curl -fsSL https://dtr.mn/determinate-nix -o /tmp/determinate-nix.pkg
-      sudo installer -pkg /tmp/determinate-nix.pkg -target /
-      rm -f /tmp/determinate-nix.pkg
+      curl -fsSL https://install.determinate.systems/determinate-pkg/stable/Universal -o /tmp/Determinate.pkg
+      sudo installer -pkg /tmp/Determinate.pkg -target /
+      rm -f /tmp/Determinate.pkg
       ;;
     *)
       info "Installing Nix (Determinate Systems installer)..."
