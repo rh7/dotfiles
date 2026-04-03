@@ -22,7 +22,6 @@
 
     # Dev
     gnupg
-    mkcert
     nixpkgs-fmt  # Nix formatter
     nil          # Nix LSP
 
@@ -31,11 +30,11 @@
     sops         # secret management
 
     # Network
-    nmap
     gh
 
-    # Infra
-    terraform
+    # ── Parked — uncomment when needed ──
+    # mkcert       # local HTTPS dev certs
+    # nmap         # network scanning
   ];
 
   # ── Git ──────────────────────────────────────────────────────────────────
