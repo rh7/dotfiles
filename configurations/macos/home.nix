@@ -1,8 +1,8 @@
 { lib, ... }:
 
 {
-  home.username      = "rouvenheck";
-  home.homeDirectory = lib.mkForce "/Users/rouvenheck";
+  home.username      = lib.mkDefault "rouvenheck";
+  home.homeDirectory = lib.mkDefault "/Users/rouvenheck";
   home.stateVersion  = "24.11";
   programs.home-manager.enable = true;
 
