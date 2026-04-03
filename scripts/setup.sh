@@ -314,6 +314,7 @@ fi
 AGE_PUB=$(age-keygen -y "$AGE_KEY_FILE" 2>/dev/null || echo "unknown")
 
 # Build and apply Nix configuration
+NIX_BUILD_OK=false
 if [[ -n "$MATCHED_PROFILE" ]]; then
   cd "$DOTFILES_DIR"
 
@@ -330,6 +331,7 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
           nix build ".#darwinConfigurations.${HOSTNAME}.system"
           ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}"
         fi
+        NIX_BUILD_OK=true
         ok "Configuration applied — all apps installed"
       else
         warn "Build failed. Check flake.nix or run manually later:"
@@ -339,6 +341,7 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
     Linux)
       if nix build ".#nixosConfigurations.${HOSTNAME}.config.system.build.toplevel" --no-link 2>/dev/null; then
         sudo nixos-rebuild switch --flake ".#${HOSTNAME}"
+        NIX_BUILD_OK=true
         ok "Configuration applied"
       else
         warn "No config found for '$HOSTNAME'"
@@ -356,6 +359,13 @@ else
   echo "    };"
   echo ""
   echo "  Then: darwin-rebuild switch --flake ~/dotfiles#${HOSTNAME}"
+fi
+
+if ! $NIX_BUILD_OK; then
+  echo ""
+  warn "Nix build did not complete — skipping 1Password, GitHub, and Tailscale setup."
+  warn "Fix the build issue, then re-run this script."
+  exit 1
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -393,7 +403,7 @@ else
   echo "  Authenticate with GitHub (credentials from 1Password)."
   echo ""
   if $INTERACTIVE; then
-    gh auth login
+    gh auth login < /dev/tty
   else
     warn "Not authenticated. Run 'gh auth login' manually."
   fi
