@@ -291,7 +291,9 @@ echo ""
 # Clone dotfiles (public repo — no auth needed)
 if [[ -d "$DOTFILES_DIR" ]]; then
   info "Dotfiles exist. Pulling latest..."
+  git -C "$DOTFILES_DIR" stash --include-untracked -q 2>/dev/null || true
   git -C "$DOTFILES_DIR" pull --ff-only || warn "Pull failed, using existing"
+  git -C "$DOTFILES_DIR" stash pop -q 2>/dev/null || true
 else
   info "Cloning dotfiles (public repo, no auth needed)..."
   git clone "$DOTFILES_REPO" "$DOTFILES_DIR"
