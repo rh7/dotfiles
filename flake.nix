@@ -50,6 +50,8 @@
               ] ++ extraHomeModules;
             };
             networking.hostName = hostname;
+            system.primaryUser = username;
+            time.timeZone = "America/Puerto_Rico";
           }
         ] ++ extraModules;
       };

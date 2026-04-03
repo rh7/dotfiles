@@ -79,8 +79,7 @@
   # Determinate Nix manages its own daemon — don't let nix-darwin conflict
   nix.enable = false;
 
-  # Required for nix-darwin
+  # Required for nix-darwin (primaryUser is set per-host in mkMac)
   system.stateVersion = 6;
-  system.primaryUser = "rouvenheck";
   nixpkgs.hostPlatform = "aarch64-darwin";
 }
