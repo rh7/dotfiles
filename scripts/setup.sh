@@ -258,9 +258,20 @@ header "Step 3/8: Nix Package Manager"
 if command -v nix &>/dev/null; then
   ok "Nix installed ($(nix --version 2>/dev/null || echo 'unknown'))"
 else
-  info "Installing Nix (Determinate Systems installer)..."
-  curl --proto '=https' --tlsv1.2 -sSf -L \
-    https://install.determinate.systems/nix | sh -s -- install --no-confirm
+  case "$OS" in
+    Darwin)
+      info "Installing Nix via Determinate macOS package..."
+      curl -fsSL https://dtr.mn/determinate-nix -o /tmp/determinate-nix.pkg
+      sudo installer -pkg /tmp/determinate-nix.pkg -target /
+      rm -f /tmp/determinate-nix.pkg
+      ;;
+    *)
+      info "Installing Nix (Determinate Systems installer)..."
+      curl --proto '=https' --tlsv1.2 -sSf -L \
+        https://install.determinate.systems/nix | sh -s -- install --no-confirm
+      ;;
+  esac
+  # Source nix into current shell
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
