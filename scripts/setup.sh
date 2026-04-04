@@ -325,6 +325,14 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
 
   case "$OS" in
     Darwin)
+      # Homebrew is required by nix-darwin's homebrew module
+      if ! command -v brew &>/dev/null; then
+        info "Installing Homebrew (required by nix-darwin)..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/tty
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        ok "Homebrew installed"
+      fi
+
       if nix build ".#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
         info "Running darwin-rebuild switch..."
         if command -v darwin-rebuild &>/dev/null; then
