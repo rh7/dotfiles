@@ -11,7 +11,7 @@
 #   ./scripts/audit-device.sh --uninstall  # remove daily cron
 #
 # On machines without the dotfiles repo (e.g. fresh Mac):
-#   curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/audit-device.sh | bash
+#   curl -fsSL config.rh7labs.com/audit | bash
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 MODE="${1:-interactive}"
-SCRIPT_URL="https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/audit-device.sh"
+SCRIPT_URL="https://config.rh7labs.com/audit"
 CRON_TAG="# fleet-audit"
 OLD_CRON_TAG="# fleet-heartbeat"
 
