@@ -11,9 +11,9 @@
     "utm"
     "wezterm"
     "termius"
-    "pgadmin4"
+    # "pgadmin4"  # run in Docker if needed: dpage/pgadmin4
     "commander-one"
-    # parallels — needs Full Disk Access, install manually
+    "parallels"  # grant Full Disk Access manually after install
   ];
 
   homebrew.brews = [

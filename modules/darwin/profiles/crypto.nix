@@ -5,7 +5,7 @@
   homebrew.casks = [
     "electrum"
     "ledger-live"
-    "mycrypto"
+    # "mycrypto"  # rarely used
     # exodus, keepkey — not in Homebrew
   ];
 
