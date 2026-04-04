@@ -53,6 +53,21 @@ else
   NIX_GEN=$(nixos-rebuild list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
 fi
 
+# ── Keys ───────────────────────────────────────────────────────────────
+SSH_PUB=""
+for keyfile in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+  if [[ -f "$keyfile" ]]; then
+    SSH_PUB=$(cat "$keyfile")
+    break
+  fi
+done
+
+AGE_PUB=""
+AGE_KEY="$HOME/.config/sops/age/keys.txt"
+if [[ -f "$AGE_KEY" ]]; then
+  AGE_PUB=$(age-keygen -y "$AGE_KEY" 2>/dev/null || echo "")
+fi
+
 # ── Send heartbeat ──────────────────────────────────────────────────────
 curl -sf -X POST "${CONFIG_URL}/api/devices/register" \
   -H "Content-Type: application/json" \
@@ -63,5 +78,7 @@ curl -sf -X POST "${CONFIG_URL}/api/devices/register" \
     \"role\": \"workstation\",
     \"tailscale_ip\": \"$TS_IP\",
     \"nix_version\": \"$NIX_VER\",
-    \"nix_generation\": \"$NIX_GEN\"
+    \"nix_generation\": \"$NIX_GEN\",
+    \"ssh_public_key\": \"$SSH_PUB\",
+    \"age_public_key\": \"$AGE_PUB\"
   }" --max-time 5 >/dev/null 2>&1
