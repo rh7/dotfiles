@@ -6,7 +6,7 @@
     "spotify"
     "pocket-casts"
     "vlc"
-    "amazon-kindle"
+    # amazon-kindle removed from Homebrew — install via App Store
     "audible"
   ];
 
