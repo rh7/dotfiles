@@ -3,16 +3,12 @@
 {
   # ── VPN and security apps ────────────────────────────────────────────────
   homebrew.casks = [
-    "expressvpn"
+    # expressvpn, tripmode — moved to core profile
     "private-internet-access"
     "protonvpn"
     "tunnelblick"
-    "wireguard-tools"
+    # wireguard-tools — moved to hacker.nix as a brew formula
     "cryptomator"
-    "tripmode"
   ];
-
-  homebrew.masApps = {
-    "Crypto Pro" = 980888073;
-  };
+  # Crypto Pro — moved to finance profile
 }

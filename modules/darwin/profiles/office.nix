@@ -6,7 +6,7 @@
     "microsoft-excel"
     "microsoft-word"
     "microsoft-powerpoint"
-    "microsoft-onenote"
+    # "microsoft-onenote"  # not needed
     "microsoft-teams"
   ];
 }

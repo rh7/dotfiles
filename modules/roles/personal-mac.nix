@@ -5,14 +5,8 @@
   # For family members who don't need dev tools.
   imports = [
     ../darwin/profiles/core.nix
-    ../darwin/profiles/communication.nix
+    ../darwin/profiles/productivity.nix
+    ../darwin/profiles/ai-tools.nix
     ../darwin/profiles/media.nix
-    ../darwin/profiles/security.nix
-  ];
-
-  # Personal-specific apps
-  homebrew.casks = [
-    "notion"
-    "superhuman"
   ];
 }

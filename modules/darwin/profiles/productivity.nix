@@ -3,11 +3,13 @@
 {
   # ── Productivity apps ────────────────────────────────────────────────────
   homebrew.casks = [
+    "slack"
+    "zoom"
     "superhuman"
     "granola"
     "clockify"
     "notion"
-    "linear-linear"
+    # "linear-linear"  # not in use
     "reader"  # Readwise Reader
     "session"
     # ulysses, remarkable — Mac App Store only

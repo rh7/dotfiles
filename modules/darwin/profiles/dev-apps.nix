@@ -3,17 +3,21 @@
 {
   # ── Developer GUI apps ───────────────────────────────────────────────────
   homebrew.casks = [
+    "obsidian"
+    # "raycast"  # optional, evaluate later
+    "claude-code"
     "cursor"
     "ghostty"
     "zed"
     "visual-studio-code"
     "orbstack"
     "utm"
-    "wezterm"
+    "cmux"
     "termius"
     # "pgadmin4"  # run in Docker if needed: dpage/pgadmin4
     "commander-one"
-    "parallels"  # grant Full Disk Access manually after install
+    # "wezterm"  # replaced by ghostty
+    # "parallels"  # needs FDA, install manually if needed
   ];
 
   homebrew.brews = [

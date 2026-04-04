@@ -32,9 +32,7 @@
     # Network
     gh
 
-    # ── Parked — uncomment when needed ──
-    # mkcert       # local HTTPS dev certs
-    # nmap         # network scanning
+    # nmap, mkcert — moved to hacker.nix profile
   ];
 
   # ── Git ──────────────────────────────────────────────────────────────────

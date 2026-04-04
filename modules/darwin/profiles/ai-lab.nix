@@ -5,8 +5,9 @@
   homebrew.casks = [
     # "anythingllm"  # run in Docker on lab, connect to Mac Studio LLMs
     # "gpt4all"  # run in Docker on lab, connect to Mac Studio LLMs
+    "lm-studio"
     "mindmac"
-    "langgraph-studio"
+    # "langgraph-studio"  # deprecated, disabled 2026-08-30
     # enchanted — Mac App Store only
   ];
 

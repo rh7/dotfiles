@@ -6,7 +6,7 @@
   homebrew.casks = [
     "claude"
     "chatgpt"
-    "claude-code"
+    # "claude-code"  # moved to dev-apps profile
     "superwhisper"
   ];
 

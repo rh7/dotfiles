@@ -217,35 +217,10 @@ cmd_secrets() {
   bash "$DOTFILES_DIR/scripts/setup-secrets.sh"
 }
 
+# heartbeat is now merged into audit — redirect for backwards compat
 cmd_heartbeat() {
-  local install=false
-  [[ "${1:-}" == "--install" ]] && install=true
-
-  if $install; then
-    local cron_line="*/5 * * * * $DOTFILES_DIR/scripts/heartbeat.sh"
-    if crontab -l 2>/dev/null | grep -qF "heartbeat.sh"; then
-      ok "Heartbeat cron already installed"
-    else
-      info "This will add: $cron_line"
-      info "Sends device stats to config service every 5 min (no sudo, no changes)"
-      read -rp "  Install? [y/N] " choice
-      case "$choice" in
-        [yY]*) (crontab -l 2>/dev/null; echo "$cron_line") | crontab - && ok "Heartbeat cron installed" \
-               || err "Failed — grant Full Disk Access to your terminal app" ;;
-        *) info "Skipped" ;;
-      esac
-    fi
-    return
-  fi
-
-  if [[ "${1:-}" == "--uninstall" ]]; then
-    crontab -l 2>/dev/null | grep -vF "heartbeat.sh" | crontab -
-    ok "Heartbeat cron removed"
-    return
-  fi
-
-  # Run once
-  bash "$DOTFILES_DIR/scripts/heartbeat.sh" && ok "Heartbeat sent" || warn "Heartbeat failed"
+  warn "Heartbeat is now part of 'device audit'. Redirecting..."
+  bash "$DOTFILES_DIR/scripts/audit-device.sh" "${1:-}"
 }
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -350,17 +325,17 @@ case "${1:-help}" in
     echo "  update             Pull + rebuild (daily use)"
     echo "  update --full      Pull + flake update + rebuild"
     echo "  status             Show device info + fleet overview"
-    echo "  register           Register/heartbeat with config service"
-    echo "  heartbeat          Send one heartbeat to config service"
-    echo "  heartbeat --install   Install 5-minute cron heartbeat"
-    echo "  heartbeat --uninstall Remove cron heartbeat"
+    echo "  register           Register device with config service"
     echo "  secrets            Setup or re-run secrets configuration"
     echo "  backup             Backup current system state (Homebrew, defaults, apps)"
     echo "  backup /path       Backup to custom location"
-    echo "  audit              Audit device and upload inventory to config service"
+    echo "  audit              Interactive audit menu (run, install cron, save, etc.)"
+    echo "  audit --run        Audit + upload + register (non-interactive)"
     echo "  audit --local      Audit only, print JSON (no upload)"
     echo "  audit --save       Audit and save to ~/dotfiles-backups/audit/"
-    echo "  sync               Pull dotfiles + audit + heartbeat (one-shot)"
+    echo "  audit --install    Install daily audit cron"
+    echo "  audit --uninstall  Remove daily audit cron"
+    echo "  sync               Pull dotfiles + audit (one-shot)"
     echo "  sync --install     Install 30-minute auto-sync cron"
     echo "  sync --uninstall   Remove auto-sync cron"
     echo "  sync --logs        Show recent sync logs"

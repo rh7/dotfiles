@@ -20,7 +20,7 @@ set -euo pipefail
 # ── Defaults ──
 DOTFILES_REPO="https://github.com/rh7/dotfiles.git"
 DOTFILES_DIR="$HOME/dotfiles"
-CONFIG_SERVER="100.100.241.110:3456"
+CONFIG_SERVER=""
 INTERACTIVE=true
 HOSTNAME_ARG=""
 ROLE_ARG=""
@@ -61,7 +61,7 @@ Options:
   --role ROLE           Set role (workstation, personal, server, etc.)
   --auth-key KEY        Tailscale auth key (for headless/VPS setup)
   --non-interactive     Skip all prompts (requires --hostname)
-  --config-server ADDR  Config service address (default: 100.100.241.110:3456)
+  --config-server ADDR  Config service address (default: auto-discover via LAN/Tailscale)
 
 Steps:
   1. Xcode CLI tools     (macOS — needed for git)
@@ -82,6 +82,16 @@ done
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 CURRENT_HOSTNAME="$(hostname -s 2>/dev/null || hostname)"
+
+# ── Discover config service (if not set via --config-server) ──
+if [[ -z "$CONFIG_SERVER" ]]; then
+  for host in Rouvens-Mac-Studio.local rouvens-mac-studio-1 rouvens-mac-studio 100.100.241.110; do
+    if curl -sf "http://${host}:3456/api/health" --max-time 2 &>/dev/null; then
+      CONFIG_SERVER="${host}:3456"
+      break
+    fi
+  done
+fi
 
 echo ""
 echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}"

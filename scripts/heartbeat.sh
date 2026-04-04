@@ -17,7 +17,7 @@ ARCH="$(uname -m)"
 
 # ── Find config service ─────────────────────────────────────────────────
 CONFIG_URL=""
-for host in localhost rouvens-mac-studio-1 rouvens-mac-studio 100.100.241.110; do
+for host in localhost Rouvens-Mac-Studio.local rouvens-mac-studio-1 rouvens-mac-studio 100.100.241.110; do
   if curl -sf "http://${host}:3456/api/health" --max-time 2 &>/dev/null; then
     CONFIG_URL="http://${host}:3456"
     break

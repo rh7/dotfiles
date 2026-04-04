@@ -6,4 +6,8 @@
     "quicken"
     # finanzguru, starmoney — Mac App Store only
   ];
+
+  homebrew.masApps = {
+    "Crypto Pro" = 980888073;
+  };
 }

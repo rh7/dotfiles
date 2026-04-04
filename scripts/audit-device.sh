@@ -1,22 +1,109 @@
 #!/usr/bin/env bash
-# Audit a device's current state — non-destructive inventory collection.
-# Sends results to the config service for cross-device comparison.
+# Fleet device audit — non-destructive inventory collection and registration.
+# Replaces the old heartbeat.sh with a single daily audit + registration.
 #
 # Usage:
-#   ./scripts/audit-device.sh              # audit and report
+#   ./scripts/audit-device.sh              # interactive menu
+#   ./scripts/audit-device.sh --run        # audit + upload (non-interactive, for cron)
 #   ./scripts/audit-device.sh --local      # audit only, print JSON (no upload)
 #   ./scripts/audit-device.sh --save       # audit and save to ~/dotfiles-backups/audit/
+#   ./scripts/audit-device.sh --install    # install daily cron
+#   ./scripts/audit-device.sh --uninstall  # remove daily cron
+#
+# On machines without the dotfiles repo (e.g. fresh Mac):
+#   curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/audit-device.sh | bash
 
 set -euo pipefail
 
 HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
-MODE="${1:-report}"
+MODE="${1:-interactive}"
+SCRIPT_URL="https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/audit-device.sh"
+CRON_TAG="# fleet-audit"
+OLD_CRON_TAG="# fleet-heartbeat"
+
+# ── Colors ──
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+info()  { echo -e "${BLUE}ℹ${NC}  $*"; }
+ok()    { echo -e "${GREEN}✓${NC}  $*"; }
+warn()  { echo -e "${YELLOW}⚠${NC}  $*"; }
+err()   { echo -e "${RED}✗${NC}  $*" >&2; }
+
+# ── Interactive menu ────────────────────────────────────────────────────
+if [[ "$MODE" == "interactive" ]]; then
+  # When piped via curl, read from /dev/tty for interactive input
+  exec 3</dev/tty 2>/dev/null || exec 3<&0
+
+  echo ""
+  echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}"
+  echo -e "${BOLD}${CYAN}│       Fleet Device Audit                 │${NC}"
+  echo -e "${BOLD}${CYAN}│       $HOSTNAME ($OS/$ARCH)${NC}"
+  echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}"
+  echo ""
+  echo -e "  ${BOLD}1)${NC}  Run audit now (upload to fleet)"
+  echo -e "  ${BOLD}2)${NC}  Run audit now (local only, no upload)"
+  echo -e "  ${BOLD}3)${NC}  Run audit + install daily cron"
+  echo -e "  ${BOLD}4)${NC}  Install daily cron only (no audit now)"
+  echo -e "  ${BOLD}5)${NC}  Remove daily cron"
+  echo -e "  ${BOLD}6)${NC}  Save audit to file"
+  echo -e "  ${BOLD}q)${NC}  Quit"
+  echo ""
+  echo -en "${BOLD}Choose [1-6, q]: ${NC}"
+  read -r choice <&3
+
+  case "$choice" in
+    1) MODE="--run" ;;
+    2) MODE="--local" ;;
+    3) MODE="--run-and-install" ;;
+    4) MODE="--install" ;;
+    5) MODE="--uninstall" ;;
+    6) MODE="--save" ;;
+    q|Q) echo "Bye."; exit 0 ;;
+    *) err "Invalid choice"; exit 1 ;;
+  esac
+
+  exec 3<&-
+fi
+
+# ── Install daily cron ─────────────────────────────────────────────────
+install_cron() {
+  # Prefer local script if dotfiles repo exists, otherwise curl from GitHub
+  if [[ -f "$HOME/dotfiles/scripts/audit-device.sh" ]]; then
+    CRON_CMD="bash $HOME/dotfiles/scripts/audit-device.sh --run"
+  else
+    CRON_CMD="curl -fsSL $SCRIPT_URL | bash -s -- --run"
+  fi
+  # Daily at 8am, randomize minute to avoid fleet thundering herd
+  CRON_MIN=$(( RANDOM % 30 ))
+  CRON_LINE="${CRON_MIN} 8 * * * ${CRON_CMD} ${CRON_TAG}"
+  # Remove old audit + old heartbeat entries, add new
+  (crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG"; echo "$CRON_LINE") | crontab -
+  ok "Installed daily audit cron (8:$(printf '%02d' $CRON_MIN) AM)"
+  info "→ $CRON_CMD"
+}
+
+if [[ "$MODE" == "--install" ]]; then
+  install_cron
+  exit 0
+fi
+
+if [[ "$MODE" == "--uninstall" ]]; then
+  crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG" | crontab -
+  ok "Removed audit cron job"
+  exit 0
+fi
 
 # ── Find config service ─────────────────────────────────────────────────
 find_config_service() {
-  for host in localhost rouvens-mac-studio-1 rouvens-mac-studio 100.100.241.110; do
+  for host in localhost Rouvens-Mac-Studio.local rouvens-mac-studio-1 rouvens-mac-studio 100.100.241.110; do
     if curl -sf "http://${host}:3456/api/health" --max-time 2 &>/dev/null; then
       echo "http://${host}:3456"; return
     fi
@@ -1055,6 +1142,274 @@ print(json.dumps(sorted(fonts)))
 "
 }
 
+collect_login_items() {
+  if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  python3 -c "
+import subprocess, json, plistlib, os
+
+result = {}
+
+# Login items via osascript
+try:
+    r = subprocess.run(['osascript', '-e', 'tell application \"System Events\" to get the name of every login item'],
+                       capture_output=True, text=True, timeout=10)
+    items = [i.strip() for i in r.stdout.strip().split(',') if i.strip()]
+    result['login_items'] = items
+except: result['login_items'] = []
+
+# Launch agents (user)
+user_agents = os.path.expanduser('~/Library/LaunchAgents')
+if os.path.isdir(user_agents):
+    result['user_launch_agents'] = sorted([f.replace('.plist', '') for f in os.listdir(user_agents) if f.endswith('.plist')])
+
+# Launch daemons (system, third-party)
+for label, path in [('system_launch_agents', '/Library/LaunchAgents'), ('system_launch_daemons', '/Library/LaunchDaemons')]:
+    if os.path.isdir(path):
+        result[label] = sorted([f.replace('.plist', '') for f in os.listdir(path) if f.endswith('.plist')])
+
+print(json.dumps(result))
+" 2>/dev/null || echo '{}'
+}
+
+collect_macos_settings() {
+  if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  python3 -c "
+import subprocess, json
+
+def read_default(domain, key):
+    try:
+        r = subprocess.run(['defaults', 'read', domain, key], capture_output=True, text=True, timeout=2)
+        v = r.stdout.strip()
+        if v.isdigit(): return int(v)
+        if v in ('true', '1'): return True
+        if v in ('false', '0'): return False
+        return v
+    except: return None
+
+settings = {
+    'appearance': {
+        'dark_mode': read_default('NSGlobalDomain', 'AppleInterfaceStyle'),
+        'accent_color': read_default('NSGlobalDomain', 'AppleAccentColor'),
+        'highlight_color': read_default('NSGlobalDomain', 'AppleHighlightColor'),
+        'sidebar_icon_size': read_default('NSGlobalDomain', 'NSTableViewDefaultSizeMode'),
+        'reduce_motion': read_default('com.apple.universalaccess', 'reduceMotion'),
+        'reduce_transparency': read_default('com.apple.universalaccess', 'reduceTransparency'),
+    },
+    'mouse_trackpad': {
+        'scroll_direction_natural': read_default('NSGlobalDomain', 'com.apple.swipescrolldirection'),
+        'mouse_scaling': read_default('NSGlobalDomain', 'com.apple.mouse.scaling'),
+        'trackpad_speed': read_default('NSGlobalDomain', 'com.apple.trackpad.scaling'),
+        'tap_to_click': read_default('com.apple.AppleMultitouchTrackpad', 'Clicking'),
+        'three_finger_drag': read_default('com.apple.AppleMultitouchTrackpad', 'TrackpadThreeFingerDrag'),
+        'secondary_click': read_default('com.apple.AppleMultitouchTrackpad', 'TrackpadRightClick'),
+    },
+    'energy': {
+        'display_sleep_minutes': read_default('com.apple.screensaver', 'idleTime'),
+        'screen_saver_delay': read_default('com.apple.screensaver', 'askForPasswordDelay'),
+    },
+    'desktop_screensaver': {
+        'screensaver_name': read_default('com.apple.screensaver', 'moduleDict'),
+    },
+    'menu_bar': {
+        'auto_hide': read_default('NSGlobalDomain', '_HIHideMenuBar'),
+        'clock_format': read_default('com.apple.menuextra.clock', 'DateFormat'),
+        'battery_percentage': read_default('com.apple.menuextra.battery', 'ShowPercent'),
+    },
+    'hot_corners': {
+        'top_left': read_default('com.apple.dock', 'wvous-tl-corner'),
+        'top_right': read_default('com.apple.dock', 'wvous-tr-corner'),
+        'bottom_left': read_default('com.apple.dock', 'wvous-bl-corner'),
+        'bottom_right': read_default('com.apple.dock', 'wvous-br-corner'),
+    },
+    'spotlight': {
+        'orderedItems': read_default('com.apple.Spotlight', 'orderedItems'),
+    },
+    'text_input': {
+        'languages': read_default('NSGlobalDomain', 'AppleLanguages'),
+        'locale': read_default('NSGlobalDomain', 'AppleLocale'),
+        'measurement_units': read_default('NSGlobalDomain', 'AppleMeasurementUnits'),
+        'temperature_unit': read_default('NSGlobalDomain', 'AppleTemperatureUnit'),
+        'auto_correct': read_default('NSGlobalDomain', 'NSAutomaticSpellingCorrectionEnabled'),
+        'auto_capitalize': read_default('NSGlobalDomain', 'NSAutomaticCapitalizationEnabled'),
+        'smart_quotes': read_default('NSGlobalDomain', 'NSAutomaticQuoteSubstitutionEnabled'),
+        'smart_dashes': read_default('NSGlobalDomain', 'NSAutomaticDashSubstitutionEnabled'),
+    },
+}
+print(json.dumps(settings))
+" 2>/dev/null || echo '{}'
+}
+
+collect_user_accounts() {
+  if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  python3 -c "
+import subprocess, json
+
+def run(cmd):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        return r.stdout.strip()
+    except: return ''
+
+# List local user accounts (UID >= 500, not system)
+users_raw = run('dscl . -list /Users UniqueID')
+users = []
+for line in users_raw.split('\n'):
+    parts = line.split()
+    if len(parts) == 2 and int(parts[1]) >= 500 and not parts[0].startswith('_'):
+        name = parts[0]
+        realname = run(f'dscl . -read /Users/{name} RealName 2>/dev/null').replace('RealName:', '').replace('\\n', '').strip()
+        users.append({'username': name, 'uid': int(parts[1]), 'realname': realname})
+
+result = {
+    'users': users,
+    'current_user': run('whoami'),
+    'computer_name': run('scutil --get ComputerName'),
+    'local_hostname': run('scutil --get LocalHostName'),
+}
+print(json.dumps(result))
+" 2>/dev/null || echo '{}'
+}
+
+collect_wifi_networks() {
+  if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  python3 -c "
+import subprocess, json
+
+def run(cmd):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        return r.stdout.strip()
+    except: return ''
+
+result = {}
+
+# Known Wi-Fi networks (names only, not passwords)
+networks_raw = run('networksetup -listpreferredwirelessnetworks en0 2>/dev/null')
+if networks_raw:
+    networks = [n.strip() for n in networks_raw.split('\n')[1:] if n.strip()]
+    result['known_networks'] = networks
+
+# Current Wi-Fi
+current = run('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null')
+for line in current.split('\n'):
+    if 'SSID' in line and 'BSSID' not in line:
+        result['current_ssid'] = line.split(':',1)[1].strip()
+        break
+
+# Network services
+services = run('networksetup -listallnetworkservices 2>/dev/null')
+if services:
+    result['network_services'] = [s.strip() for s in services.split('\n')[1:] if s.strip() and not s.startswith('*')]
+
+print(json.dumps(result))
+" 2>/dev/null || echo '{}'
+}
+
+collect_printers() {
+  if [[ "$OS" != "Darwin" ]]; then echo '[]'; return; fi
+  python3 -c "
+import subprocess, json
+
+def run(cmd):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        return r.stdout.strip()
+    except: return ''
+
+printers = []
+lpstat = run('lpstat -a 2>/dev/null')
+for line in lpstat.split('\n'):
+    if line.strip():
+        name = line.split()[0]
+        printers.append(name)
+
+print(json.dumps(printers))
+" 2>/dev/null || echo '[]'
+}
+
+collect_browser_extensions() {
+  if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  python3 -c "
+import os, json, plistlib, glob
+
+result = {}
+
+# Chrome extensions
+chrome_ext_dir = os.path.expanduser('~/Library/Application Support/Google/Chrome/Default/Extensions')
+if os.path.isdir(chrome_ext_dir):
+    exts = []
+    for ext_id in os.listdir(chrome_ext_dir):
+        ext_path = os.path.join(chrome_ext_dir, ext_id)
+        if os.path.isdir(ext_path) and not ext_id.startswith('.'):
+            # Try to get name from manifest
+            versions = sorted(os.listdir(ext_path))
+            for v in reversed(versions):
+                manifest = os.path.join(ext_path, v, 'manifest.json')
+                if os.path.isfile(manifest):
+                    try:
+                        with open(manifest) as f:
+                            m = json.load(f)
+                            name = m.get('name', ext_id)
+                            if not name.startswith('__MSG_'):
+                                exts.append(name)
+                            else:
+                                exts.append(ext_id)
+                    except: exts.append(ext_id)
+                    break
+    result['chrome'] = sorted(exts)
+    result['chrome_count'] = len(exts)
+
+# Safari extensions
+safari_ext = os.path.expanduser('~/Library/Safari/Extensions')
+if os.path.isdir(safari_ext):
+    exts = [f.replace('.safariextz', '').replace('.appex', '') for f in os.listdir(safari_ext) if not f.startswith('.')]
+    if exts:
+        result['safari'] = sorted(exts)
+        result['safari_count'] = len(exts)
+
+# Firefox profiles (list extension IDs)
+ff_profiles = glob.glob(os.path.expanduser('~/Library/Application Support/Firefox/Profiles/*.default*/extensions.json'))
+for profile in ff_profiles[:1]:
+    try:
+        with open(profile) as f:
+            data = json.load(f)
+            addons = [a.get('defaultLocale', {}).get('name', a.get('id', ''))
+                      for a in data.get('addons', [])
+                      if a.get('type') == 'extension' and a.get('active')]
+            if addons:
+                result['firefox'] = sorted(addons)
+                result['firefox_count'] = len(addons)
+    except: pass
+
+# Arc extensions (Chromium-based, same path structure)
+arc_ext_dir = os.path.expanduser('~/Library/Application Support/Arc/User Data/Default/Extensions')
+if os.path.isdir(arc_ext_dir):
+    exts = []
+    for ext_id in os.listdir(arc_ext_dir):
+        ext_path = os.path.join(arc_ext_dir, ext_id)
+        if os.path.isdir(ext_path) and not ext_id.startswith('.'):
+            versions = sorted(os.listdir(ext_path))
+            for v in reversed(versions):
+                manifest = os.path.join(ext_path, v, 'manifest.json')
+                if os.path.isfile(manifest):
+                    try:
+                        with open(manifest) as f:
+                            m = json.load(f)
+                            name = m.get('name', ext_id)
+                            if not name.startswith('__MSG_'):
+                                exts.append(name)
+                            else:
+                                exts.append(ext_id)
+                    except: exts.append(ext_id)
+                    break
+    if exts:
+        result['arc'] = sorted(exts)
+        result['arc_count'] = len(exts)
+
+print(json.dumps(result) if result else '{}')
+" 2>/dev/null || echo '{}'
+}
+
 # Note: collect_docker, collect_orbstack, collect_ollama are defined above
 # (comprehensive versions in the main collector section)
 
@@ -1133,8 +1488,58 @@ $(collect_editor_extensions)
 $(collect_toolchains)
 ---SECTION: certificates
 $(collect_certificates)
+---SECTION: login_items
+$(collect_login_items)
+---SECTION: macos_settings
+$(collect_macos_settings)
+---SECTION: user_accounts
+$(collect_user_accounts)
+---SECTION: wifi_networks
+$(collect_wifi_networks)
+---SECTION: printers
+$(collect_printers)
+---SECTION: browser_extensions
+$(collect_browser_extensions)
 AUDIT_DATA
 )
+
+# ── Device registration (replaces heartbeat.sh) ───────────────────────
+register_device() {
+  local config_url="$1"
+  local ts_ip="" ssh_pub="" age_pub="" uptime_str="" nix_ver="" nix_gen=""
+
+  ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+  nix_ver=$(nix --version 2>/dev/null || echo "")
+  uptime_str=$(uptime | sed 's/.*up //' | sed 's/,.*//')
+
+  if [[ "$OS" == "Darwin" ]]; then
+    nix_gen=$(darwin-rebuild --list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
+  else
+    nix_gen=$(nixos-rebuild list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
+  fi
+
+  for keyfile in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+    if [[ -f "$keyfile" ]]; then ssh_pub=$(cat "$keyfile"); break; fi
+  done
+
+  if [[ -f "$HOME/.config/sops/age/keys.txt" ]]; then
+    age_pub=$(age-keygen -y "$HOME/.config/sops/age/keys.txt" 2>/dev/null || echo "")
+  fi
+
+  curl -sf -X POST "${config_url}/api/devices/register" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"hostname\": \"$HOSTNAME\",
+      \"os\": \"$OS\",
+      \"arch\": \"$ARCH\",
+      \"role\": \"workstation\",
+      \"tailscale_ip\": \"$ts_ip\",
+      \"nix_version\": \"$nix_ver\",
+      \"nix_generation\": \"$nix_gen\",
+      \"ssh_public_key\": \"$ssh_pub\",
+      \"age_public_key\": \"$age_pub\"
+    }" --max-time 5 >/dev/null 2>&1
+}
 
 # ── Output based on mode ────────────────────────────────────────────────
 case "$MODE" in
@@ -1145,20 +1550,27 @@ case "$MODE" in
     SAVE_DIR="$HOME/dotfiles-backups/audit"
     mkdir -p "$SAVE_DIR"
     echo "$AUDIT" > "$SAVE_DIR/${HOSTNAME}-$(date +%Y%m%d).json"
-    echo "Saved to $SAVE_DIR/${HOSTNAME}-$(date +%Y%m%d).json" >&2
+    ok "Saved to $SAVE_DIR/${HOSTNAME}-$(date +%Y%m%d).json" >&2
     ;;
-  *)
-    # Upload to config service
+  --run|--run-and-install|report)
+    # Upload audit + register device
     CONFIG_URL=$(find_config_service)
     if [[ -n "$CONFIG_URL" ]]; then
       curl -sf -X POST "${CONFIG_URL}/api/audit/${HOSTNAME}" \
         -H "Content-Type: application/json" \
         -d "$AUDIT" --max-time 10 >/dev/null 2>&1 \
-        && echo "Audit uploaded to config service" >&2 \
-        || echo "Upload failed — printing locally" >&2
+        && ok "Audit uploaded to fleet" >&2 \
+        || warn "Audit upload failed" >&2
+      register_device "$CONFIG_URL" \
+        && ok "Device registered with fleet" >&2 \
+        || warn "Device registration failed" >&2
     else
-      echo "Config service not reachable — printing audit" >&2
+      warn "Config service not reachable — printing audit locally" >&2
+      echo "$AUDIT"
     fi
-    echo "$AUDIT"
+    # Install cron if requested
+    if [[ "$MODE" == "--run-and-install" ]]; then
+      install_cron
+    fi
     ;;
 esac

@@ -7,9 +7,11 @@
     "google-chrome"
     "arc"
     "firefox"
-    "raycast"
+    # "raycast"  # dev profile only, not for all users
     "dropbox"
-    "obsidian"
+    # "obsidian"  # moved to dev-apps profile
+    "expressvpn"
+    "tripmode"
     "tailscale-app"
     # dia, speedtest — Mac App Store only, not in Homebrew
   ];
