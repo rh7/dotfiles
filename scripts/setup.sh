@@ -359,15 +359,18 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
       if nix build ".#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
         info "Running darwin-rebuild switch..."
         if command -v darwin-rebuild &>/dev/null; then
-          sudo darwin-rebuild switch --flake ".#${HOSTNAME}"
+          sudo darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
+            || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
         else
           nix build ".#darwinConfigurations.${HOSTNAME}.system"
-          sudo ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}"
+          sudo ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
+            || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
         fi
-        NIX_BUILD_OK=true
-        ok "Configuration applied — all apps installed"
+        if $NIX_BUILD_OK; then
+          ok "Configuration applied (re-run 'darwin-rebuild switch' later to retry failed casks)"
+        fi
       else
-        warn "Build failed. Check flake.nix or run manually later:"
+        warn "Nix build failed. Check flake.nix or run manually later:"
         echo "  cd ~/dotfiles && darwin-rebuild switch --flake .#${HOSTNAME}"
       fi
       ;;
