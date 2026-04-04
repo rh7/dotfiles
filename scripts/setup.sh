@@ -328,6 +328,16 @@ fi
 SSH_PUB=$(cat "${SSH_KEY_FILE}.pub" 2>/dev/null || echo "unknown")
 info "SSH public key: $SSH_PUB"
 
+# Early registration — report SSH key so other machines can SSH in during setup
+if curl -sf "http://${CONFIG_SERVER}/api/health" --max-time 3 &>/dev/null; then
+  curl -sf -X POST "http://${CONFIG_SERVER}/api/devices/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"hostname\":\"$HOSTNAME\",\"os\":\"$OS\",\"arch\":\"$ARCH\",\"role\":\"$ROLE\",\"ssh_public_key\":\"$SSH_PUB\",\"age_public_key\":\"$AGE_PUB\"}" \
+    --max-time 5 &>/dev/null \
+    && ok "SSH key registered with fleet (you can SSH in from other devices now)" \
+    || true
+fi
+
 # Build and apply Nix configuration
 NIX_BUILD_OK=false
 if [[ -n "$MATCHED_PROFILE" ]]; then
