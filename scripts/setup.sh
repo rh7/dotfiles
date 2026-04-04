@@ -315,6 +315,19 @@ else
 fi
 AGE_PUB=$(age-keygen -y "$AGE_KEY_FILE" 2>/dev/null || echo "unknown")
 
+# SSH key (for fleet SSH access between devices)
+SSH_KEY_FILE="$HOME/.ssh/id_ed25519"
+if [[ -f "$SSH_KEY_FILE" ]]; then
+  ok "SSH key exists"
+else
+  info "Generating SSH key..."
+  mkdir -p "$HOME/.ssh"
+  ssh-keygen -t ed25519 -C "${USERNAME}@${HOSTNAME}" -f "$SSH_KEY_FILE" -N "" -q
+  ok "SSH key generated"
+fi
+SSH_PUB=$(cat "${SSH_KEY_FILE}.pub" 2>/dev/null || echo "unknown")
+info "SSH public key: $SSH_PUB"
+
 # Build and apply Nix configuration
 NIX_BUILD_OK=false
 if [[ -n "$MATCHED_PROFILE" ]]; then
@@ -486,7 +499,7 @@ elif curl -sf "http://${CONFIG_SERVER}/api/health" --max-time 5 &>/dev/null; the
   info "Registering with config service..."
   curl -sf -X POST "http://${CONFIG_SERVER}/api/devices/register" \
     -H "Content-Type: application/json" \
-    -d "{\"hostname\":\"$HOSTNAME\",\"os\":\"$OS\",\"arch\":\"$ARCH\",\"role\":\"$ROLE\",\"tailscale_ip\":\"$TAILSCALE_IP\",\"age_public_key\":\"$AGE_PUB\",\"nix_version\":\"$(nix --version 2>/dev/null || echo unknown)\"}" \
+    -d "{\"hostname\":\"$HOSTNAME\",\"os\":\"$OS\",\"arch\":\"$ARCH\",\"role\":\"$ROLE\",\"tailscale_ip\":\"$TAILSCALE_IP\",\"age_public_key\":\"$AGE_PUB\",\"ssh_public_key\":\"$SSH_PUB\",\"nix_version\":\"$(nix --version 2>/dev/null || echo unknown)\"}" \
     --max-time 10 \
     && ok "Registered" \
     || warn "Registration failed (non-fatal)"
@@ -506,6 +519,7 @@ echo -e "  OS:           $OS / $ARCH"
 echo -e "  Tailscale:    ${TAILSCALE_IP:-not connected}"
 echo -e "  Dotfiles:     $DOTFILES_DIR"
 echo -e "  Age key:      ${AGE_PUB:-not generated}"
+echo -e "  SSH key:      ${SSH_PUB:-not generated}"
 echo ""
 if [[ -z "$MATCHED_PROFILE" ]]; then
   echo -e "  ${YELLOW}Next: add '$HOSTNAME' to ~/dotfiles/flake.nix${NC}"
