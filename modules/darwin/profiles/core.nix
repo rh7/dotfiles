@@ -7,12 +7,11 @@
     "google-chrome"
     "arc"
     "firefox"
-    "dia"
     "raycast"
     "dropbox"
     "obsidian"
     "tailscale-app"
-    "speedtest"
+    # dia, speedtest — Mac App Store only, not in Homebrew
   ];
 
   homebrew.brews = [

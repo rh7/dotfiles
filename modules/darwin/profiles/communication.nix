@@ -9,11 +9,9 @@
     "signal"
     "discord"
     "element"
-    "element-x"
     "zoom"
     "wire"
-    "canary-mail"
     "proton-mail"
-    "telegram-lite"
+    # canary-mail, element-x, telegram-lite — Mac App Store only
   ];
 }

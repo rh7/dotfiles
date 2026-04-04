@@ -4,7 +4,6 @@
   # ── Finance apps ─────────────────────────────────────────────────────────
   homebrew.casks = [
     "quicken"
-    "finanzguru"
-    "starmoney"
+    # finanzguru, starmoney — Mac App Store only
   ];
 }

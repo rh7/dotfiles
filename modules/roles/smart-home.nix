@@ -3,9 +3,8 @@
 {
   # ── Smart Home: Mac Mini office hub ──────────────────────────────────────
   homebrew.casks = [
-    "sensibo"
     "sonos"
-    "homey"
     "home-assistant"
+    # sensibo, homey — Mac App Store only
   ];
 }

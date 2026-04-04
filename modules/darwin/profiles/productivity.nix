@@ -9,9 +9,8 @@
     "notion"
     "linear-linear"
     "reader"  # Readwise Reader
-    "ulysses"
-    "remarkable"
     "session"
+    # ulysses, remarkable — Mac App Store only
     "grammarly-desktop"
   ];
 
