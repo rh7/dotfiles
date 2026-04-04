@@ -13,7 +13,7 @@
     "termius"
     "pgadmin4"
     "commander-one"
-    "parallels"
+    # parallels — needs Full Disk Access, install manually
   ];
 
   homebrew.brews = [
