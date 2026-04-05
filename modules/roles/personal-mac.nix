@@ -9,4 +9,10 @@
     ../darwin/profiles/ai-tools.nix
     ../darwin/profiles/media.nix
   ];
+
+  # Personal-specific apps (not in shared profiles)
+  homebrew.casks = [
+    "signal"
+    "discord"
+  ];
 }

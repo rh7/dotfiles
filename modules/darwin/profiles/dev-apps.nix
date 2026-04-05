@@ -3,6 +3,8 @@
 {
   # ── Developer GUI apps ───────────────────────────────────────────────────
   homebrew.casks = [
+    "brave-browser"
+    "gpg-suite-no-mail"
     "obsidian"
     # "raycast"  # optional, evaluate later
     "claude-code"
