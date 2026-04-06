@@ -160,13 +160,12 @@
       };
 
       # ── Kassie's MacBook Air (personal role — lighter setup) ──
-      # Uncomment when ready (adjust username to her macOS username):
-      # "Kassie-M5-Air13" = mkMac {
-      #   hostname = "Kassie-M5-Air13";
-      #   username = "kassie";
-      #   role = ./modules/roles/personal-mac.nix;
-      #   extraModules = [ ./configurations/macos/macbook.nix ];
-      # };
+      "Kassie-M5-Air13" = mkMac {
+        hostname = "Kassie-M5-Air13";
+        username = "Kassie";
+        role = ./modules/roles/personal-mac.nix;
+        extraModules = [ ./configurations/macos/macbook.nix ];
+      };
     };
 
     # ── NixOS configurations ─────────────────────────────────────────────────

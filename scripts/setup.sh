@@ -267,26 +267,31 @@ header "Step 3/8: Nix Package Manager"
 
 if command -v nix &>/dev/null; then
   ok "Nix installed ($(nix --version 2>/dev/null || echo 'unknown'))"
+
+  # Check for Determinate Nix and warn
+  if nix --version 2>/dev/null | grep -qi determinate; then
+    warn "Running Determinate Nix (proprietary fork)."
+    warn "Consider migrating to official Nix: /nix/nix-installer uninstall, then re-run setup."
+  fi
 else
-  case "$OS" in
-    Darwin)
-      info "Installing Nix via Determinate macOS package..."
-      curl -fsSL https://install.determinate.systems/determinate-pkg/stable/Universal -o /tmp/Determinate.pkg
-      sudo installer -pkg /tmp/Determinate.pkg -target /
-      rm -f /tmp/Determinate.pkg
-      ;;
-    *)
-      info "Installing Nix (Determinate Systems installer)..."
-      curl --proto '=https' --tlsv1.2 -sSf -L \
-        https://install.determinate.systems/nix | sh -s -- install --no-confirm
-      ;;
-  esac
+  info "Installing Nix (official NixOS community installer)..."
+  info "This is the upstream open-source Nix — no proprietary additions."
+  echo ""
+  curl -sSfL https://artifacts.nixos.org/nix-installer | sh -s -- install --enable-flakes
+
   # Source nix into current shell
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   fi
-  ok "Nix installed"
+
+  # Verify no untrusted substituters were added
+  if grep -q "flakehub" /etc/nix/nix.conf 2>/dev/null; then
+    warn "FlakeHub found in nix.conf — removing untrusted substituter"
+    sudo sed -i '' '/flakehub/d' /etc/nix/nix.conf
+  fi
+
+  ok "Nix installed (official)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

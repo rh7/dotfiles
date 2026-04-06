@@ -24,6 +24,7 @@
     gnupg
     nixpkgs-fmt  # Nix formatter
     nil          # Nix LSP
+    nvd          # Nix version diff — preview changes before rebuild
 
     # Secrets
     age          # encryption for sops-nix
