@@ -13,8 +13,7 @@
     wvous-tl-corner = 13;  # Lock Screen
     wvous-tr-corner = 2;   # Mission Control
     wvous-br-corner = 3;   # Application Windows
-    # Dock apps are left to each user's preference.
-    # To set per-machine, add persistent-apps in configurations/macos/<machine>.nix
+    # Dock apps are set per-role in modules/roles/*.nix
   };
 
   # ── Finder ───────────────────────────────────────────────────────────────

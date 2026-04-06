@@ -12,4 +12,23 @@
     ../darwin/profiles/media.nix
     ../darwin/profiles/security.nix
   ];
+
+  # ── Dock apps (shared across all workstation Macs) ──────────────────────
+  system.defaults.dock.persistent-apps = [
+    "/Applications/Arc.app"
+    "/Applications/Google Chrome.app"
+    "/Applications/Ghostty.app"
+    "/Applications/Obsidian.app"
+    "/Applications/Notion.app"
+    "/Applications/Cursor.app"
+    "/Applications/Superhuman.app"
+    "/Applications/Slack.app"
+    "/Applications/Telegram.app"
+    "/Applications/Signal.app"
+    "/Applications/Claude.app"
+    "/System/Applications/Messages.app"
+    "/System/Applications/Reminders.app"
+    "/Applications/Termius.app"
+    "/Applications/Spotify.app"
+  ];
 }

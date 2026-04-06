@@ -54,9 +54,10 @@ if [[ "$MODE" == "interactive" ]]; then
   echo -e "  ${BOLD}4)${NC}  Install daily cron only (no audit now)"
   echo -e "  ${BOLD}5)${NC}  Remove daily cron"
   echo -e "  ${BOLD}6)${NC}  Save audit to file"
+  echo -e "  ${BOLD}7)${NC}  Show post-setup checklist"
   echo -e "  ${BOLD}q)${NC}  Quit"
   echo ""
-  echo -en "${BOLD}Choose [1-6, q]: ${NC}"
+  echo -en "${BOLD}Choose [1-7, q]: ${NC}"
   read -r choice <&3
 
   case "$choice" in
@@ -66,6 +67,7 @@ if [[ "$MODE" == "interactive" ]]; then
     4) MODE="--install" ;;
     5) MODE="--uninstall" ;;
     6) MODE="--save" ;;
+    7) MODE="--checklist" ;;
     q|Q) echo "Bye."; exit 0 ;;
     *) err "Invalid choice"; exit 1 ;;
   esac
@@ -98,6 +100,16 @@ fi
 if [[ "$MODE" == "--uninstall" ]]; then
   crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG" | crontab -
   ok "Removed audit cron job"
+  exit 0
+fi
+
+if [[ "$MODE" == "--checklist" ]]; then
+  CONFIG_URL=$(find_config_service)
+  if [[ -n "$CONFIG_URL" ]]; then
+    show_checklist "$CONFIG_URL"
+  else
+    err "Config service not reachable"
+  fi
   exit 0
 fi
 
@@ -1541,6 +1553,44 @@ register_device() {
     }" --max-time 5 >/dev/null 2>&1
 }
 
+# ── Post-setup checklist ───────────────────────────────────────────────
+show_checklist() {
+  local config_url="$1"
+  local role
+  role=$(curl -sf "${config_url}/api/devices/${HOSTNAME}" --max-time 5 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('role','workstation'))" 2>/dev/null)
+  [[ -z "$role" ]] && role="workstation"
+
+  local checklist
+  checklist=$(curl -sf "${config_url}/api/fleet/checklist/${role}" --max-time 5 2>/dev/null)
+  [[ -z "$checklist" ]] && return
+
+  echo "" >&2
+  echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}" >&2
+  echo -e "${BOLD}${CYAN}│       Post-Setup Checklist               │${NC}" >&2
+  echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}" >&2
+
+  for cat in "sign-in" "permissions" "setup" "verify"; do
+    local items
+    items=$(echo "$checklist" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+steps = [s for s in data.get('steps', []) if s['category'] == '$cat']
+if steps:
+    print('${cat^^}')
+    for s in steps:
+        notes = f\"  ({s['notes']})\" if s.get('notes') else ''
+        print(f\"  [ ] {s['app']}: {s['action']}{notes}\")
+" 2>/dev/null)
+    if [[ -n "$items" ]]; then
+      echo "" >&2
+      echo -e "${BOLD}${items%%$'\n'*}${NC}" >&2
+      echo "$items" | tail -n +2 >&2
+    fi
+  done
+  echo "" >&2
+}
+
 # ── Output based on mode ────────────────────────────────────────────────
 case "$MODE" in
   --local)
@@ -1564,6 +1614,10 @@ case "$MODE" in
       register_device "$CONFIG_URL" \
         && ok "Device registered with fleet" >&2 \
         || warn "Device registration failed" >&2
+      # Show checklist in interactive mode (not cron)
+      if [[ -t 1 || "$MODE" == "--run-and-install" ]] && [[ -z "$CRON_TAG_PRESENT" ]]; then
+        show_checklist "$CONFIG_URL"
+      fi
     else
       warn "Config service not reachable — printing audit locally" >&2
       echo "$AUDIT"
