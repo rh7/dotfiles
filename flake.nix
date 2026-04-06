@@ -34,6 +34,7 @@
         modules = [
           # System-level
           ./modules/darwin/defaults.nix
+          ./modules/darwin/security.nix
           ./modules/darwin/homebrew.nix
           role
           sops-nix.darwinModules.sops
