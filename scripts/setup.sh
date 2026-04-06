@@ -460,10 +460,20 @@ fi
 if gh auth status &>/dev/null 2>&1; then
   ok "Already authenticated"
 else
-  echo "  Authenticate with GitHub (credentials from 1Password)."
-  echo ""
   if $INTERACTIVE; then
-    gh auth login < /dev/tty
+    echo "  GitHub auth is needed for git operations and dotfiles updates."
+    echo "  Personal (non-dev) users can skip this."
+    echo ""
+    prompt "  Set up GitHub auth? [Y/n/skip]: "
+    read -r gh_choice < /dev/tty
+    case "$gh_choice" in
+      n|N|skip|Skip|s|S)
+        warn "Skipped GitHub auth — run 'gh auth login' later if needed."
+        ;;
+      *)
+        gh auth login < /dev/tty
+        ;;
+    esac
   else
     warn "Not authenticated. Run 'gh auth login' manually."
   fi
