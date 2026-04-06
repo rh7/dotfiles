@@ -66,7 +66,7 @@ Options:
 Steps:
   1. Xcode CLI tools     (macOS — needed for git)
   2. Hostname selection   (pick from known profiles or enter new)
-  3. Nix                  (Determinate Systems installer)
+  3. Nix                  (official NixOS community installer)
   4. Dotfiles + Nix build (installs ALL apps: 1Password, Tailscale, gh, etc.)
   5. 1Password            (sign in → unlock GitHub creds)
   6. GitHub CLI auth      (gh auth login — creds from 1Password)
@@ -103,6 +103,39 @@ USERNAME="$(whoami)"
 echo -e "  Machine:  $CURRENT_HOSTNAME ($OS / $ARCH)"
 echo -e "  User:     $USERNAME"
 echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Setup profile — ask upfront what kind of setup this is
+# ══════════════════════════════════════════════════════════════════════════════
+SETUP_GITHUB=true
+SETUP_TAILSCALE=true
+SETUP_1PASSWORD=true
+
+if $INTERACTIVE; then
+  echo -e "${BOLD}  What type of setup is this?${NC}"
+  echo ""
+  echo -e "  ${BOLD}1)${NC}  Developer workstation   (full setup: 1Password, GitHub, Tailscale)"
+  echo -e "  ${BOLD}2)${NC}  Personal / family Mac   (skip GitHub auth, lighter config)"
+  echo -e "  ${BOLD}3)${NC}  Server / headless        (skip interactive sign-ins)"
+  echo ""
+  prompt "  Choose [1-3]: "
+  read -r setup_profile < /dev/tty
+  case "$setup_profile" in
+    2)
+      SETUP_GITHUB=false
+      info "Personal setup — GitHub auth will be skipped"
+      ;;
+    3)
+      SETUP_1PASSWORD=false
+      SETUP_GITHUB=false
+      info "Server setup — interactive sign-ins will be skipped"
+      ;;
+    *)
+      info "Developer setup — full configuration"
+      ;;
+  esac
+  echo ""
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 1: Xcode CLI Tools (macOS — git needs this)
@@ -433,12 +466,16 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 header "Step 5/8: 1Password"
 
-if [[ -d "/Applications/1Password.app" ]] || [[ -d "$HOME/Applications/1Password.app" ]]; then
+if ! $SETUP_1PASSWORD; then
+  info "Skipped (not needed for this setup profile)"
+elif [[ -d "/Applications/1Password.app" ]] || [[ -d "$HOME/Applications/1Password.app" ]]; then
   ok "1Password installed (via Nix/Homebrew)"
   if $INTERACTIVE; then
     echo ""
     echo "  Open 1Password and sign in to unlock your credentials."
-    echo "  You'll need GitHub credentials for the next step."
+    if $SETUP_GITHUB; then
+      echo "  You'll need GitHub credentials for the next step."
+    fi
     echo ""
     prompt "  Press Enter when 1Password is ready..."
     read -r < /dev/tty
@@ -452,30 +489,22 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 header "Step 6/8: GitHub Authentication"
 
-# Ensure gh is available (should be from nix build, but install if needed)
-if ! command -v gh &>/dev/null; then
-  nix profile install nixpkgs#gh 2>/dev/null || true
-fi
-
-if gh auth status &>/dev/null 2>&1; then
-  ok "Already authenticated"
+if ! $SETUP_GITHUB; then
+  info "Skipped (not needed for this setup profile)"
 else
-  if $INTERACTIVE; then
-    echo "  GitHub auth is needed for git operations and dotfiles updates."
-    echo "  Personal (non-dev) users can skip this."
-    echo ""
-    prompt "  Set up GitHub auth? [Y/n/skip]: "
-    read -r gh_choice < /dev/tty
-    case "$gh_choice" in
-      n|N|skip|Skip|s|S)
-        warn "Skipped GitHub auth — run 'gh auth login' later if needed."
-        ;;
-      *)
-        gh auth login < /dev/tty
-        ;;
-    esac
+  # Ensure gh is available (should be from nix build, but install if needed)
+  if ! command -v gh &>/dev/null; then
+    nix profile install nixpkgs#gh 2>/dev/null || true
+  fi
+
+  if gh auth status &>/dev/null 2>&1; then
+    ok "Already authenticated"
   else
-    warn "Not authenticated. Run 'gh auth login' manually."
+    if $INTERACTIVE; then
+      gh auth login < /dev/tty
+    else
+      warn "Not authenticated. Run 'gh auth login' manually."
+    fi
   fi
 fi
 
@@ -514,6 +543,12 @@ fi
 # Step 7: Tailscale
 # ══════════════════════════════════════════════════════════════════════════════
 header "Step 7/8: Tailscale"
+
+# Try to open Tailscale.app if installed but not running (macOS)
+if [[ "$OS" == "Darwin" ]] && [[ -d "/Applications/Tailscale.app" ]]; then
+  open -gja "Tailscale" 2>/dev/null || true
+  sleep 2  # give it a moment to start the daemon
+fi
 
 if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
   TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "unknown")
