@@ -285,21 +285,22 @@ else
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   fi
 
-  # Configure macOS SSL certificates for Nix (official installer doesn't do this)
-  if [[ "$OS" == "Darwin" ]] && ! grep -q "ssl-cert-file" /etc/nix/nix.conf 2>/dev/null; then
-    info "Configuring SSL certificates for Nix..."
-    sudo sh -c 'echo "ssl-cert-file = /etc/ssl/cert.pem" >> /etc/nix/nix.conf'
-    sudo launchctl kickstart -k system/org.nixos.nix-daemon 2>/dev/null || true
-    ok "SSL certificates configured"
-  fi
-
-  # Verify no untrusted substituters were added
-  if grep -q "flakehub" /etc/nix/nix.conf 2>/dev/null; then
-    warn "FlakeHub found in nix.conf — removing untrusted substituter"
-    sudo sed -i '' '/flakehub/d' /etc/nix/nix.conf
-  fi
-
   ok "Nix installed (official)"
+fi
+
+# Ensure macOS SSL certificates are configured (official installer doesn't do this)
+if [[ "$OS" == "Darwin" ]] && ! grep -q "ssl-cert-file" /etc/nix/nix.conf 2>/dev/null; then
+  info "Configuring SSL certificates for Nix..."
+  sudo sh -c 'echo "ssl-cert-file = /etc/ssl/cert.pem" >> /etc/nix/nix.conf'
+  sudo launchctl kickstart -k system/org.nixos.nix-daemon 2>/dev/null || true
+  ok "SSL certificates configured"
+fi
+
+# Remove FlakeHub from trusted substituters if present (Determinate adds this)
+if grep -q "flakehub" /etc/nix/nix.conf 2>/dev/null; then
+  warn "FlakeHub found in nix.conf — removing untrusted substituter"
+  sudo sed -i '' '/flakehub/d' /etc/nix/nix.conf
+  sudo launchctl kickstart -k system/org.nixos.nix-daemon 2>/dev/null || true
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
