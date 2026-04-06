@@ -14,6 +14,9 @@
   ];
 
   # ── Dock apps (shared across all workstation Macs) ──────────────────────
+  # persistent-apps replaces the entire dock — no Apple defaults remain.
+  # persistent-others clears the right side (Downloads, Documents folders).
+  system.defaults.dock.persistent-others = [];
   system.defaults.dock.persistent-apps = [
     "/Applications/Arc.app"
     "/Applications/Google Chrome.app"

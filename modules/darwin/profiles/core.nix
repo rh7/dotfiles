@@ -10,7 +10,7 @@
     # "raycast"  # dev profile only, not for all users
     "dropbox"
     # "obsidian"  # moved to dev-apps profile
-    "expressvpn"
+    # "expressvpn"  # install manually — Homebrew cask conflicts with existing installs
     "tripmode"
     "tailscale-app"
     # dia, speedtest — Mac App Store only, not in Homebrew
