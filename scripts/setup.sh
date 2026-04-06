@@ -472,6 +472,20 @@ GITEOF
   ok "Git credential helper set"
 fi
 
+# ── Commit flake.lock if dirty (first build updates it) ──
+if [[ -d "$DOTFILES_DIR/.git" ]] && gh auth status &>/dev/null 2>&1; then
+  cd "$DOTFILES_DIR"
+  if git diff --quiet flake.lock 2>/dev/null; then
+    ok "flake.lock is clean"
+  else
+    info "Committing updated flake.lock..."
+    git add flake.lock
+    git commit -m "chore: update flake.lock after first build on $HOSTNAME" && \
+      git push && ok "flake.lock committed and pushed" || \
+      warn "flake.lock commit/push failed (non-fatal)"
+  fi
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 7: Tailscale
 # ══════════════════════════════════════════════════════════════════════════════
