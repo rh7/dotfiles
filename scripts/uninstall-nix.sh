@@ -47,6 +47,9 @@ if [[ -e /run/current-system ]] || [[ -e /nix/var/nix/profiles/system ]] || \
   sudo rm -f /Library/LaunchDaemons/org.nixos.activate-system.plist
   sudo rm -f /Library/LaunchDaemons/org.nixos.sops-install-secrets.plist
   sudo rm -rf /etc/static
+  sudo rm -rf /etc/profiles
+  sudo rm -f /etc/bashrc.before-nix-darwin /etc/zprofile.before-nix-darwin
+  sudo rm -f /etc/zshenv.before-nix-darwin /etc/zshrc.before-nix-darwin
   ok "nix-darwin removed"
 else
   ok "No nix-darwin installation found"
