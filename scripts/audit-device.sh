@@ -287,7 +287,18 @@ except: print('[]')
 
 collect_cli_tools() {
   python3 -c "
-import shutil, json
+import shutil, json, os
+# Skip macOS shim paths that trigger Xcode CLI tools install dialog
+shim_dirs = {'/usr/bin/git', '/usr/bin/clang', '/usr/bin/make', '/usr/bin/cc'}
+def real_which(name):
+    path = shutil.which(name)
+    if not path:
+        return None
+    # /usr/bin/git etc. are shims on macOS — only report if Xcode CLI tools are installed
+    if path in shim_dirs or (path.startswith('/usr/bin/') and name in ('git','svn','make','cc','clang','gcc')):
+        if not os.path.exists('/Library/Developer/CommandLineTools/usr/bin/' + name):
+            return None  # shim only, no real install
+    return path
 tools = [
     'git', 'node', 'python3', 'rustup', 'go', 'ruby',
     'docker', 'kubectl', 'terraform', 'aws', 'gcloud',
@@ -299,7 +310,7 @@ tools = [
 ]
 found = {}
 for t in tools:
-    path = shutil.which(t)
+    path = real_which(t)
     if path:
         found[t] = path
 print(json.dumps(found))
@@ -347,7 +358,16 @@ print(json.dumps(svcs))
 
 collect_git_config() {
   python3 -c "
-import subprocess, json
+import subprocess, json, os
+# Skip if git is just the macOS shim (triggers Xcode install dialog)
+if not os.path.exists('/Library/Developer/CommandLineTools/usr/bin/git'):
+    git_path = '/usr/bin/git'
+    # Check if a real git exists elsewhere in PATH
+    import shutil
+    found = shutil.which('git')
+    if not found or found == '/usr/bin/git':
+        print('{}')
+        exit(0)
 try:
     r = subprocess.run(['git', 'config', '--global', '--list'], capture_output=True, text=True, timeout=5)
     config = {}
