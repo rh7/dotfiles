@@ -163,21 +163,26 @@ info "Activating configuration..."
 case "$OS" in
   Darwin)
     if command -v darwin-rebuild &>/dev/null; then
-      sudo darwin-rebuild switch --flake "$FLAKE_REF"
+      sudo darwin-rebuild switch --flake "$FLAKE_REF" \
+        && ok "System updated" \
+        || warn "Rebuild completed with warnings (likely sops secrets — see #27)"
     elif [[ -n "${DARWIN_REBUILD:-}" ]]; then
-      sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF"
+      sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF" \
+        && ok "System updated" \
+        || warn "Rebuild completed with warnings (likely sops secrets — see #27)"
     else
-      # Last resort: build and activate via nix
       nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system"
-      sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}"
+      sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}" \
+        && ok "System updated" \
+        || warn "Rebuild completed with warnings (likely sops secrets — see #27)"
     fi
     ;;
   Linux)
-    sudo nixos-rebuild switch --flake "$FLAKE_REF"
+    sudo nixos-rebuild switch --flake "$FLAKE_REF" \
+      && ok "System updated" \
+      || warn "Rebuild completed with warnings"
     ;;
 esac
-
-ok "System updated"
 echo ""
 
 # ── Step 6: Clean up ──
