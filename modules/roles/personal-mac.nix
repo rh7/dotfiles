@@ -14,21 +14,32 @@
   homebrew.casks = [
     "signal"
     "discord"
+    "whatsapp"
+    "canva"
+    "adobe-creative-cloud"   # includes Lightroom
+    # "roomsketcher"         # not in Homebrew — manual install
+    # "coldread"             # not in Homebrew — manual install
   ];
 
-  # ── Dock apps (personal Macs — lighter than workstation) ────────────────
+  # ── Dock apps (based on Kassie's M1 dock) ──────────────────────────────
   system.defaults.dock.persistent-others = [];
   system.defaults.dock.persistent-apps = [
-    "/Applications/Arc.app"
     "/Applications/Google Chrome.app"
-    "/Applications/Claude.app"
-    "/Applications/Superhuman.app"
-    "/Applications/Telegram.app"
-    "/Applications/Signal.app"
-    "/Applications/Discord.app"
+    "/Applications/Arc.app"
     "/System/Applications/Messages.app"
+    "/Applications/Superhuman.app"
+    "/System/Applications/Photos.app"
+    "/System/Applications/FaceTime.app"
+    "/System/Applications/Calendar.app"
+    "/Applications/Trello.app"
+    "/System/Applications/Notes.app"
     "/System/Applications/Reminders.app"
+    "/Applications/Notion.app"
+    "/Applications/Slack.app"
+    "/Applications/zoom.us.app"
     "/Applications/Spotify.app"
-    "/Applications/Obsidian.app"
+    "/Applications/WhatsApp.app"
+    "/Applications/1Password.app"
+    "/Applications/Discord.app"
   ];
 }
