@@ -38,11 +38,15 @@ else
 fi
 
 # ── Step 1: Remove nix-darwin if present ──
-if [[ -e /run/current-system ]] || [[ -e /nix/var/nix/profiles/system ]]; then
-  info "Removing nix-darwin system profile..."
+if [[ -e /run/current-system ]] || [[ -e /nix/var/nix/profiles/system ]] || \
+   [[ -e /Library/LaunchDaemons/org.nixos.activate-system.plist ]] || [[ -d /etc/static ]]; then
+  info "Removing nix-darwin system profile and plists..."
   sudo nix-env -e darwin-system --profile /nix/var/nix/profiles/system 2>/dev/null || true
   sudo rm -f /run/current-system
   sudo rm -rf /nix/var/nix/profiles/system*
+  sudo rm -f /Library/LaunchDaemons/org.nixos.activate-system.plist
+  sudo rm -f /Library/LaunchDaemons/org.nixos.sops-install-secrets.plist
+  sudo rm -rf /etc/static
   ok "nix-darwin removed"
 else
   ok "No nix-darwin installation found"
