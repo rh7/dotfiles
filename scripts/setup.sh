@@ -310,6 +310,9 @@ else
   info "Installing Nix (official NixOS community installer)..."
   info "This is the upstream open-source Nix — no proprietary additions."
   echo ""
+  info "Note: the installer may show 'nix: not found' warnings during self-test."
+  info "This is normal — Nix isn't in your shell PATH until we source it below."
+  echo ""
   curl -sSfL https://artifacts.nixos.org/nix-installer | sh -s -- install --enable-flakes
 
   # Source nix into current shell
