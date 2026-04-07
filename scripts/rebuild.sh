@@ -95,7 +95,7 @@ case "$OS" in
       fi
     else
       info "darwin-rebuild not in PATH — using nix build..."
-      if ! nix build "${FLAKE_REF}.system" --no-link 2>&1; then
+      if ! nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
         err "Build failed. Fix the issue and try again."
         exit 1
       fi
@@ -168,8 +168,8 @@ case "$OS" in
       sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF"
     else
       # Last resort: build and activate via nix
-      nix build "${FLAKE_REF}.system" --no-link
-      sudo ./result/sw/bin/darwin-rebuild switch --flake "$FLAKE_REF"
+      nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system"
+      sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}"
     fi
     ;;
   Linux)
