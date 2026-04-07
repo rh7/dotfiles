@@ -406,6 +406,11 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
   case "$OS" in
     Darwin)
       # Homebrew is required by nix-darwin's homebrew module
+      # Source brew into PATH if installed but not in current shell
+      if ! command -v brew &>/dev/null && [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        ok "Homebrew already installed (added to PATH)"
+      fi
       if ! command -v brew &>/dev/null; then
         info "Installing Homebrew (required by nix-darwin)..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/tty

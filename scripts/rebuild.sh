@@ -70,15 +70,37 @@ if [[ -d "$DOTFILES_DIR/.git" ]]; then
 fi
 
 # ── Step 2: Build (no sudo needed) ──
+# Ensure Nix is in PATH
+if ! command -v nix &>/dev/null; then
+  if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+    # shellcheck disable=SC1091
+    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  else
+    err "Nix not found. Install it first: curl -fsSL config.rh7labs.com/setup | bash"
+    exit 1
+  fi
+fi
+
 info "Building configuration (no root required)..."
 echo ""
 
 cd "$DOTFILES_DIR"
 case "$OS" in
   Darwin)
-    if ! darwin-rebuild build --flake "$FLAKE_REF" 2>&1; then
-      err "Build failed. Fix the issue and try again."
-      exit 1
+    # darwin-rebuild may not be in PATH after fresh Nix install — use nix build fallback
+    if command -v darwin-rebuild &>/dev/null; then
+      if ! darwin-rebuild build --flake "$FLAKE_REF" 2>&1; then
+        err "Build failed. Fix the issue and try again."
+        exit 1
+      fi
+    else
+      info "darwin-rebuild not in PATH — using nix build..."
+      if ! nix build "${FLAKE_REF}.system" --no-link 2>&1; then
+        err "Build failed. Fix the issue and try again."
+        exit 1
+      fi
+      # Use the built result's darwin-rebuild for activation
+      DARWIN_REBUILD="./result/sw/bin/darwin-rebuild"
     fi
     ;;
   Linux)
@@ -140,7 +162,15 @@ fi
 info "Activating configuration..."
 case "$OS" in
   Darwin)
-    sudo darwin-rebuild switch --flake "$FLAKE_REF"
+    if command -v darwin-rebuild &>/dev/null; then
+      sudo darwin-rebuild switch --flake "$FLAKE_REF"
+    elif [[ -n "${DARWIN_REBUILD:-}" ]]; then
+      sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF"
+    else
+      # Last resort: build and activate via nix
+      nix build "${FLAKE_REF}.system" --no-link
+      sudo ./result/sw/bin/darwin-rebuild switch --flake "$FLAKE_REF"
+    fi
     ;;
   Linux)
     sudo nixos-rebuild switch --flake "$FLAKE_REF"
