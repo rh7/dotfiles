@@ -33,10 +33,11 @@ data = json.dumps({
 })
 
 # Try to upload
+import urllib.request
 uploaded = False
+errors = []
 for server in ["Rouvens-Mac-Studio.local:3456", "rouvens-mac-studio-1:3456", "100.100.241.110:3456"]:
     try:
-        import urllib.request
         req = urllib.request.Request(
             f"http://{server}/api/audit/{host}",
             data=data.encode(),
@@ -47,11 +48,15 @@ for server in ["Rouvens-Mac-Studio.local:3456", "rouvens-mac-studio-1:3456", "10
         print(f"Uploaded to fleet ({server})")
         uploaded = True
         break
-    except:
+    except Exception as e:
+        errors.append(f"  {server} — {e}")
         continue
 
 if not uploaded:
-    print("Could not reach config service — printing locally:")
+    print("Could not reach config service. Tried:")
+    for err in errors:
+        print(err)
+    print("\nPrinting locally instead:")
 
 print(f"\nApps ({len(apps)}):")
 for a in apps:
