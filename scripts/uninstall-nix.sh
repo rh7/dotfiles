@@ -38,10 +38,11 @@ else
 fi
 
 # ── Step 1: Remove nix-darwin if present ──
-if [[ -e /run/current-system ]]; then
+if [[ -e /run/current-system ]] || [[ -e /nix/var/nix/profiles/system ]]; then
   info "Removing nix-darwin system profile..."
   sudo nix-env -e darwin-system --profile /nix/var/nix/profiles/system 2>/dev/null || true
   sudo rm -f /run/current-system
+  sudo rm -rf /nix/var/nix/profiles/system*
   ok "nix-darwin removed"
 else
   ok "No nix-darwin installation found"
