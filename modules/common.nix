@@ -73,6 +73,15 @@
   #   nix-direnv.enable = true;
   # };
 
+  # ── Desktop shortcut — double-click to rebuild ───────────────────────────
+  home.file."Desktop/Update.command" = {
+    text = ''
+      #!/bin/bash
+      ~/dotfiles/scripts/rebuild.sh
+    '';
+    executable = true;
+  };
+
   # ── Shell — import from shell module ─────────────────────────────────────
   imports = [ ./shell/zsh.nix ];
 }
