@@ -69,6 +69,11 @@
 
   # ── Activation ──────────────────────────────────────────────────────────
   system.activationScripts.postActivation.text = ''
+    # Enable Remote Login (SSH) and Screen Sharing for fleet management
+    /usr/sbin/systemsetup -setremotelogin on 2>/dev/null || true
+    /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+      -activate -configure -access -on -privs -all -quiet 2>/dev/null || true
+
     killall Finder || true
   '';
 
