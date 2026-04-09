@@ -314,7 +314,7 @@ if command -v nix &>/dev/null; then
 else
   # Clean up any partial install from a previous failed attempt
   if [[ "$OS" == "Darwin" ]]; then
-    NIX_DEV=$(diskutil list | grep "Nix Store" | awk '{print $NF}')
+    NIX_DEV=$(diskutil list | grep "Nix Store" | awk '{print $NF}' || true)
     if [[ -n "$NIX_DEV" ]]; then
       info "Found leftover Nix Store volume from previous attempt — cleaning up..."
       sudo /usr/sbin/diskutil unmount force "$NIX_DEV" 2>/dev/null || true
