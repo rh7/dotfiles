@@ -303,6 +303,12 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 header "Step 3/8: Nix Package Manager"
 
+# Source nix if installed but not in PATH (e.g. running via curl|bash in a fresh shell)
+if ! command -v nix &>/dev/null && [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
+
 if command -v nix &>/dev/null; then
   ok "Nix installed ($(nix --version 2>/dev/null || echo 'unknown'))"
 
@@ -312,16 +318,6 @@ if command -v nix &>/dev/null; then
     warn "Consider migrating to official Nix: /nix/nix-installer uninstall, then re-run setup."
   fi
 else
-  # Clean up any partial install from a previous failed attempt
-  if [[ "$OS" == "Darwin" ]]; then
-    NIX_DEV=$(diskutil list | grep "Nix Store" | awk '{print $NF}' || true)
-    if [[ -n "$NIX_DEV" ]]; then
-      info "Found leftover Nix Store volume from previous attempt — cleaning up..."
-      sudo /usr/sbin/diskutil unmount force "$NIX_DEV" 2>/dev/null || true
-      sudo /usr/sbin/diskutil apfs deleteVolume "$NIX_DEV" 2>/dev/null || true
-      ok "Cleaned up stale volume"
-    fi
-  fi
 
   # Official NixOS community installer.
   # NOTE: on macOS, this must run from a GUI session (Terminal.app / Screen Sharing).
