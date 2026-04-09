@@ -1,7 +1,8 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, config, ... }:
 
 let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+  homeDir = config.home.homeDirectory;
 in {
   # ── Config service auto-start (runs on the Mac Studio / server) ──────────
   # Keeps the device management config service running via launchd (macOS)
@@ -16,11 +17,11 @@ in {
         "--import" "tsx"
         "src/index.ts"
       ];
-      WorkingDirectory = "%h/rh-device-management/services/config-service";
+      WorkingDirectory = "${homeDir}/rh-device-management/services/config-service";
       KeepAlive = true;
       RunAtLoad = true;
-      StandardOutPath = "%h/Library/Logs/config-service.log";
-      StandardErrorPath = "%h/Library/Logs/config-service.error.log";
+      StandardOutPath = "${homeDir}/Library/Logs/config-service.log";
+      StandardErrorPath = "${homeDir}/Library/Logs/config-service.error.log";
       EnvironmentVariables = {
         PORT = "3456";
         PATH = "${pkgs.nodejs_22}/bin:/usr/bin:/bin";
@@ -35,7 +36,7 @@ in {
     };
     Service = {
       Type = "simple";
-      WorkingDirectory = "%h/rh-device-management/services/config-service";
+      WorkingDirectory = "${homeDir}/rh-device-management/services/config-service";
       ExecStart = "${pkgs.nodejs_22}/bin/node --import tsx src/index.ts";
       Restart = "on-failure";
       RestartSec = 5;
