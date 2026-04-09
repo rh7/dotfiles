@@ -312,13 +312,30 @@ if command -v nix &>/dev/null; then
     warn "Consider migrating to official Nix: /nix/nix-installer uninstall, then re-run setup."
   fi
 else
+  # Clean up any partial install from a previous failed attempt
+  if [[ "$OS" == "Darwin" ]]; then
+    NIX_DEV=$(diskutil list | grep "Nix Store" | awk '{print $NF}')
+    if [[ -n "$NIX_DEV" ]]; then
+      info "Found leftover Nix Store volume from previous attempt — cleaning up..."
+      sudo /usr/sbin/diskutil unmount force "$NIX_DEV" 2>/dev/null || true
+      sudo /usr/sbin/diskutil apfs deleteVolume "$NIX_DEV" 2>/dev/null || true
+      ok "Cleaned up stale volume"
+    fi
+  fi
+
+  # Official NixOS community installer.
+  # NOTE: on macOS, this must run from a GUI session (Terminal.app / Screen Sharing).
+  # Headless-only Macs block /etc/fstab writes needed for the Nix APFS volume.
+  # See: https://github.com/NixOS/nix/issues/13723
   info "Installing Nix (official NixOS community installer)..."
   info "This is the upstream open-source Nix — no proprietary additions."
   echo ""
-  info "Note: the installer may show 'nix: not found' warnings during self-test."
-  info "This is normal — Nix isn't in your shell PATH until we source it below."
-  echo ""
-  curl -sSfL https://artifacts.nixos.org/nix-installer | sh -s -- install --enable-flakes
+  if ! sh <(curl -L https://nixos.org/nix/install) --daemon; then
+    err "Nix installer failed."
+    err "If you see 'vifs: error creating /etc/fstab', re-run from a GUI session"
+    err "(Terminal.app via Screen Sharing, not SSH)."
+    exit 1
+  fi
 
   # Source nix into current shell
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
@@ -329,12 +346,26 @@ else
   ok "Nix installed (official)"
 fi
 
+# Post-install nix.conf tweaks
+NIX_CONF_CHANGED=false
+
 # Ensure macOS SSL certificates are configured (official installer doesn't do this)
 if [[ "$OS" == "Darwin" ]] && ! grep -q "ssl-cert-file" /etc/nix/nix.conf 2>/dev/null; then
   info "Configuring SSL certificates for Nix..."
   sudo sh -c 'echo "ssl-cert-file = /etc/ssl/cert.pem" >> /etc/nix/nix.conf'
-  sudo launchctl kickstart -k system/org.nixos.nix-daemon 2>/dev/null || true
+  NIX_CONF_CHANGED=true
   ok "SSL certificates configured"
+fi
+
+# Enable flakes (official installer doesn't enable them by default)
+if ! grep -q 'experimental-features.*flakes' /etc/nix/nix.conf 2>/dev/null; then
+  info "Enabling flakes and nix-command..."
+  sudo sh -c 'echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf'
+  NIX_CONF_CHANGED=true
+fi
+
+if $NIX_CONF_CHANGED; then
+  sudo launchctl kickstart -k system/org.nixos.nix-daemon 2>/dev/null || true
 fi
 
 # Remove FlakeHub from trusted substituters if present (Determinate adds this)
@@ -429,11 +460,11 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
       if nix build ".#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
         info "Running darwin-rebuild switch..."
         if command -v darwin-rebuild &>/dev/null; then
-          sudo darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
+          darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
             || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
         else
           nix build ".#darwinConfigurations.${HOSTNAME}.system"
-          sudo ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
+          ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
             || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
         fi
         if $NIX_BUILD_OK; then
