@@ -223,7 +223,12 @@ MATCHED_PROFILE=""
 EXPECTED_USER=""
 for entry in "${KNOWN_PROFILES[@]}"; do
   IFS='|' read -r name role _ expected_user <<< "$entry"
-  if [[ "$name" == "$HOSTNAME" ]]; then
+  if [[ "$(echo "$name" | tr '[:upper:]' '[:lower:]')" == "$(echo "$HOSTNAME" | tr '[:upper:]' '[:lower:]')" ]]; then
+    # Use the flake's casing (nix-darwin needs exact match)
+    if [[ "$name" != "$HOSTNAME" ]]; then
+      info "Adjusting hostname case: $HOSTNAME → $name"
+      HOSTNAME="$name"
+    fi
     MATCHED_PROFILE="$name"
     EXPECTED_USER="$expected_user"
     [[ -z "$ROLE_ARG" ]] && ROLE_ARG="$role"
