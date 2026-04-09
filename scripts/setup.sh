@@ -456,11 +456,11 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
       if nix build ".#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
         info "Running darwin-rebuild switch..."
         if command -v darwin-rebuild &>/dev/null; then
-          darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
+          sudo darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
             || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
         else
           nix build ".#darwinConfigurations.${HOSTNAME}.system"
-          ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
+          sudo ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
             || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
         fi
         if $NIX_BUILD_OK; then
@@ -664,7 +664,7 @@ if [[ -z "$MATCHED_PROFILE" ]]; then
   echo -e "  ${YELLOW}Then: darwin-rebuild switch --flake ~/dotfiles#${HOSTNAME}${NC}"
   echo ""
 fi
-if [[ -n "${TAILSCALE_IP:-}" ]]; then
+if [[ -n "${TAILSCALE_IP:-}" && -n "${CONFIG_SERVER:-}" ]]; then
   echo -e "  Dashboard: ${BLUE}http://${CONFIG_SERVER}/dashboard${NC}"
   echo ""
 fi
