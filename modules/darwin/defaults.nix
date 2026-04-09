@@ -52,7 +52,7 @@
 
   # ── Trackpad ─────────────────────────────────────────────────────────────
   system.defaults.trackpad = {
-    Clicking = false;  # no tap to click
+    Clicking = true;  # tap to click
     TrackpadRightClick = true;
     TrackpadThreeFingerDrag = true;
   };
