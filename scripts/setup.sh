@@ -299,6 +299,25 @@ if [[ "$CURRENT_HOSTNAME" != "$HOSTNAME" ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Enable Remote Login (sshd) so fleet management can SSH in later.
+# Uses launchctl directly to avoid the Full Disk Access requirement that
+# `systemsetup -setremotelogin on` has on modern macOS.
+# ══════════════════════════════════════════════════════════════════════════════
+if [[ "$OS" == "Darwin" ]]; then
+  if sudo /bin/launchctl print system/com.openssh.sshd &>/dev/null; then
+    ok "Remote Login already enabled"
+  else
+    info "Enabling Remote Login (sshd) for fleet SSH access..."
+    if sudo /bin/launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null; then
+      ok "Remote Login enabled"
+    else
+      warn "Could not enable Remote Login automatically."
+      warn "Turn it on manually: System Settings → General → Sharing → Remote Login"
+    fi
+  fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Step 3: Nix
 # ══════════════════════════════════════════════════════════════════════════════
 header "Step 3/8: Nix Package Manager"

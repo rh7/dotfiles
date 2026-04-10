@@ -69,8 +69,14 @@
 
   # ── Activation ──────────────────────────────────────────────────────────
   system.activationScripts.postActivation.text = ''
-    # Enable Remote Login (SSH) and Screen Sharing for fleet management
-    /usr/sbin/systemsetup -setremotelogin on 2>/dev/null || true
+    # Enable Remote Login (sshd) for fleet management.
+    # systemsetup -setremotelogin requires Full Disk Access, which launchd
+    # activation scripts don't have — loading the plist directly avoids TCC.
+    if ! /bin/launchctl print system/com.openssh.sshd &>/dev/null; then
+      /bin/launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+    fi
+
+    # Enable Screen Sharing / ARD (best-effort — may require user approval)
     /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
       -activate -configure -access -on -privs -all -quiet 2>/dev/null || true
 
