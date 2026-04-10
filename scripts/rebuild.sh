@@ -159,28 +159,61 @@ if ! $AUTO_CONFIRM; then
 fi
 
 # ── Step 5: Activate (requires sudo) ──
+# Classify darwin-rebuild exit into success / known-harmless / real failure.
+# Captures the output so we can inspect it, then prints a truthful summary.
+run_darwin_rebuild() {
+  local cmd=("$@")
+  local log rc
+  log="$(mktemp -t rebuild-log.XXXXXX)"
+  set +e
+  "${cmd[@]}" 2>&1 | tee "$log"
+  rc=${PIPESTATUS[0]}
+  set -e
+
+  if [[ $rc -eq 0 ]]; then
+    ok "System updated"
+  else
+    # Heuristics: real failures we don't want to hide
+    local has_brew_fail=false has_mas_fail=false has_nix_fail=false
+    grep -qiE 'brew bundle failed|brewfile dependency failed' "$log" && has_brew_fail=true
+    grep -qi 'installing .* has failed' "$log" && has_mas_fail=true
+    grep -qiE 'error: builder for|error: build of' "$log" && has_nix_fail=true
+
+    warn "darwin-rebuild exited with code $rc"
+    if $has_mas_fail; then
+      err "mas / App Store install failed — check output above for the app name"
+      err "Workaround: install the app manually from the App Store, then re-run"
+    fi
+    if $has_brew_fail; then
+      err "brew bundle had failures — not all Homebrew packages installed"
+    fi
+    if $has_nix_fail; then
+      err "Nix build error — check output above"
+    fi
+    if ! $has_brew_fail && ! $has_mas_fail && ! $has_nix_fail; then
+      warn "No known failure pattern detected — likely sops secrets on first build (see #27)"
+      warn "Check the output above to be sure"
+    fi
+  fi
+  rm -f "$log"
+}
+
 info "Activating configuration..."
 case "$OS" in
   Darwin)
     if command -v darwin-rebuild &>/dev/null; then
-      sudo darwin-rebuild switch --flake "$FLAKE_REF" \
-        && ok "System updated" \
-        || warn "Rebuild completed with warnings (likely sops secrets — see #27)"
+      run_darwin_rebuild sudo darwin-rebuild switch --flake "$FLAKE_REF"
     elif [[ -n "${DARWIN_REBUILD:-}" ]]; then
-      sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF" \
-        && ok "System updated" \
-        || warn "Rebuild completed with warnings (likely sops secrets — see #27)"
+      run_darwin_rebuild sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF"
     else
       nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system"
-      sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}" \
-        && ok "System updated" \
-        || warn "Rebuild completed with warnings (likely sops secrets — see #27)"
+      run_darwin_rebuild sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}"
     fi
     ;;
   Linux)
     sudo nixos-rebuild switch --flake "$FLAKE_REF" \
       && ok "System updated" \
-      || warn "Rebuild completed with warnings"
+      || warn "nixos-rebuild exited non-zero — check output above"
     ;;
 esac
 echo ""
