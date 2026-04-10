@@ -16,9 +16,11 @@
     "grammarly-desktop"
   ];
 
-  homebrew.masApps = {
-    "Trello" = 1278508951;
-    "Streaks" = 963034692;
-    "Be Focused" = 973134470;
-  };
+  # Mac App Store apps: install manually via App Store app.
+  # `mas` CLI auto-install is unreliable on recent macOS — it prompts for
+  # Apple ID auth non-interactively and fails the whole brew bundle.
+  # homebrew.masApps = {
+  #   "Trello" = 1278508951;
+  #   "Streaks" = 963034692;
+  # };
 }
