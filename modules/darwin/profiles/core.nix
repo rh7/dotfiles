@@ -17,12 +17,16 @@
   ];
 
   homebrew.brews = [
-    "mas"        # Mac App Store CLI
+    "mas"        # Mac App Store CLI (kept for manual use)
     "mackup"     # settings sync
   ];
 
-  homebrew.masApps = {
-    "Perplexity" = 6714467650;
-    "Endel" = 1346247457;
-  };
+  # masApps disabled — `mas` install fails non-interactively on modern macOS,
+  # which breaks the entire `darwin-rebuild switch` brew bundle phase.
+  # Tracked as App Store manual installs in the post-setup checklist instead.
+  # See rh7/rh-device-management#50.
+  # homebrew.masApps = {
+  #   "Perplexity" = 6714467650;
+  #   "Endel" = 1346247457;
+  # };
 }
