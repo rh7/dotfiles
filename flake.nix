@@ -26,6 +26,7 @@
       hostname,
       username ? "rouvenheck",
       role ? ./modules/roles/workstation-mac.nix,
+      needsSecrets ? true,
       extraModules ? [],
       extraHomeModules ? [],
     }:
@@ -37,8 +38,6 @@
           ./modules/darwin/security.nix
           ./modules/darwin/homebrew.nix
           role
-          sops-nix.darwinModules.sops
-          ./modules/secrets.nix
           home-manager.darwinModules.home-manager
           {
             home-manager.useGlobalPkgs = true;
@@ -56,6 +55,9 @@
             system.primaryUser = username;
             time.timeZone = "America/Puerto_Rico";
           }
+        ] ++ nixpkgs.lib.optionals needsSecrets [
+          sops-nix.darwinModules.sops
+          ./modules/secrets.nix
         ] ++ extraModules;
       };
 
@@ -164,6 +166,7 @@
         hostname = "Kassie-M5-Air13";
         username = "kassie";
         role = ./modules/roles/personal-mac.nix;
+        needsSecrets = false;
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
     };
