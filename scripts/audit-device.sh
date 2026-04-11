@@ -7,8 +7,8 @@
 #   ./scripts/audit-device.sh --run        # audit + upload (non-interactive, for cron)
 #   ./scripts/audit-device.sh --local      # audit only, print JSON (no upload)
 #   ./scripts/audit-device.sh --save       # audit and save to ~/dotfiles-backups/audit/
-#   ./scripts/audit-device.sh --install    # install daily cron
-#   ./scripts/audit-device.sh --uninstall  # remove daily cron
+#   ./scripts/audit-device.sh --install    # install daily schedule (LaunchAgent on macOS, cron on Linux)
+#   ./scripts/audit-device.sh --uninstall  # remove daily schedule
 #
 # On machines without the dotfiles repo (e.g. fresh Mac):
 #   curl -fsSL config.rh7labs.com/audit | bash
@@ -75,21 +75,101 @@ if [[ "$MODE" == "interactive" ]]; then
   exec 3<&-
 fi
 
-# ── Install daily cron ─────────────────────────────────────────────────
-install_cron() {
-  # Prefer local script if dotfiles repo exists, otherwise curl from GitHub
+# ── Install daily schedule ─────────────────────────────────────────────
+# macOS 15+ blocks `crontab < tmpfile` under TCC unless the caller has Full
+# Disk Access, so on Darwin we install a LaunchAgent instead. Linux still
+# uses crontab.
+LAUNCHAGENT_LABEL="com.rh7.audit"
+LAUNCHAGENT_PLIST="$HOME/Library/LaunchAgents/${LAUNCHAGENT_LABEL}.plist"
+
+build_audit_cmd() {
   if [[ -f "$HOME/dotfiles/scripts/audit-device.sh" ]]; then
-    CRON_CMD="bash $HOME/dotfiles/scripts/audit-device.sh --run"
+    echo "bash $HOME/dotfiles/scripts/audit-device.sh --run"
   else
-    CRON_CMD="curl -fsSL $SCRIPT_URL | bash -s -- --run"
+    echo "curl -fsSL $SCRIPT_URL | bash -s -- --run"
   fi
-  # Daily at 8am, randomize minute to avoid fleet thundering herd
-  CRON_MIN=$(( RANDOM % 30 ))
-  CRON_LINE="${CRON_MIN} 8 * * * ${CRON_CMD} ${CRON_TAG}"
-  # Remove old audit + old heartbeat entries, add new
-  (crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG"; echo "$CRON_LINE") | crontab -
-  ok "Installed daily audit cron (8:$(printf '%02d' $CRON_MIN) AM)"
-  info "→ $CRON_CMD"
+}
+
+install_launchagent() {
+  local audit_cmd
+  audit_cmd="$(build_audit_cmd)"
+  local hour=8
+  local minute=$(( RANDOM % 30 ))
+
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$LAUNCHAGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LAUNCHAGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>${audit_cmd}</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>${hour}</integer>
+        <key>Minute</key>
+        <integer>${minute}</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/${LAUNCHAGENT_LABEL}.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/${LAUNCHAGENT_LABEL}.err.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
+PLIST
+
+  launchctl unload "$LAUNCHAGENT_PLIST" 2>/dev/null || true
+  launchctl load "$LAUNCHAGENT_PLIST"
+  ok "Installed daily audit LaunchAgent ($(printf '%d:%02d' "$hour" "$minute") AM)"
+  info "→ $LAUNCHAGENT_PLIST"
+  info "→ $audit_cmd"
+}
+
+install_crontab() {
+  local audit_cmd cron_min cron_line
+  audit_cmd="$(build_audit_cmd)"
+  cron_min=$(( RANDOM % 30 ))
+  cron_line="${cron_min} 8 * * * ${audit_cmd} ${CRON_TAG}"
+  (crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG"; echo "$cron_line") | crontab -
+  ok "Installed daily audit cron (8:$(printf '%02d' "$cron_min") AM)"
+  info "→ $audit_cmd"
+}
+
+install_cron() {
+  if [[ "$OS" == "Darwin" ]]; then
+    install_launchagent
+  else
+    install_crontab
+  fi
+}
+
+uninstall_schedule() {
+  if [[ "$OS" == "Darwin" ]]; then
+    if [[ -f "$LAUNCHAGENT_PLIST" ]]; then
+      launchctl unload "$LAUNCHAGENT_PLIST" 2>/dev/null || true
+      rm -f "$LAUNCHAGENT_PLIST"
+      ok "Removed audit LaunchAgent"
+    else
+      info "No audit LaunchAgent installed"
+    fi
+  else
+    crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG" | crontab -
+    ok "Removed audit cron job"
+  fi
 }
 
 if [[ "$MODE" == "--install" ]]; then
@@ -98,8 +178,7 @@ if [[ "$MODE" == "--install" ]]; then
 fi
 
 if [[ "$MODE" == "--uninstall" ]]; then
-  crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG" | crontab -
-  ok "Removed audit cron job"
+  uninstall_schedule
   exit 0
 fi
 
@@ -1635,7 +1714,7 @@ case "$MODE" in
         && ok "Device registered with fleet" >&2 \
         || warn "Device registration failed" >&2
       # Show checklist in interactive mode (not cron)
-      if [[ -t 1 || "$MODE" == "--run-and-install" ]] && [[ -z "$CRON_TAG_PRESENT" ]]; then
+      if [[ -t 1 || "$MODE" == "--run-and-install" ]] && [[ -z "${CRON_TAG_PRESENT:-}" ]]; then
         show_checklist "$CONFIG_URL"
       fi
     else
