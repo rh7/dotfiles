@@ -76,12 +76,12 @@
       /bin/launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
     fi
 
-    # Enable Screen Sharing (ARD). ARDAgent's kickstart has the same TCC
-    # problem as systemsetup — launchd activation can't invoke it. Load the
-    # screensharing launchd plist directly, which doesn't require FDA.
-    if ! /bin/launchctl print system/com.apple.screensharing &>/dev/null; then
-      /bin/launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
-    fi
+    # Enable Screen Sharing (ARD). ARDAgent's kickstart binary requires TCC
+    # privileges that launchd activation scripts don't have. Drive launchd
+    # directly via enable + kickstart — no FDA required, both are idempotent
+    # (enable is a no-op if already enabled, kickstart is a no-op if running).
+    /bin/launchctl enable system/com.apple.screensharing 2>/dev/null || true
+    /bin/launchctl kickstart system/com.apple.screensharing 2>/dev/null || true
 
     killall Finder || true
   '';
