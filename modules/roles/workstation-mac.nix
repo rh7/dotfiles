@@ -29,6 +29,7 @@
     "/Applications/Telegram.app"
     "/Applications/Signal.app"
     "/Applications/Claude.app"
+    "/Applications/ChatGPT.app"
     "/System/Applications/Messages.app"
     "/System/Applications/Reminders.app"
     "/Applications/Termius.app"

@@ -35,6 +35,7 @@
     "/System/Applications/Notes.app"
     "/System/Applications/Reminders.app"
     "/Applications/Notion.app"
+    "/Applications/ChatGPT.app"
     "/Applications/Slack.app"
     "/Applications/zoom.us.app"
     "/Applications/Spotify.app"
