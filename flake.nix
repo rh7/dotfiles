@@ -162,7 +162,7 @@
       # ── Kassie's MacBook Air (personal role — lighter setup) ──
       "Kassie-M5-Air13" = mkMac {
         hostname = "Kassie-M5-Air13";
-        username = "Kassie";
+        username = "kassie";
         role = ./modules/roles/personal-mac.nix;
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
