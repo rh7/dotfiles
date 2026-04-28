@@ -19,7 +19,8 @@
   # Mac App Store apps — best-effort install via postActivation (not brew bundle).
   # See rh7/rh-device-management#50.
   system.activationScripts.postActivation.text = ''
-    /opt/homebrew/bin/mas install 1278508951 2>/dev/null || true  # Trello
-    /opt/homebrew/bin/mas install 963034692  2>/dev/null || true  # Streaks
+    mas_install() { /opt/homebrew/bin/mas install "$1" 2>/dev/null || echo "[WARN] Failed to install $2 from App Store — sign in manually and run: mas install $1"; }
+    mas_install 1278508951 "Trello"
+    mas_install 963034692  "Streaks"
   '';
 }
