@@ -11,7 +11,7 @@
     "dropbox"
     # "obsidian"  # moved to dev-apps profile
     # "expressvpn"  # install manually — Homebrew cask conflicts with existing installs
-    "tripmode"
+    # "tripmode"  # install from App Store — Homebrew cask version hangs on activation dialog
     "tailscale-app"
     # dia, speedtest — Mac App Store only, not in Homebrew
   ];
@@ -28,5 +28,6 @@
   # homebrew.masApps = {
   #   "Perplexity" = 6714467650;
   #   "Endel" = 1346247457;
+  #   "TripMode" = 1513400665;
   # };
 }
