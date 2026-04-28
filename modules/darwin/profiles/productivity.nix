@@ -16,11 +16,10 @@
     "grammarly-desktop"
   ];
 
-  # Mac App Store apps: install manually via App Store app.
-  # `mas` CLI auto-install is unreliable on recent macOS — it prompts for
-  # Apple ID auth non-interactively and fails the whole brew bundle.
-  # homebrew.masApps = {
-  #   "Trello" = 1278508951;
-  #   "Streaks" = 963034692;
-  # };
+  # Mac App Store apps — best-effort install via postActivation (not brew bundle).
+  # See rh7/rh-device-management#50.
+  system.activationScripts.postActivation.text = ''
+    /opt/homebrew/bin/mas install 1278508951 2>/dev/null || true  # Trello
+    /opt/homebrew/bin/mas install 963034692  2>/dev/null || true  # Streaks
+  '';
 }

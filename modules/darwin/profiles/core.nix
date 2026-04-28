@@ -21,13 +21,11 @@
     "mackup"     # settings sync
   ];
 
-  # masApps disabled — `mas` install fails non-interactively on modern macOS,
-  # which breaks the entire `darwin-rebuild switch` brew bundle phase.
-  # Tracked as App Store manual installs in the post-setup checklist instead.
-  # See rh7/rh-device-management#50.
-  # homebrew.masApps = {
-  #   "Perplexity" = 6714467650;
-  #   "Endel" = 1346247457;
-  #   "TripMode" = 1513400665;
-  # };
+  # Mac App Store apps — best-effort install via postActivation (not brew bundle).
+  # See rh7/rh-device-management#50 for why masApps is disabled in brew bundle.
+  system.activationScripts.postActivation.text = ''
+    /opt/homebrew/bin/mas install 1513400665 2>/dev/null || true  # TripMode
+    /opt/homebrew/bin/mas install 6714467650 2>/dev/null || true  # Perplexity
+    /opt/homebrew/bin/mas install 1346247457 2>/dev/null || true  # Endel
+  '';
 }

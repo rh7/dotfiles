@@ -84,6 +84,7 @@
     /bin/launchctl kickstart system/com.apple.screensharing 2>/dev/null || true
 
     killall Finder || true
+
   '';
 
   # ── System ───────────────────────────────────────────────────────────────
