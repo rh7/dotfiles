@@ -131,6 +131,24 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ./scripts/device heartbeat --install  # install 5-min monitoring cron
 ```
 
+### Config drift audit
+
+`scripts/audit-config-drift.sh` compares actual machine state to the declared
+nix-darwin config — catches manually-installed apps, dock changes, MAS apps,
+and macOS defaults that have drifted from the flake.
+
+```bash
+./scripts/audit-config-drift.sh              # audit current host vs declared config
+./scripts/audit-config-drift.sh Kassie-M5-Air13  # audit a specific host
+./scripts/audit-config-drift.sh --snapshot   # save baseline of all defaults
+./scripts/audit-config-drift.sh --diff       # diff current state vs baseline
+```
+
+The `--snapshot` / `--diff` pair captures things the audit can't enumerate up
+front (mouse speed, custom keyboard shortcuts, hidden defaults). Useful when
+handing a device to someone else: snapshot before, diff after to fold their
+changes back into the flake.
+
 ## Settings Sync
 
 **mackup** syncs app preferences via iCloud.
