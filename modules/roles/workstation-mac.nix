@@ -13,6 +13,20 @@
     ../darwin/profiles/security.nix
   ];
 
+  homebrew.casks = [
+    "home-assistant"
+    "istat-menus"
+    "stremio"
+  ];
+
+  # Mac App Store apps — best-effort install via postActivation (not brew bundle).
+  # See rh7/rh-device-management#50.
+  system.activationScripts.postActivation.text = ''
+    mas_install() { /opt/homebrew/bin/mas install "$1" 2>/dev/null || echo "[WARN] Failed to install $2 from App Store — sign in manually and run: mas install $1"; }
+    mas_install 973134470 "Be Focused"
+    mas_install 980888073 "Crypto Pro"
+  '';
+
   # ── Dock apps (shared across all workstation Macs) ──────────────────────
   # persistent-apps replaces the entire dock — no Apple defaults remain.
   # persistent-others clears the right side (Downloads, Documents folders).
@@ -25,6 +39,7 @@
     "/Applications/Notion.app"
     "/Applications/Cursor.app"
     "/Applications/Superhuman.app"
+    "/Applications/Reader.app"
     "/Applications/Slack.app"
     "/Applications/Telegram.app"
     "/Applications/Signal.app"
@@ -34,5 +49,7 @@
     "/System/Applications/Reminders.app"
     "/Applications/Termius.app"
     "/Applications/Spotify.app"
+    "/Users/rouvenheck/Applications/Penumbra.app"
+    "/Applications/Home Assistant.app"
   ];
 }
