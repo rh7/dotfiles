@@ -1,4 +1,4 @@
-{ ... }:
+{ config, ... }:
 
 {
   # ── macOS Workstation: full developer setup ──────────────────────────────
@@ -25,6 +25,11 @@
     mas_install() { /opt/homebrew/bin/mas install "$1" 2>/dev/null || echo "[WARN] Failed to install $2 from App Store — sign in manually and run: mas install $1"; }
     mas_install 973134470 "Be Focused"
     mas_install 980888073 "Crypto Pro"
+
+    # Safari PWAs can't be installed declaratively — Safari generates a per-machine
+    # UUID bundle ID. Warn if missing so the user creates them via "Add to Dock".
+    pwa_check() { [ -d "/Users/${config.system.primaryUser}/Applications/$1.app" ] || echo "[WARN] Safari PWA '$1' missing — open $2 in Safari → File → Add to Dock"; }
+    pwa_check "CC" "https://cc.rh7labs.com/"
   '';
 
   # ── Dock apps (shared across all workstation Macs) ──────────────────────
@@ -50,6 +55,8 @@
     "/Applications/Termius.app"
     "/Applications/Spotify.app"
     "/Users/rouvenheck/Applications/Penumbra.app"
+    "/Applications/Element.app"
+    "/Users/rouvenheck/Applications/CC.app"
     "/Applications/Home Assistant.app"
   ];
 }
