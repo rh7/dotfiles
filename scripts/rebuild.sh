@@ -69,8 +69,8 @@ if [[ -d "$DOTFILES_DIR/.git" ]]; then
   fi
 fi
 
-# ── Step 2: Build (no sudo needed) ──
-# Ensure Nix is in PATH
+# ── Step 2: Audit drift ──
+# Ensure Nix is in PATH (audit needs `nix eval`, build needs it too).
 if ! command -v nix &>/dev/null; then
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
@@ -81,6 +81,35 @@ if ! command -v nix &>/dev/null; then
   fi
 fi
 
+# Catch manual changes (dock pins, brew installs, MAS apps, defaults)
+# that 'switch' would silently overwrite. Advisory — user decides.
+if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
+  info "Auditing local state for manual drift..."
+  echo ""
+  AUDIT_HOST="${FLAKE_REF##*#}"
+  audit_rc=0
+  "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" || audit_rc=$?
+  case "$audit_rc" in
+    0) : ;;  # no drift
+    1) # drift detected
+      echo ""
+      warn "Manual changes above will not survive 'switch'."
+      warn "Fold them into the flake first if you want to keep them."
+      if ! $AUTO_CONFIRM; then
+        echo -en "${BOLD}  Continue with rebuild anyway? [y/N] ${NC}"
+        read -r drift_confirm < /dev/tty
+        if [[ "$drift_confirm" != "y" && "$drift_confirm" != "Y" ]]; then
+          info "Cancelled. Edit the flake to capture the drift, then re-run."
+          exit 0
+        fi
+      fi
+      ;;
+    *) warn "Audit failed (exit $audit_rc) — proceeding without drift check" ;;
+  esac
+  echo ""
+fi
+
+# ── Step 3: Build (no sudo needed) ──
 info "Building configuration (no root required)..."
 echo ""
 
@@ -114,7 +143,7 @@ esac
 ok "Build succeeded"
 echo ""
 
-# ── Step 3: Show diff (no sudo needed) ──
+# ── Step 4: Show diff (no sudo needed) ──
 CURRENT="/run/current-system"
 NEW="./result"
 
@@ -142,7 +171,7 @@ if $BUILD_ONLY; then
   exit 0
 fi
 
-# ── Step 4: Confirm ──
+# ── Step 5: Confirm ──
 if ! $AUTO_CONFIRM; then
   echo -e "${BOLD}━━━ Activation ━━━${NC}"
   echo ""
@@ -158,7 +187,7 @@ if ! $AUTO_CONFIRM; then
   echo ""
 fi
 
-# ── Step 5: Activate (requires sudo) ──
+# ── Step 6: Activate (requires sudo) ──
 # Classify darwin-rebuild exit into success / known-harmless / real failure.
 # Captures the output so we can inspect it, then prints a truthful summary.
 run_darwin_rebuild() {
@@ -218,7 +247,7 @@ case "$OS" in
 esac
 echo ""
 
-# ── Step 6: Clean up ──
+# ── Step 7: Clean up ──
 rm -f result
 
 echo -e "${GREEN}${BOLD}Done.${NC} Run 'darwin-rebuild list' to see available generations."
