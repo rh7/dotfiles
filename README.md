@@ -36,10 +36,16 @@ Or use the bootstrap script: `bash bootstrap.sh`
 ## Daily Usage
 
 ```bash
-nrs          # rebuild from ~/dotfiles using $(hostname)
-nup          # update flake inputs
-dots         # open dotfiles in Zed
+./scripts/rebuild.sh   # safe rebuild: pull → audit drift → build → preview diff → confirm → switch
+nrs                    # raw alias: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
+nup                    # update flake inputs
+dots                   # open dotfiles in Zed
 ```
+
+**Prefer `rebuild.sh`** — it pulls latest, runs the drift audit (advisory; only
+prompts when risky `+` drift is detected), shows an `nvd` diff of the package
+closure, and asks for confirmation before activation. `nrs` skips all of that
+and switches directly.
 
 ## Structure
 
@@ -137,12 +143,27 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 nix-darwin config — catches manually-installed apps, dock changes, MAS apps,
 and macOS defaults that have drifted from the flake.
 
+**Runs automatically** as Step 2 of `./scripts/rebuild.sh`, so you don't
+normally need to invoke it directly. Standalone usage:
+
 ```bash
 ./scripts/audit-config-drift.sh              # audit current host vs declared config
 ./scripts/audit-config-drift.sh Kassie-M5-Air13  # audit a specific host
 ./scripts/audit-config-drift.sh --snapshot   # save baseline of all defaults
 ./scripts/audit-config-drift.sh --diff       # diff current state vs baseline
 ```
+
+The audit distinguishes two kinds of drift:
+
+- **`+` (risky)** — present locally but not declared. `switch` will overwrite
+  these (manual dock pins, brew-installed-but-not-declared apps, MAS apps the
+  flake doesn't know about). Fold them into the flake first if you want them
+  to survive future rebuilds.
+- **`-` (benign)** — declared but not yet present locally. `switch` will just
+  apply them — no manual changes at risk.
+
+`rebuild.sh` only prompts when risky drift is detected; benign drift proceeds
+silently.
 
 The `--snapshot` / `--diff` pair captures things the audit can't enumerate up
 front (mouse speed, custom keyboard shortcuts, hidden defaults). Useful when

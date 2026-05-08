@@ -77,6 +77,13 @@ When you run `nrs` for the first time on an existing machine, nix-darwin will:
 
 The audit lets you see what you have, compare it to what the dotfiles manage, and add anything missing before you deploy.
 
+> **Tip:** `./scripts/rebuild.sh` runs `audit-config-drift.sh` automatically as
+> Step 2 and prompts before activating when **risky drift** (manual changes
+> not in the flake) is detected. So you can use it both for first-time
+> onboarding and for daily updates without worrying about silently losing
+> manual customisations. The fleet-wide audit (`./scripts/device audit`)
+> below is still recommended for the broader inventory + config-service flow.
+
 ### Step 1: Clone dotfiles (don't rebuild yet!)
 
 ```bash
@@ -259,7 +266,7 @@ curl -s http://rouvens-mac-studio-1:3456/api/audit/compare/$(hostname)/m5-air | 
 A: No, not with the current config (`cleanup = "uninstall"`). Only apps that were *previously managed by Homebrew through the dotfiles* and then removed from the dotfiles will be uninstalled. Your manually installed apps are untouched.
 
 **Q: What about macOS settings (dock, finder, etc.)?**
-A: These *will* be overwritten to match the dotfiles config. That's why we audit and backup first — you can always restore with `defaults import`.
+A: These *will* be overwritten to match the dotfiles config. `./scripts/rebuild.sh` mitigates this by running `audit-config-drift.sh` as a pre-flight step and prompting when risky drift is detected — so you get a chance to fold manual changes into the flake before they're overwritten. Direct `nrs`/`darwin-rebuild switch` skips that gate. You can always restore with `defaults import`.
 
 **Q: Can I run the audit without the config service?**
 A: Yes. Use `./scripts/device audit --local` to just print the JSON, or `--save` to write it to a file.
