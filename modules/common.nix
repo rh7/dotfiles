@@ -39,6 +39,11 @@
   # ── Git ──────────────────────────────────────────────────────────────────
   programs.git = {
     enable = true;
+    # Silence home-manager 25.05 deprecation: format default changed
+    # "openpgp" → null. We don't sign commits yet (1Password SSH block
+    # below is commented out), so null = no gpg.format written to
+    # .gitconfig. Switch to "ssh" when SSH signing is enabled.
+    signing.format = null;
     settings.user.name = "Rouven Heck";
     settings.user.email = "dev@heck.cc";
     settings = {
