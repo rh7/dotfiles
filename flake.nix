@@ -53,7 +53,9 @@
             };
             networking.hostName = hostname;
             system.primaryUser = username;
-            time.timeZone = "America/Puerto_Rico";
+            # Timezone is left unmanaged so macOS's "Set automatically using
+            # current location" stays in effect — see modules/darwin/defaults.nix
+            # which enables auto-timezone in postActivation.
           }
         ] ++ nixpkgs.lib.optionals needsSecrets [
           sops-nix.darwinModules.sops

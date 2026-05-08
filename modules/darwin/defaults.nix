@@ -85,6 +85,11 @@
 
     killall Finder || true
 
+    # Keep automatic timezone on as the default. Replaces the hardcoded
+    # `time.timeZone` declaration in flake.nix that used to override the
+    # user's physical location on every rebuild. Requires Location Services;
+    # if LS is off, this is a no-op (user can enable in System Settings).
+    /usr/bin/defaults write /Library/Preferences/com.apple.timezone.auto Active -bool true 2>/dev/null || true
   '';
 
   # ── System ───────────────────────────────────────────────────────────────
