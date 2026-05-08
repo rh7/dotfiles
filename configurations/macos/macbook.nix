@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, ... }:
 
 {
   # ── MacBook-specific casks (not needed on desktop/studio) ────────────────
@@ -14,6 +14,12 @@
 
     # ── Personal ──
     "vlc"
-    
+
+  ];
+
+  # ── MacBook-specific dock pins (appended after workstation-mac.nix list) ──
+  # mkAfter keeps the shared dock intact and tacks personal apps on the end.
+  system.defaults.dock.persistent-apps = lib.mkAfter [
+    "/Users/rouvenheck/Applications/Kubera.app"
   ];
 }
