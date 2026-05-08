@@ -23,8 +23,8 @@
 
   # Mac App Store apps — best-effort install via postActivation (not brew bundle).
   # See rh7/rh-device-management#50 for why masApps is disabled in brew bundle.
+  # mas_install helper is defined in modules/darwin/mas.nix.
   system.activationScripts.postActivation.text = ''
-    mas_install() { /opt/homebrew/bin/mas install "$1" 2>/dev/null || echo "[WARN] Failed to install $2 from App Store — sign in manually and run: mas install $1"; }
     mas_install 1513400665 "TripMode"
     mas_install 6714467650 "Perplexity"
     mas_install 1346247457 "Endel"

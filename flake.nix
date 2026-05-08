@@ -37,6 +37,7 @@
           ./modules/darwin/defaults.nix
           ./modules/darwin/security.nix
           ./modules/darwin/homebrew.nix
+          ./modules/darwin/mas.nix
           role
           home-manager.darwinModules.home-manager
           {
