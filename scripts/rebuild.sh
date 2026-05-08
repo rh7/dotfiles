@@ -216,10 +216,12 @@ run_darwin_rebuild() {
   if [[ $rc -eq 0 ]]; then
     ok "System updated"
   else
-    # Heuristics: real failures we don't want to hide
+    # Heuristics: real failures we don't want to hide.
+    # Note: "Installing X has failed!" is a brew-bundle output line, NOT MAS —
+    # it fires for cask install failures (e.g. version-mismatch on adopt).
     local has_brew_fail=false has_mas_fail=false has_nix_fail=false
-    grep -qiE 'brew bundle failed|brewfile dependency failed' "$log" && has_brew_fail=true
-    grep -qi 'installing .* has failed' "$log" && has_mas_fail=true
+    grep -qiE 'brew bundle failed|brewfile dependency failed|installing .* has failed' "$log" && has_brew_fail=true
+    grep -qiE 'failed to install .* from app store' "$log" && has_mas_fail=true
     grep -qiE 'error: builder for|error: build of' "$log" && has_nix_fail=true
 
     warn "darwin-rebuild exited with code $rc"
