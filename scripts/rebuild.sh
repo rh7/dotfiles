@@ -87,21 +87,35 @@ if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
   info "Auditing local state for manual drift..."
   echo ""
   AUDIT_HOST="${FLAKE_REF##*#}"
+  audit_log=$(mktemp -t audit-log.XXXXXX)
   audit_rc=0
-  "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" || audit_rc=$?
+  "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" 2>&1 \
+    | tee "$audit_log" || audit_rc=${PIPESTATUS[0]}
+
+  # Parse risky/benign counts from audit's machine-readable summary line.
+  risky=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*risky=([0-9]+).*/\1/p')
+  benign=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*benign=([0-9]+).*/\1/p')
+  rm -f "$audit_log"
+  risky=${risky:-0}
+  benign=${benign:-0}
+
   case "$audit_rc" in
     0) : ;;  # no drift
-    1) # drift detected
-      echo ""
-      warn "Manual changes above will not survive 'switch'."
-      warn "Fold them into the flake first if you want to keep them."
-      if ! $AUTO_CONFIRM; then
-        echo -en "${BOLD}  Continue with rebuild anyway? [y/N] ${NC}"
-        read -r drift_confirm < /dev/tty
-        if [[ "$drift_confirm" != "y" && "$drift_confirm" != "Y" ]]; then
-          info "Cancelled. Edit the flake to capture the drift, then re-run."
-          exit 0
+    1) # some drift exists; only prompt when it's risky
+      if [[ "$risky" -gt 0 ]]; then
+        echo ""
+        warn "$risky manual change(s) above would be overwritten by 'switch'."
+        warn "Fold them into the flake first if you want to keep them."
+        if ! $AUTO_CONFIRM; then
+          echo -en "${BOLD}  Continue with rebuild anyway? [y/N] ${NC}"
+          read -r drift_confirm < /dev/tty
+          if [[ "$drift_confirm" != "y" && "$drift_confirm" != "Y" ]]; then
+            info "Cancelled. Edit the flake to capture the drift, then re-run."
+            exit 0
+          fi
         fi
+      else
+        info "Drift is in the safe direction ($benign declared item(s) pending) — proceeding."
       fi
       ;;
     *) warn "Audit failed (exit $audit_rc) — proceeding without drift check" ;;

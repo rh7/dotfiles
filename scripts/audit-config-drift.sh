@@ -34,6 +34,11 @@ FLAKE_DIR="${DOTFILES:-$HOME/dotfiles}"
 SNAPSHOT_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-audit"
 SNAPSHOT_FILE="$SNAPSHOT_DIR/baseline-$HOST.txt"
 DRIFT=0
+# Track drift direction separately so callers can distinguish risky from benign:
+#   RISKY  = `+` items: present locally, not in config → 'switch' WILL overwrite.
+#   BENIGN = `-` items: in config, not present locally → 'switch' WILL apply.
+RISKY=0
+BENIGN=0
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS only." >&2; exit 2
@@ -48,8 +53,8 @@ fi
 # ── Output helpers ────────────────────────────────────────────────────
 heading() { printf "\n\033[1;36m== %s ==\033[0m\n" "$*"; }
 ok()      { printf "  \033[32m✓\033[0m %s\n" "$*"; }
-add()     { printf "  \033[33m+\033[0m %s\n" "$*"; DRIFT=1; }
-sub()     { printf "  \033[31m-\033[0m %s\n" "$*"; DRIFT=1; }
+add()     { printf "  \033[33m+\033[0m %s\n" "$*"; DRIFT=1; RISKY=$((RISKY+1)); }
+sub()     { printf "  \033[31m-\033[0m %s\n" "$*"; DRIFT=1; BENIGN=$((BENIGN+1)); }
 note()    { printf "  \033[90m· %s\033[0m\n" "$*"; }
 
 # Evaluate an attribute of the host's darwinConfiguration as JSON.
@@ -205,6 +210,7 @@ else
     note "actual:"
     echo "$actual_dock" | sed 's/^/    /'
     DRIFT=1
+    RISKY=$((RISKY+1))   # switch will overwrite manual reorder
   fi
 fi
 
@@ -341,10 +347,18 @@ done
 
 # ── Summary ───────────────────────────────────────────────────────────
 echo
+# Machine-readable summary line — callers (e.g. rebuild.sh) parse this to
+# distinguish risky drift (manual changes that 'switch' would overwrite)
+# from benign drift (declared items not yet applied — 'switch' just applies them).
+echo "DRIFT_RESULT: risky=$RISKY benign=$BENIGN"
+
 if [[ $DRIFT -eq 0 ]]; then
   printf "\033[1;32mNo drift detected.\033[0m\n"
   exit 0
+elif [[ $RISKY -eq 0 ]]; then
+  printf "\033[1;36mOnly benign drift (%d declared item(s) pending) — 'switch' will apply.\033[0m\n" "$BENIGN"
+  exit 1
 else
-  printf "\033[1;33mDrift detected — review above before running 'darwin-rebuild switch'.\033[0m\n"
+  printf "\033[1;33mRisky drift detected — %d manual change(s) will be overwritten by 'switch'. Review above.\033[0m\n" "$RISKY"
   exit 1
 fi
