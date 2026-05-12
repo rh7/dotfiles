@@ -113,6 +113,7 @@ mackup/
 |------|-------|
 | CLI tool (all machines) | `modules/common.nix` |
 | macOS GUI app (all Macs) | Add to the appropriate `modules/darwin/profiles/*.nix` |
+| macOS GUI app (Mac App Store only) | Find the ID with `mas search "Name"`, then add `mas_install <ID> "Name"` to the matching profile's `system.activationScripts.postActivation.text` (helper defined in `modules/darwin/mas.nix`) |
 | macOS GUI app (one machine) | Add to that machine's `configurations/macos/*.nix` |
 | NixOS GUI app | Add to `modules/nixos/profiles/*.nix` |
 | Dev tool (all platforms) | `modules/home/profiles/development.nix` |
