@@ -12,4 +12,9 @@
     "proton-mail"
     # canary-mail, element-x, telegram-lite — Mac App Store only
   ];
+
+  # Mac App Store apps — mas_install helper defined in modules/darwin/mas.nix.
+  system.activationScripts.postActivation.text = ''
+    mas_install 539883307 "LINE"
+  '';
 }
