@@ -54,7 +54,7 @@
   system.defaults.trackpad = {
     Clicking = true;  # tap to click
     TrackpadRightClick = true;
-    TrackpadThreeFingerDrag = true;
+    TrackpadThreeFingerDrag = false;  # off so 3-finger swipe between Spaces works
   };
 
   # ── Screenshots ──────────────────────────────────────────────────────────

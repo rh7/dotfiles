@@ -1,6 +1,10 @@
 { lib, ... }:
 
 {
+  imports = [
+    ../../modules/darwin/profiles/office.nix
+  ];
+
   # ── MacBook-specific casks (not needed on desktop/studio) ────────────────
   homebrew.casks = [
     # ── Finance (Germany + US + Crypto) ──
