@@ -47,6 +47,13 @@ prompts when risky `+` drift is detected), shows an `nvd` diff of the package
 closure, and asks for confirmation before activation. `nrs` skips all of that
 and switches directly.
 
+Every `rebuild.sh` run is mirrored to a logfile at
+`~/.local/state/dotfiles/rebuild/<host>-<timestamp>.log` (last 20 per host
+retained; override the directory with `REBUILD_LOG_DIR`). Useful when
+`brew bundle` or activation fails deep in the output — `less -R <log>` or
+`grep -i fail <log>` to find what broke. The path is printed at the end of
+every run.
+
 ## Structure
 
 ```

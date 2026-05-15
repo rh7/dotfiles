@@ -43,11 +43,26 @@ while [[ $# -gt 0 ]]; do
       echo "  --yes, -y      Auto-confirm (skip interactive approval)"
       echo "  --build-only   Build only, don't activate"
       echo "  --flake REF    Override flake reference (default: ~/dotfiles#\$HOSTNAME)"
+      echo ""
+      echo "Logs: every run is mirrored to \$REBUILD_LOG_DIR (default:"
+      echo "  ~/.local/state/dotfiles/rebuild/) as <host>-<timestamp>.log."
+      echo "  Last 20 per host retained."
       exit 0
       ;;
     *) err "Unknown argument: $1"; exit 1 ;;
   esac
 done
+
+# ── Log file ──
+# Mirror full output to ~/.local/state/dotfiles/rebuild/ so failures from brew
+# bundle / activation can be grepped after the fact. Keeps last 20 per host.
+LOG_DIR="${REBUILD_LOG_DIR:-$HOME/.local/state/dotfiles/rebuild}"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/${HOSTNAME}-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+while IFS= read -r _old_log; do rm -f "$_old_log"; done < <(
+  ls -1t "$LOG_DIR/${HOSTNAME}-"*.log 2>/dev/null | tail -n +21
+)
 
 OS=$(uname -s)
 
@@ -267,4 +282,5 @@ echo ""
 rm -f result
 
 echo -e "${GREEN}${BOLD}Done.${NC} Run 'darwin-rebuild list' to see available generations."
+echo "Log: $LOG_FILE"
 echo ""
