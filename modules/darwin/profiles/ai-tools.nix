@@ -6,8 +6,11 @@
   homebrew.casks = [
     "claude"
     "chatgpt"
+    "codex-app"
     # "claude-code"  # moved to dev-apps profile
     "superwhisper"
+    "lm-studio"     # local LLM runner; MLX backend selectable in-app on Apple Silicon
+    "block-goose"   # Block's open-source AI agent (Goose.app)
   ];
 
   homebrew.brews = [

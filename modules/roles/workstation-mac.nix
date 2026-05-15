@@ -46,6 +46,7 @@
     "/Applications/Reader.app"
     "/Applications/Slack.app"
     "/Applications/Telegram.app"
+    "/Applications/LINE.app"
     "/Applications/Signal.app"
     "/Applications/Claude.app"
     "/Applications/ChatGPT.app"

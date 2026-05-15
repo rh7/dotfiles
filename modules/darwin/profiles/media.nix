@@ -5,6 +5,7 @@
   homebrew.casks = [
     "spotify"
     "pocket-casts"
+    "sonos"
     "vlc"
     # amazon-kindle, audible — Mac App Store only
   ];
