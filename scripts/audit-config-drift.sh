@@ -235,6 +235,10 @@ declare -A PKG_CASK_APPS=(
   [tailscale-app]="Tailscale.app"
   [zoom]="zoom.us.app"
   [gpg-suite-no-mail]="GPG Keychain.app"
+  [microsoft-excel]="Microsoft Excel.app"
+  [microsoft-word]="Microsoft Word.app"
+  [microsoft-powerpoint]="Microsoft PowerPoint.app"
+  [microsoft-teams]="Microsoft Teams.app"
 )
 
 # ── Mac App Store drift ───────────────────────────────────────────────
