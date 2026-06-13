@@ -57,7 +57,6 @@
     "/Applications/Spotify.app"
     "/Users/rouvenheck/Applications/Penumbra.app"
     "/Applications/Element.app"
-    "/Users/rouvenheck/Applications/CC.app"
     "/Applications/Home Assistant.app"
   ];
 }

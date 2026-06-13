@@ -20,5 +20,10 @@
   system.activationScripts.postActivation.text = ''
     mas_install 1278508951 "Trello"
     mas_install 963034692  "Streaks"
+
+    # Laptop/desktop-only utilities (moved out of core.nix so servers skip them)
+    mas_install 1513400665 "TripMode"
+    mas_install 6714467650 "Perplexity"
+    mas_install 1346247457 "Endel"
   '';
 }

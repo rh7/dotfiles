@@ -155,6 +155,7 @@
       # ── Mac Studio (workstation + AI inference + config service) ──
       "rouvens-mac-studio" = mkMac {
         hostname = "rouvens-mac-studio";
+        role = ./modules/roles/server-mac.nix;
         extraModules = [
           ./configurations/macos/mac-studio.nix
           ./modules/roles/ai-inference.nix

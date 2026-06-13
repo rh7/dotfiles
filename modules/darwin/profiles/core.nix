@@ -21,12 +21,7 @@
     "mackup"     # settings sync
   ];
 
-  # Mac App Store apps — best-effort install via postActivation (not brew bundle).
+  # Note: laptop/desktop-only MAS apps (TripMode, Perplexity, Endel) live in
+  # productivity.nix so they reach workstation + personal Macs but NOT servers.
   # See rh7/rh-device-management#50 for why masApps is disabled in brew bundle.
-  # mas_install helper is defined in modules/darwin/mas.nix.
-  system.activationScripts.postActivation.text = ''
-    mas_install 1513400665 "TripMode"
-    mas_install 6714467650 "Perplexity"
-    mas_install 1346247457 "Endel"
-  '';
 }
