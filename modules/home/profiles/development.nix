@@ -17,6 +17,7 @@
     git-lfs
     pre-commit
     supabase-cli
+    zellij
   ];
 
   # ── Tools installed via npm/brew instead of Nix ──────────────────────────

@@ -10,7 +10,7 @@
     # "raycast"  # dev profile only, not for all users
     "dropbox"
     # "obsidian"  # moved to dev-apps profile
-    # "expressvpn"  # install manually — Homebrew cask conflicts with existing installs
+    # "expressvpn"  # install manually — cask installer helper needs GUI auth, fails under brew bundle
     # "tripmode"  # install from App Store — Homebrew cask version hangs on activation dialog
     "tailscale-app"
     # dia, speedtest — Mac App Store only, not in Homebrew
@@ -28,5 +28,9 @@
     mas_install 1513400665 "TripMode"
     mas_install 6714467650 "Perplexity"
     mas_install 1346247457 "Endel"
+
+    # ExpressVPN cask installer needs GUI auth — can't run under brew bundle.
+    # Warn if missing so the user runs `brew install --cask expressvpn` once.
+    [ -d "/Applications/ExpressVPN.app" ] || echo "[WARN] ExpressVPN.app missing — install once via: brew install --cask expressvpn"
   '';
 }

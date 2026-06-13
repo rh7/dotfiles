@@ -70,7 +70,7 @@ modules/
     profiles/                          # Composable app sets (Homebrew casks/brews)
       core.nix                         #   1password, chrome, arc, raycast, tailscale
       dev-apps.nix                     #   cursor, ghostty, zed, orbstack, wezterm
-      communication.nix                #   slack, discord, telegram, signal, zoom
+      communication.nix                #   telegram, signal, discord, whatsapp, proton-mail, canary mail
       productivity.nix                 #   notion, linear, superhuman, granola
       ai-tools.nix                     #   claude, chatgpt, ollama, superwhisper
       media.nix                        #   spotify, pocketcasts, vlc
