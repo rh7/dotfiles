@@ -24,6 +24,7 @@
   # ── Dock apps (based on Kassie's M1 dock) ──────────────────────────────
   system.defaults.dock.persistent-others = [];
   system.defaults.dock.persistent-apps = [
+    "/Users/kassie/Applications/CC.app"
     "/Applications/Google Chrome.app"
     "/Applications/Arc.app"
     "/System/Applications/Messages.app"

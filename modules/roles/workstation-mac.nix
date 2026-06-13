@@ -49,6 +49,7 @@
     "/Applications/LINE.app"
     "/Applications/Signal.app"
     "/Applications/Claude.app"
+    "/Users/rouvenheck/Applications/CC.app"
     "/Applications/ChatGPT.app"
     "/System/Applications/Messages.app"
     "/System/Applications/Reminders.app"
