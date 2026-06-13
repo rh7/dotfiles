@@ -12,7 +12,10 @@
       upgrade = true;
       # "zap" removes anything not listed — uncomment once you're confident
       # cleanup = "zap";
-      cleanup = "uninstall";  # safe default: removes unlisted but doesn't zap
+      # cleanup = "uninstall";  # disabled: brew now refuses --cleanup without
+      # --force / HOMEBREW_ASK, and sudo strips the env in nix-darwin's activate
+      # script. audit-config-drift.sh catches unlisted casks anyway.
+      cleanup = "none";
     };
 
     taps = [

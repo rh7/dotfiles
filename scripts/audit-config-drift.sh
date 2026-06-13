@@ -241,6 +241,12 @@ declare -A PKG_CASK_APPS=(
   [microsoft-teams]="Microsoft Teams.app"
 )
 
+# Apps that must be installed manually (cask can't run non-interactively, etc.)
+# but are still "expected" — keep them out of the orphan-app warning.
+MANUAL_APPS=(
+  "ExpressVPN.app"  # cask installer helper needs GUI auth — install via `brew install --cask expressvpn`
+)
+
 # ── Mac App Store drift ───────────────────────────────────────────────
 heading "Mac App Store apps"
 declared_mas=$(eval_mas_ids)
@@ -303,6 +309,11 @@ done
 for id in $declared_mas $APPLE_STOCK_MAS_IDS; do
   name=$(mas_name "$id")
   [[ -n "$name" ]] && expected_apps+=$'\n'"${name}.app"
+done
+
+# Add manually-installed-but-expected apps.
+for app in "${MANUAL_APPS[@]}"; do
+  expected_apps+=$'\n'"$app"
 done
 
 expected_apps=$(echo "$expected_apps" | sort -u | sed '/^$/d')
