@@ -25,5 +25,9 @@
   homebrew.brews = [
     "direnv"     # per-project env/shells (nixpkgs build broken)
     "railway"    # Railway CLI
+    "gh"         # GitHub CLI
+    "ripgrep"    # fast recursive search
+    "tmux"       # terminal multiplexer
+    "yq"         # YAML/JSON processor
   ];
 }
