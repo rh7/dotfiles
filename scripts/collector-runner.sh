@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Pull-based collector runner — rh7/dotfiles (see rh-device-management#83, Phase 2).
+#
+# Fetches the CURRENT collector from the config service over Tailscale, verifies
+# its checksum AND that the server's read-only scan is clean, then runs it
+# (read-only, --upload). Installed once per device; thereafter what we collect
+# is changed centrally (merge to dotfiles) — no need to touch the device again.
+#
+# Safety:
+#   - Tailscale-only origin (config service on the tailnet).
+#   - Verifies sha256 against the manifest before executing — never runs
+#     unverified bytes.
+#   - Refuses to run if the server's read_only_scan is not clean.
+#   - Falls back to the cached last-good collector if the service is
+#     unreachable; skips entirely if neither is available.
+#   - Touches only its own cache + logs — never mutates the device.
+#
+# Usage:
+#   collector-runner.sh             # fetch -> verify -> run --upload (default)
+#   collector-runner.sh --check     # fetch + verify only (no execute)
+#   collector-runner.sh --local     # run cached last-good without fetching
+#   collector-runner.sh --install   # daily LaunchAgent (macOS) / cron (Linux)
+#   collector-runner.sh --uninstall
+set -euo pipefail
+
+COLLECTOR="${COLLECTOR:-audit-device.sh}"
+RUN_ARGS="${COLLECTOR_RUN_ARGS:---upload}"
+CACHE_DIR="${COLLECTOR_CACHE_DIR:-$HOME/.cache/fleet-collector}"
+LABEL="com.rh7.collector-runner"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+OS="$(uname -s)"
+CACHE="$CACHE_DIR/$COLLECTOR"
+LOG="$CACHE_DIR/runner.log"
+
+mkdir -p "$CACHE_DIR"
+log() { echo "$(date -u +%FT%TZ) collector-runner: $*" | tee -a "$LOG" >&2; }
+
+find_config_service() {
+  if [ -n "${CONFIG_SERVICE_URL:-}" ]; then
+    curl -sf "${CONFIG_SERVICE_URL}/api/health" --max-time 3 &>/dev/null && { echo "$CONFIG_SERVICE_URL"; return 0; }
+    return 1
+  fi
+  local host
+  for host in localhost rouvens-mac-studio-1 Rouvens-Mac-Studio.local rouvens-mac-studio 100.100.241.110; do
+    if curl -sf "http://${host}:3456/api/health" --max-time 3 &>/dev/null; then
+      echo "http://${host}:3456"; return 0
+    fi
+  done
+  return 1
+}
+
+json_field() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
+sha_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else sha256sum "$1" | awk '{print $1}'; fi
+}
+
+fetch_and_verify() {  # writes $CACHE on success
+  local base manifest want clean tmp got
+  base="$(find_config_service)" || { log "config service not reachable"; return 1; }
+  manifest="$(curl -fsS --max-time 15 "$base/api/collector/$COLLECTOR/manifest")" || { log "manifest fetch failed"; return 1; }
+  want="$(printf '%s' "$manifest" | json_field 'd.get("sha256","")')"
+  clean="$(printf '%s' "$manifest" | json_field 'str(d.get("read_only_scan",{}).get("clean",False)).lower()')"
+  [ -n "$want" ] || { log "manifest missing sha256"; return 1; }
+  if [ "$clean" != "true" ]; then log "REFUSING: $COLLECTOR failed the server read-only scan"; return 3; fi
+  tmp="$(mktemp)"
+  curl -fsS --max-time 30 "$base/api/collector/$COLLECTOR" -o "$tmp" || { rm -f "$tmp"; log "script fetch failed"; return 1; }
+  got="$(sha_of "$tmp")"
+  if [ "$want" != "$got" ]; then rm -f "$tmp"; log "checksum mismatch (want $want, got $got)"; return 2; fi
+  mv "$tmp" "$CACHE"
+  printf '%s\n' "$want" > "$CACHE.sha256"
+  log "fetched $COLLECTOR ok ($want) from $base"
+}
+
+install_schedule() {
+  local self; self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  if [ "$OS" = "Darwin" ]; then
+    local hour=8 minute=$(( RANDOM % 30 ))
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${LABEL}</string>
+    <key>ProgramArguments</key>
+    <array><string>/bin/bash</string><string>-lc</string><string>bash "${self}"</string></array>
+    <key>StartCalendarInterval</key>
+    <dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+    <key>StandardOutPath</key><string>/tmp/${LABEL}.out.log</string>
+    <key>StandardErrorPath</key><string>/tmp/${LABEL}.err.log</string>
+    <key>RunAtLoad</key><false/>
+</dict>
+</plist>
+PLIST
+    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl load "$PLIST"
+    log "installed LaunchAgent $LABEL (daily $(printf '%d:%02d' "$hour" "$minute"))"
+    if [ -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist" ]; then
+      log "NOTE: com.rh7.audit is still installed — remove it (audit-device.sh --uninstall) to avoid double audits"
+    fi
+  else
+    local min=$(( RANDOM % 30 ))
+    (crontab -l 2>/dev/null | grep -v 'fleet-collector-runner'; echo "${min} 8 * * * bash ${self} # fleet-collector-runner") | crontab -
+    log "installed cron (daily 8:$(printf '%02d' "$min"))"
+  fi
+}
+
+uninstall_schedule() {
+  if [ "$OS" = "Darwin" ]; then
+    launchctl unload "$PLIST" 2>/dev/null || true; rm -f "$PLIST"; log "removed LaunchAgent $LABEL"
+  else
+    (crontab -l 2>/dev/null | grep -v 'fleet-collector-runner' | crontab -) || true; log "removed cron"
+  fi
+}
+
+case "${1:-run}" in
+  --install)   install_schedule; exit 0 ;;
+  --uninstall) uninstall_schedule; exit 0 ;;
+  --check)
+    if fetch_and_verify; then log "check OK -> $CACHE"; exit 0; else log "check FAILED (rc=$?)"; exit 1; fi ;;
+  --local)
+    [ -f "$CACHE" ] || { log "no cached collector to run"; exit 1; } ;;
+  run|"")
+    if ! fetch_and_verify; then
+      if [ -f "$CACHE" ]; then log "fetch failed — using cached last-good"; else log "no collector available — skipping"; exit 1; fi
+    fi ;;
+  *) log "unknown mode: $1"; exit 2 ;;
+esac
+
+log "running: bash $CACHE $RUN_ARGS"
+exec bash "$CACHE" $RUN_ARGS
