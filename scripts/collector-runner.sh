@@ -3,7 +3,7 @@
 #
 # Fetches the CURRENT collector from the config service over Tailscale, verifies
 # its checksum AND that the server's read-only scan is clean, then runs it
-# (read-only, --upload). Installed once per device; thereafter what we collect
+# (read-only, --run). Installed once per device; thereafter what we collect
 # is changed centrally (merge to dotfiles) — no need to touch the device again.
 #
 # Safety:
@@ -16,7 +16,7 @@
 #   - Touches only its own cache + logs — never mutates the device.
 #
 # Usage:
-#   collector-runner.sh             # fetch -> verify -> run --upload (default)
+#   collector-runner.sh             # fetch -> verify -> run --run (default)
 #   collector-runner.sh --check     # fetch + verify only (no execute)
 #   collector-runner.sh --local     # run cached last-good without fetching
 #   collector-runner.sh --install   # daily LaunchAgent (macOS) / cron (Linux)
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 COLLECTOR="${COLLECTOR:-audit-device.sh}"
-RUN_ARGS="${COLLECTOR_RUN_ARGS:---upload}"
+RUN_ARGS="${COLLECTOR_RUN_ARGS:---run}"
 CACHE_DIR="${COLLECTOR_CACHE_DIR:-$HOME/.cache/fleet-collector}"
 LABEL="com.rh7.collector-runner"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
