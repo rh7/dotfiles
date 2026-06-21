@@ -63,6 +63,34 @@ fetch_and_verify() {  # writes $CACHE on success
   clean="$(printf '%s' "$manifest" | json_field 'str(d.get("read_only_scan",{}).get("clean",False)).lower()')"
   [ -n "$want" ] || { log "manifest missing sha256"; return 1; }
   if [ "$clean" != "true" ]; then log "REFUSING: $COLLECTOR failed the server read-only scan"; return 3; fi
+
+  # Defense-in-depth (rh-device-management#99, follow-up to #96): consult the
+  # manifest's serving-ref + host-checkout-state fields. Serving is already
+  # pinned to origin/main SERVER-side, so these are belt-and-suspenders:
+  #   - REFUSE if the server is serving from an unexpected ref (guards a
+  #     misconfigured COLLECTOR_REF on the host). Configurable via
+  #     COLLECTOR_EXPECTED_REF (default origin/main); set it empty to disable.
+  #   - WARN (but proceed) if the host's dotfiles checkout is dirty or off-main
+  #     — operator visibility only; the served bytes are still the pinned ref.
+  #   - Tolerate older servers that omit ref/branch/dirty (warn-only, no fail).
+  local ref branch dirty expected="${COLLECTOR_EXPECTED_REF-origin/main}"
+  ref="$(printf '%s' "$manifest" | json_field 'd.get("ref","")')"
+  branch="$(printf '%s' "$manifest" | json_field 'd.get("branch","")')"
+  dirty="$(printf '%s' "$manifest" | json_field 'str(d.get("dirty","")).lower()')"
+  if [ -n "$expected" ] && [ -n "$ref" ] && [ "$ref" != "$expected" ]; then
+    log "REFUSING: server serves $COLLECTOR from ref '$ref', expected '$expected' (set COLLECTOR_EXPECTED_REF= to disable)"; return 4
+  fi
+  if [ -z "$ref" ] && [ -z "$branch" ] && [ -z "$dirty" ]; then
+    log "note: server manifest omits ref/branch/dirty (older server) — gating on sha256 + scan only"
+  else
+    if [ "$dirty" = "true" ]; then
+      log "WARNING: host dotfiles checkout is dirty — served bytes are still pinned ${ref:-origin/main}, proceeding"
+    fi
+    if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+      log "WARNING: host dotfiles checkout is on branch '$branch' (not main) — served bytes are still pinned ${ref:-origin/main}, proceeding"
+    fi
+  fi
+
   tmp="$(mktemp)"
   curl -fsS --max-time 30 "$base/api/collector/$COLLECTOR" -o "$tmp" || { rm -f "$tmp"; log "script fetch failed"; return 1; }
   got="$(sha_of "$tmp")"
