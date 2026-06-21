@@ -1615,6 +1615,15 @@ AUDIT_DATA
 )
 
 # ── Device registration (replaces heartbeat.sh) ───────────────────────
+# Read this device's currently-assigned role from the config service.
+# Echoes the role, or empty string if the device isn't registered yet /
+# the service is unreachable (callers decide the default).
+fetch_device_role() {
+  local config_url="$1"
+  curl -sf "${config_url}/api/devices/${HOSTNAME}" --max-time 5 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('role','') or '')" 2>/dev/null
+}
+
 register_device() {
   local config_url="$1"
   local ts_ip="" ssh_pub="" age_pub="" uptime_str="" nix_ver="" nix_gen=""
@@ -1637,13 +1646,20 @@ register_device() {
     age_pub=$(age-keygen -y "$HOME/.config/sops/age/keys.txt" 2>/dev/null || echo "")
   fi
 
+  # Preserve an already-assigned role — the audit script is an inventory
+  # reporter, not the role authority, so it must not reset role on every run.
+  # Default to "workstation" only for a brand-new (never-registered) device.
+  local role
+  role=$(fetch_device_role "$config_url")
+  [[ -z "$role" ]] && role="workstation"
+
   curl -sf -X POST "${config_url}/api/devices/register" \
     -H "Content-Type: application/json" \
     -d "{
       \"hostname\": \"$HOSTNAME\",
       \"os\": \"$OS\",
       \"arch\": \"$ARCH\",
-      \"role\": \"workstation\",
+      \"role\": \"$role\",
       \"tailscale_ip\": \"$ts_ip\",
       \"nix_version\": \"$nix_ver\",
       \"nix_generation\": \"$nix_gen\",
@@ -1656,8 +1672,7 @@ register_device() {
 show_checklist() {
   local config_url="$1"
   local role
-  role=$(curl -sf "${config_url}/api/devices/${HOSTNAME}" --max-time 5 2>/dev/null \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('role','workstation'))" 2>/dev/null)
+  role=$(fetch_device_role "$config_url")
   [[ -z "$role" ]] && role="workstation"
 
   local checklist
