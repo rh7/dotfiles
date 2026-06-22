@@ -4,6 +4,7 @@
   # ── Core macOS apps (every Mac gets these) ───────────────────────────────
   homebrew.casks = [
     "1password"
+    "1password-cli"   # `op` — used by config-service secret reconciliation (rh-device-management#70)
     "google-chrome"
     "arc"
     "firefox"
