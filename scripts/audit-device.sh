@@ -1192,6 +1192,256 @@ print(json.dumps(result) if result else '{}')
 " 2>/dev/null || echo '{}'
 }
 
+# Backup / replication posture (rh-device-management#76). Metadata ONLY — never
+# reads file contents. Detection is not restore-verification; cloud sync is
+# reported as enabled+coverage, explicitly NOT verified-current (there is no
+# reliable upload-current CLI). Uses a quoted heredoc so the (larger) Python
+# body needs no shell-escaping.
+collect_backup_posture() {
+  python3 - <<'PYEOF' 2>/dev/null || echo '{}'
+import json, os, subprocess, platform, shutil, time, re, glob
+
+def run(cmd, timeout=5):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ''
+
+now = time.time()
+sys = platform.system()
+home = os.path.expanduser('~')
+result = {'platform': sys}
+
+def age_hours(epoch):
+    try:
+        return round((now - float(epoch)) / 3600.0, 1)
+    except Exception:
+        return None
+
+if sys == 'Darwin':
+    # Time Machine
+    tm = {'configured': False, 'destinations': []}
+    di = run('tmutil destinationinfo 2>/dev/null', timeout=8)
+    if di and 'No destinations' not in di:
+        dest = {}
+        for line in di.split('\n'):
+            s = line.strip()
+            # Records are separated by a blank line OR a ==== rule; a repeated
+            # Name: also begins a new record (belt-and-suspenders).
+            if not s or set(s) == {'='}:
+                if dest:
+                    tm['destinations'].append(dest); dest = {}
+                continue
+            if ':' in s:
+                k, v = s.split(':', 1)
+                k = k.strip().lower(); v = v.strip()
+                if k == 'name' and 'name' in dest:
+                    tm['destinations'].append(dest); dest = {}
+                if k == 'name': dest['name'] = v
+                elif k == 'kind': dest['kind'] = v
+        if dest: tm['destinations'].append(dest)
+        tm['configured'] = len(tm['destinations']) > 0
+    latest = run('tmutil latestbackup 2>/dev/null', timeout=8)
+    if latest:
+        tm['latest_backup'] = latest
+        m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest)
+        if m:
+            try:
+                ts = time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S'))
+                tm['latest_backup_age_hours'] = age_hours(ts)
+            except Exception:
+                pass
+    result['time_machine'] = tm
+
+    # iCloud Drive — enabled + coverage only; currency NOT verifiable via CLI.
+    # Desktop & Documents sync presents two ways: ~/Desktop may resolve into
+    # Mobile Documents, OR (more common) it stays a normal dir while CloudDocs
+    # holds the Desktop/Documents copies. Check both; require BOTH folders in
+    # CloudDocs to avoid a manually-created iCloud "Desktop" false positive.
+    icloud_root = os.path.expanduser('~/Library/Mobile Documents/com~apple~CloudDocs')
+    desk = os.path.realpath(os.path.expanduser('~/Desktop'))
+    docs = os.path.realpath(os.path.expanduser('~/Documents'))
+    dd_synced = (('Mobile Documents' in desk) or ('Mobile Documents' in docs) or
+                 (os.path.exists(os.path.join(icloud_root, 'Desktop')) and
+                  os.path.exists(os.path.join(icloud_root, 'Documents'))))
+    result['icloud_drive'] = {
+        'enabled': os.path.isdir(icloud_root),
+        'desktop_documents_synced': dd_synced,
+        'currency_verified': False,
+    }
+
+    # FileVault personal recovery key escrow — needs root; report unknown if so.
+    hprk = run('fdesetup haspersonalrecoverykey 2>/dev/null')
+    if hprk in ('true', 'false'):
+        result['filevault_personal_recovery_key'] = (hprk == 'true')
+    else:
+        result['filevault_personal_recovery_key'] = None
+        result['filevault_recovery_key_note'] = 'requires root to determine'
+
+    commercial = []
+    for app in ['Backblaze', 'Arq', 'Carbon Copy Cloner', 'SuperDuper!']:
+        if os.path.isdir('/Applications/%s.app' % app):
+            commercial.append({'app': app, 'present': True})
+    if commercial:
+        result['commercial'] = commercial
+else:
+    # Linux: filesystem snapshots (LUKS disk encryption already in `security`).
+    snaps = {}
+    zfs = run('zfs list -t snapshot -H -o name 2>/dev/null')
+    if zfs:
+        snaps['zfs_snapshot_count'] = len([l for l in zfs.split('\n') if l.strip()])
+    btrfs = run('btrfs subvolume list -s / 2>/dev/null')
+    if btrfs:
+        snaps['btrfs_snapshot_count'] = len([l for l in btrfs.split('\n') if l.strip()])
+    if snaps:
+        result['filesystem_snapshots'] = snaps
+
+# Cloud-sync clients (presence + coverage only; currency NOT verified).
+# macOS File Provider uses ONE shared ~/Library/CloudStorage container, so match
+# PROVIDER-SPECIFIC subfolders (GoogleDrive-*, OneDrive-*) rather than the
+# container itself, which any provider can create.
+cs = os.path.expanduser('~/Library/CloudStorage')
+cloud_sync = []
+for provider, proc, patterns in [
+    ('Dropbox', 'Dropbox', ['~/Dropbox', cs + '/Dropbox*']),
+    ('Google Drive', 'Google Drive', [cs + '/GoogleDrive-*']),
+    ('OneDrive', 'OneDrive', ['~/OneDrive', cs + '/OneDrive-*']),
+]:
+    running = bool(run('pgrep -if "%s" 2>/dev/null' % proc))
+    root = None
+    for pat in patterns:
+        matches = glob.glob(os.path.expanduser(pat))
+        if matches:
+            root = matches[0].replace(home, '~'); break
+    if running or root:
+        cloud_sync.append({'provider': provider, 'running': running,
+                           'root': root, 'root_exists': root is not None,
+                           'currency_verified': False})
+if cloud_sync:
+    result['cloud_sync'] = cloud_sync
+
+# Programmatic backup tools (restic/borg/kopia/rclone). Snapshot age only when a
+# password is already in the environment (never prompt / never read secrets).
+prog = []
+for tool in ['restic', 'borg', 'kopia', 'rclone']:
+    if not shutil.which(tool):
+        continue
+    entry = {'tool': tool, 'present': True}
+    if tool == 'restic':
+        repo = os.environ.get('RESTIC_REPOSITORY')
+        entry['repo_configured'] = bool(repo)
+        if repo and (os.environ.get('RESTIC_PASSWORD') or os.environ.get('RESTIC_PASSWORD_FILE')):
+            snap = run('restic snapshots --latest 1 --json 2>/dev/null', timeout=10)
+            try:
+                arr = json.loads(snap)
+                if arr:
+                    entry['latest_snapshot_time'] = arr[-1].get('time')
+            except Exception:
+                pass
+        elif repo:
+            entry['note'] = 'repo configured but no password in env; snapshot age unavailable'
+    prog.append(entry)
+if prog:
+    result['programmatic'] = prog
+
+print(json.dumps(result))
+PYEOF
+}
+
+# Uncommitted / unpushed git work (rh-device-management#78). Scans known dev
+# roots (each root + its direct children, depth 1; prunes dotdirs/node_modules)
+# and reports per-repo dirty/ahead/no-remote COUNTS only — never diffs/contents.
+collect_git_repos() {
+  python3 - <<'PYEOF' 2>/dev/null || echo '{}'
+import json, os, subprocess, time
+
+def git(repo, args, timeout=5):
+    try:
+        r = subprocess.run(['git', '-C', repo] + args, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip()
+    except Exception:
+        return 1, ''
+
+home = os.path.expanduser('~')
+roots = [os.path.join(home, d) for d in
+         ['localtesting', 'dotfiles', 'rh-device-management', 'mac-studio-services',
+          'Projects', 'code', 'src', 'dev']]
+
+def is_repo(p):
+    # `.git` is a DIR for a normal repo but a FILE for a worktree/submodule, so
+    # use exists() (not isdir) — else those are silently dropped (#78). Checking
+    # at the exact path (vs `rev-parse` which walks up) avoids misattributing a
+    # plain subdir of some ancestor repo.
+    return os.path.exists(os.path.join(p, '.git'))
+
+candidates = []
+for root in roots:
+    if not os.path.isdir(root):
+        continue
+    if is_repo(root):
+        candidates.append(root)
+    # Always also scan direct children: a root can be a repo AND contain child
+    # repos/submodules (depth-1), so this is NOT an else-branch (#78).
+    try:
+        for name in sorted(os.listdir(root)):
+            if name.startswith('.') or name == 'node_modules':
+                continue
+            child = os.path.join(root, name)
+            if os.path.isdir(child) and is_repo(child):
+                candidates.append(child)
+    except Exception:
+        pass
+
+now = time.time()
+repos = []
+seen = set()
+for repo in candidates:
+    rp = repo.replace(home, '~')
+    if rp in seen:
+        continue
+    seen.add(rp)
+    info = {'path': rp}
+    rc, branch = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    info['branch'] = branch if rc == 0 else None
+    rc, porc = git(repo, ['status', '--porcelain'])
+    info['dirty'] = len([l for l in porc.split('\n') if l.strip()]) if (rc == 0 and porc) else 0
+    rc, remotes = git(repo, ['remote'])
+    info['has_remote'] = bool(remotes.strip()) if rc == 0 else False
+    # Upstream of the CURRENT branch + how far ahead (informational).
+    rc, up = git(repo, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    if rc == 0 and up:
+        info['upstream'] = up
+        rc2, cnt = git(repo, ['rev-list', '--count', '@{u}..HEAD'])
+        info['ahead'] = int(cnt) if (rc2 == 0 and cnt.isdigit()) else 0
+    else:
+        info['upstream'] = None
+        info['no_upstream'] = True
+        info['ahead'] = 0
+    # Comprehensive unpushed signal: commits reachable from ANY local branch tip
+    # that are on NO remote-tracking ref. Catches unpushed work on a
+    # non-checked-out / no-upstream branch, not only the current one (#78).
+    if info['has_remote']:
+        rc3, cnt3 = git(repo, ['rev-list', '--count', '--branches', '--not', '--remotes'])
+        info['unpushed'] = int(cnt3) if (rc3 == 0 and cnt3.isdigit()) else 0
+    else:
+        info['unpushed'] = None  # no remote -> nothing replicated (flagged via has_remote)
+    rc, ct = git(repo, ['log', '-1', '--format=%ct'])
+    if rc == 0 and ct.isdigit():
+        info['last_commit_age_days'] = round((now - float(ct)) / 86400.0, 1)
+    info['at_risk'] = (info['dirty'] > 0) or (not info['has_remote']) or bool(info['unpushed'])
+    repos.append(info)
+
+result = {
+    'scanned_roots': [r.replace(home, '~') for r in roots if os.path.isdir(r)],
+    'repos': repos,
+    'repo_count': len(repos),
+    'at_risk_count': len([r for r in repos if r['at_risk']]),
+}
+print(json.dumps(result))
+PYEOF
+}
+
 collect_orbstack() {
   if ! command -v orb &>/dev/null; then echo '{"installed": false}'; return; fi
 
@@ -1611,6 +1861,10 @@ $(collect_wifi_networks)
 $(collect_printers)
 ---SECTION: browser_extensions
 $(collect_browser_extensions)
+---SECTION: backup_posture
+$(collect_backup_posture)
+---SECTION: git_repos
+$(collect_git_repos)
 AUDIT_DATA
 )
 
