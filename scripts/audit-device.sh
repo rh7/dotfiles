@@ -460,16 +460,36 @@ except: print('{}')
 }
 
 collect_ssh_keys() {
-  python3 -c "
-import os, json
+  # SSH public keys with fingerprints (#67): {name, type, bits, SHA256
+  # fingerprint, comment}. Fingerprints let the same key be matched across
+  # devices for the authorization graph + dead-grant detection. Reads .pub files
+  # only — no private material leaves the device, and no passphrase prompt.
+  python3 - <<'PYEOF' 2>/dev/null || echo '[]'
+import os, json, subprocess
 ssh_dir = os.path.expanduser('~/.ssh')
 keys = []
 if os.path.isdir(ssh_dir):
     for f in sorted(os.listdir(ssh_dir)):
-        if f.endswith('.pub'):
-            keys.append(f.replace('.pub', ''))
+        if not f.endswith('.pub'):
+            continue
+        path = os.path.join(ssh_dir, f)
+        entry = {'name': f[:-4]}
+        try:
+            r = subprocess.run(['ssh-keygen', '-lf', path], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                # "256 SHA256:xxxx comment with spaces (ED25519)"
+                parts = r.stdout.strip().split()
+                if len(parts) >= 2:
+                    entry['bits'] = int(parts[0]) if parts[0].isdigit() else None
+                    entry['fingerprint'] = parts[1]
+                    if parts[-1].startswith('(') and parts[-1].endswith(')'):
+                        entry['type'] = parts[-1][1:-1]
+                    entry['comment'] = ' '.join(parts[2:-1])
+        except Exception:
+            pass
+        keys.append(entry)
 print(json.dumps(keys))
-"
+PYEOF
 }
 
 collect_docker() {
@@ -790,11 +810,27 @@ for sops_path in ['.sops.yaml', os.path.expanduser('~/dotfiles/.sops.yaml')]:
 else:
     result['sops_config_present'] = False
 
-# SSH authorized_keys count
+# SSH authorized_keys count + fingerprints (metadata only — for the cross-device
+# authorization graph + dead-grant detection, #67).
 auth_keys = os.path.expanduser('~/.ssh/authorized_keys')
 if os.path.isfile(auth_keys):
     with open(auth_keys) as f:
         result['authorized_keys_count'] = len([l for l in f if l.strip() and not l.startswith('#')])
+    try:
+        r = subprocess.run(['ssh-keygen', '-lf', auth_keys], capture_output=True, text=True, timeout=5)
+        fps = []
+        if r.returncode == 0:
+            for line in r.stdout.strip().split('\n'):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].startswith('SHA256:'):
+                    fp = {'fingerprint': parts[1], 'comment': ' '.join(parts[2:-1])}
+                    if parts[-1].startswith('(') and parts[-1].endswith(')'):
+                        fp['type'] = parts[-1][1:-1]
+                    fps.append(fp)
+        if fps:
+            result['authorized_keys_fingerprints'] = fps
+    except Exception:
+        pass
 
 print(json.dumps(result))
 " 2>/dev/null || echo '{}'
@@ -1442,6 +1478,104 @@ print(json.dumps(result))
 PYEOF
 }
 
+# Secret inventory (rh-device-management#68). Normalized secret records for
+# cross-device orphan detection (GROUP BY fingerprint server-side). Captures
+# whole classes not previously inventoried: GPG secret keys, cloud/CLI cred
+# files, .env/.envrc files, code-signing identities. METADATA ONLY — never key
+# material or secret values (fingerprints, paths, mtimes, key counts). Keychain
+# enumeration is intentionally omitted (it triggers an interactive unlock/TCC
+# prompt — not headless-safe).
+collect_secret_inventory() {
+  python3 - <<'PYEOF' 2>/dev/null || echo '{"entries": [], "counts": {}, "total": 0}'
+import os, json, subprocess, glob, time, platform, shutil, re
+
+home = os.path.expanduser('~')
+entries = []
+
+def run(cmd, timeout=5):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ''
+
+def mtime_iso(p):
+    try:
+        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(p)))
+    except Exception:
+        return None
+
+# GPG secret keys — fingerprints only (never exported key material).
+if shutil.which('gpg'):
+    out = run('gpg --list-secret-keys --with-colons 2>/dev/null', timeout=8)
+    for line in out.split('\n'):
+        if line.startswith('fpr:'):
+            cols = line.split(':')
+            fpr = cols[9] if len(cols) > 9 else ''
+            if fpr:
+                entries.append({'category': 'gpg', 'type': 'gpg-secret-key', 'fingerprint': fpr,
+                                'path': None, 'last_modified': None, 'encrypted': None, 'source': 'gpg'})
+
+# Cloud / CLI credential files — names + mtime only, NEVER values.
+for name, p in [
+    ('aws', '~/.aws/credentials'), ('gcloud', '~/.config/gcloud/credentials.db'),
+    ('gh', '~/.config/gh/hosts.yml'), ('docker', '~/.docker/config.json'),
+    ('npm', '~/.npmrc'), ('pypi', '~/.pypirc'), ('kube', '~/.kube/config'),
+    ('cloudflare', '~/.cloudflared/cert.pem'),
+]:
+    fp = os.path.expanduser(p)
+    if os.path.isfile(fp):
+        entries.append({'category': 'cloud_cred', 'type': name + '-cred', 'fingerprint': None,
+                        'path': p, 'last_modified': mtime_iso(fp), 'encrypted': False, 'source': 'file'})
+
+# .env / .envrc files under known roots — paths + key COUNT only (skip examples).
+roots = [os.path.join(home, d) for d in
+         ['localtesting', 'code', 'Projects', 'mac-studio-services', 'dotfiles',
+          'rh-device-management', 'dev', 'src']]
+seen = set()
+for root in roots:
+    if not os.path.isdir(root):
+        continue
+    for pat in ['.env', '.envrc', '*/.env', '*/.envrc', '*/*/.env', '*/*/.envrc']:
+        for fp in glob.glob(os.path.join(root, pat)):
+            if not os.path.isfile(fp) or 'node_modules' in fp or '/.git/' in fp:
+                continue
+            base = os.path.basename(fp)
+            if '.example' in base or '.sample' in base or base.endswith('.dist'):
+                continue
+            rp = fp.replace(home, '~')
+            if rp in seen:
+                continue
+            seen.add(rp)
+            kc = 0
+            try:
+                with open(fp, 'r', errors='ignore') as f:
+                    for l in f:
+                        s = l.strip()
+                        if s and not s.startswith('#') and '=' in s:
+                            kc += 1
+            except Exception:
+                pass
+            entries.append({'category': 'env', 'type': 'dotenv', 'fingerprint': None, 'path': rp,
+                            'last_modified': mtime_iso(fp), 'encrypted': False, 'source': 'file', 'key_count': kc})
+
+# Code-signing identities (macOS) — identity name + cert SHA-1, never private key.
+if platform.system() == 'Darwin':
+    out = run('security find-identity -v -p codesigning 2>/dev/null')
+    for line in out.split('\n'):
+        m = re.search(r'\)\s+([0-9A-Fa-f]{40})\s+"(.+)"', line.strip())
+        if m:
+            entries.append({'category': 'code_signing', 'type': 'codesigning-identity',
+                            'fingerprint': m.group(1).upper(), 'name': m.group(2),
+                            'path': None, 'last_modified': None, 'encrypted': None, 'source': 'keychain'})
+
+counts = {}
+for e in entries:
+    counts[e['category']] = counts.get(e['category'], 0) + 1
+print(json.dumps({'entries': entries, 'counts': counts, 'total': len(entries)}))
+PYEOF
+}
+
 collect_orbstack() {
   if ! command -v orb &>/dev/null; then echo '{"installed": false}'; return; fi
 
@@ -1865,6 +1999,8 @@ $(collect_browser_extensions)
 $(collect_backup_posture)
 ---SECTION: git_repos
 $(collect_git_repos)
+---SECTION: secret_inventory
+$(collect_secret_inventory)
 AUDIT_DATA
 )
 
