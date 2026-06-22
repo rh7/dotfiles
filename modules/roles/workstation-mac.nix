@@ -11,6 +11,7 @@
     ../darwin/profiles/ai-tools.nix
     ../darwin/profiles/media.nix
     ../darwin/profiles/security.nix
+    ../darwin/firewall.nix          # application firewall (client Macs only, #93)
   ];
 
   homebrew.casks = [

@@ -8,6 +8,7 @@
     ../darwin/profiles/productivity.nix
     ../darwin/profiles/ai-tools.nix
     ../darwin/profiles/media.nix
+    ../darwin/firewall.nix          # application firewall (client Macs only, #93)
   ];
 
   # Personal-specific apps (not in shared profiles)
