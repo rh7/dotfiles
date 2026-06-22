@@ -37,6 +37,26 @@ ok()    { echo -e "${GREEN}✓${NC}  $*"; }
 warn()  { echo -e "${YELLOW}⚠${NC}  $*"; }
 err()   { echo -e "${RED}✗${NC}  $*" >&2; }
 
+# run_timeout SECS CMD... — run a command with a hard timeout so a wedged daemon
+# (e.g. a stuck tailscaled, #61) can't hang the audit forever. Prefers coreutils
+# timeout/gtimeout (Linux, nix); falls back to perl (/usr/bin/perl ships on macOS,
+# which has no `timeout`): the parent arms an alarm and SIGKILLs the child on
+# overrun, exiting 124 like GNU timeout; the child execs the command so its stdout
+# passes through for $() capture. On timeout the child is killed and we return
+# non-zero with no output, so callers degrade via their existing `|| echo ""`.
+run_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $s=shift; my $p=fork; if($p){$SIG{ALRM}=sub{kill "KILL",$p; exit 124}; alarm $s; waitpid $p,0; exit($?>>8)} else {exec @ARGV or exit 127}' "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 # ── Interactive menu ────────────────────────────────────────────────────
 if [[ "$MODE" == "interactive" ]]; then
   # When piped via curl, read from /dev/tty for interactive input
@@ -2018,14 +2038,14 @@ register_device() {
   local config_url="$1"
   local ts_ip="" ssh_pub="" age_pub="" uptime_str="" nix_ver="" nix_gen=""
 
-  ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-  nix_ver=$(nix --version 2>/dev/null || echo "")
+  ts_ip=$(run_timeout 5 tailscale ip -4 2>/dev/null || echo "")
+  nix_ver=$(run_timeout 5 nix --version 2>/dev/null || echo "")
   uptime_str=$(uptime | sed 's/.*up //' | sed 's/,.*//')
 
   if [[ "$OS" == "Darwin" ]]; then
-    nix_gen=$(darwin-rebuild --list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
+    nix_gen=$(run_timeout 10 darwin-rebuild --list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
   else
-    nix_gen=$(nixos-rebuild list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
+    nix_gen=$(run_timeout 10 nixos-rebuild list-generations 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
   fi
 
   for keyfile in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
