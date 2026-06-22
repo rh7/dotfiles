@@ -25,6 +25,11 @@ HOSTNAME="$(hostname | sed 's/\.local$//')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 MODE="${1:-interactive}"
+# Be forgiving of copy-paste artifacts on the mode arg: a trailing CR/space/tab
+# (common when the curl|bash one-liner is pasted) would otherwise leave MODE as
+# e.g. "--install\r", which matches no branch and silently falls through to a
+# no-op audit. Strip ASCII whitespace so the flag still works.
+MODE="${MODE//[$'\t\r\n ']/}"
 SCRIPT_URL="https://config.rh7labs.com/audit"
 CRON_TAG="# fleet-audit"
 OLD_CRON_TAG="# fleet-heartbeat"
@@ -62,6 +67,21 @@ run_timeout() {
     "$@"
   fi
 }
+
+# ── Validate mode up front ──────────────────────────────────────────────
+# Fail loud on an unrecognized mode instead of silently running a no-op audit:
+# the early-exit guards (--install/--uninstall/--checklist) use exact matches and
+# the final dispatch has NO default case, so a garbled/mistyped flag would print
+# "Auditing…", collect for ~30s, then exit having done nothing (no upload, no
+# install). Catch it here, before the expensive audit.
+case "$MODE" in
+  interactive|--run|--local|--save|--install|--uninstall|--checklist|--run-and-install|report) ;;
+  *)
+    err "Unknown mode: '$MODE'"
+    err "Valid: --run | --local | --save | --install | --uninstall | --checklist (or no arg for the menu)"
+    exit 2
+    ;;
+esac
 
 # ── Interactive menu ────────────────────────────────────────────────────
 if [[ "$MODE" == "interactive" ]]; then
