@@ -35,7 +35,9 @@
         modules = [
           # System-level
           ./modules/darwin/defaults.nix
-          ./modules/darwin/security.nix
+          # NOTE: firewall hardening is NOT global — it lives in modules/darwin/firewall.nix
+          # and is imported only by client roles (workstation-mac, personal-mac), to keep the
+          # app firewall OFF the Mac Studio config-service host (#93).
           ./modules/darwin/homebrew.nix
           ./modules/darwin/mas.nix
           role
