@@ -126,12 +126,19 @@ PLIST
     launchctl unload "$PLIST" 2>/dev/null || true
     launchctl load "$PLIST"
     log "installed LaunchAgent $LABEL (daily $(printf '%d:%02d' "$hour" "$minute"))"
+    # Supersede the legacy direct-audit job (#38, #83): collector-runner replaces
+    # it, so retire com.rh7.audit to avoid two daily audits firing.
     if [ -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist" ]; then
-      log "NOTE: com.rh7.audit is still installed — remove it (audit-device.sh --uninstall) to avoid double audits"
+      launchctl unload "$HOME/Library/LaunchAgents/com.rh7.audit.plist" 2>/dev/null || true
+      rm -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist"
+      log "retired legacy com.rh7.audit LaunchAgent (superseded by $LABEL)"
     fi
   else
     local min=$(( RANDOM % 30 ))
-    (crontab -l 2>/dev/null | grep -v 'fleet-collector-runner'; echo "${min} 8 * * * bash ${self} # fleet-collector-runner") | crontab -
+    # `|| true`: under `set -euo pipefail`, a fresh user with no crontab makes
+    # `crontab -l | grep` exit non-zero and would abort before the echo, silently
+    # installing no schedule. Keep the existing entries (if any) + append ours.
+    (crontab -l 2>/dev/null | grep -v 'fleet-collector-runner' || true; echo "${min} 8 * * * bash ${self} # fleet-collector-runner") | crontab -
     log "installed cron (daily 8:$(printf '%02d' "$min"))"
   fi
 }

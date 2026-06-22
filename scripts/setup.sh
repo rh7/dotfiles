@@ -665,6 +665,21 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Recurring audit schedule — setup.sh runs ONCE; this keeps the device reporting
+# ══════════════════════════════════════════════════════════════════════════════
+header "Recurring audit schedule"
+if [[ -x "$DOTFILES_DIR/scripts/collector-runner.sh" ]]; then
+  # Pull-based collector (issue #83): a daily LaunchAgent/cron fetches + runs the
+  # current collector from the config service and supersedes the old com.rh7.audit
+  # job (#38). Without this, an onboarded device registers once and never re-audits.
+  "$DOTFILES_DIR/scripts/collector-runner.sh" --install \
+    && ok "Daily audit schedule installed (com.rh7.collector-runner)" \
+    || warn "Audit schedule not installed — run scripts/collector-runner.sh --install later"
+else
+  warn "collector-runner.sh not found — skipping recurring audit install"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Done
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""

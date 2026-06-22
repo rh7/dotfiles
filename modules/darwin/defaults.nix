@@ -95,7 +95,10 @@
   # ── System ───────────────────────────────────────────────────────────────
   security.pam.services.sudo_local.touchIdAuth = true;
 
-  # Determinate Nix manages its own daemon — don't let nix-darwin conflict
+  # The official NixOS installer owns the org.nixos.nix-daemon LaunchDaemon (the
+  # fleet migrated off Determinate); nix-darwin must NOT also manage the daemon or
+  # the two conflict. setup.sh installs Nix + patches /etc/nix/nix.conf itself, so
+  # keep nix.enable = false. (#49)
   nix.enable = false;
 
   # Required for nix-darwin (primaryUser is set per-host in mkMac)

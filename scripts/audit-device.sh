@@ -15,7 +15,13 @@
 
 set -euo pipefail
 
-HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
+# Preserve the hostname's canonical case (#62). The config service uses hostname
+# as the devices-table PRIMARY KEY, and setup.sh registers + the flake names hosts
+# in canonical case (scutil --set HostName "$HOSTNAME"). Lowercasing here made the
+# daily audit POST under a different case, creating a SECOND (duplicate) row for
+# any mixed-case host (e.g. Kassie-M5-Air13 vs kassie-m5-air13). Match setup/flake:
+# strip a trailing .local, keep the case as the OS reports it.
+HOSTNAME="$(hostname | sed 's/\.local$//')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 MODE="${1:-interactive}"
