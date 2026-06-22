@@ -26,10 +26,16 @@ set -euo pipefail
 COLLECTOR="${COLLECTOR:-audit-device.sh}"
 RUN_ARGS="${COLLECTOR_RUN_ARGS:---run}"
 CACHE_DIR="${COLLECTOR_CACHE_DIR:-$HOME/.cache/fleet-collector}"
-LABEL="com.rh7.collector-runner"
+LABEL="${COLLECTOR_LABEL:-com.rh7.collector-runner}"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+# Short link to THIS runner (Vercel rewrite -> raw dotfiles). Used to self-install
+# a persistent copy when the runner is invoked clone-free via `curl … | bash`, so
+# a no-clone device can still get the gated pull path instead of the un-gated
+# audit fallback (rh-device-management#119).
+RUNNER_URL="${COLLECTOR_RUNNER_URL:-https://config.rh7labs.com/collector-runner}"
 OS="$(uname -s)"
 CACHE="$CACHE_DIR/$COLLECTOR"
+RUNNER_SELF="$CACHE_DIR/collector-runner.sh"
 LOG="$CACHE_DIR/runner.log"
 
 mkdir -p "$CACHE_DIR"
@@ -100,8 +106,26 @@ fetch_and_verify() {  # writes $CACHE on success
   log "fetched $COLLECTOR ok ($want) from $base"
 }
 
+# Absolute path to a persistent copy of THIS runner for the scheduled job to
+# exec daily. With a real on-disk clone, schedule it in place. When run clone-free
+# via `curl … | bash` ($0 is "bash"/stdin, not a readable script), self-install a
+# copy into the cache dir and schedule THAT — this is what lets a no-clone device
+# get the sha256/scan-gated pull path instead of the un-gated audit fallback
+# (rh-device-management#119). The runner script itself updates only on a re-install
+# or clone pull; the AUDIT logic it pulls still changes centrally (#83).
+resolve_self() {
+  if [ -f "$0" ] && [ -r "$0" ]; then
+    printf '%s\n' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    return 0
+  fi
+  log "no on-disk runner (\$0='$0') — self-installing from $RUNNER_URL to $RUNNER_SELF"
+  curl -fsSL --max-time 30 "$RUNNER_URL" -o "$RUNNER_SELF" || { log "failed to fetch runner from $RUNNER_URL"; return 1; }
+  chmod +x "$RUNNER_SELF"
+  printf '%s\n' "$RUNNER_SELF"
+}
+
 install_schedule() {
-  local self; self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  local self; self="$(resolve_self)" || { log "cannot resolve runner path for schedule — aborting install"; return 1; }
   if [ "$OS" = "Darwin" ]; then
     local hour=8 minute=$(( RANDOM % 30 ))
     mkdir -p "$HOME/Library/LaunchAgents"
