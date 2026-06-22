@@ -9,27 +9,17 @@
 #
 # To add a secret:
 #   1. sops secrets/secrets.yaml   (opens in $EDITOR, encrypted at rest)
-#   2. Reference in Nix: sops.secrets."secret-name".owner = "rouvenheck";
+#   2. Reference in Nix: sops.secrets."secret-name".owner = "rouvenheck
 
-keys:
-  # ── Admin key (your primary machine — can decrypt all secrets) ──
-  - &admin age1ngfmg6aysv6t26p5a30cdj5enp7frnrya6zpgc4vfgftdah06fwqq4pqd0
+  keys:
+    - &admin      age1ngfmg6aysv6t26p5a30cdj5enp7frnrya6zpgc4vfgftdah06fwqq4pqd0   # m5-air (primary)
+    - &mac-studio age14uq7uez7t73cdhzvflxxngcg6vtcxzhjsuevjjxdwglcwrvvuppsu56jn6
+    - &m5-pro     age1x42vs869reu3xg8zcs54cjg8auw5ns94rpan45a52dwk42yw2eyq68zdeg
+    - &thinkpad   age17wr89pw4umhg82r8y3qa9xh58d2ntr8445ammay7pyv8e6ek2u9q29tled
 
-  # ── Per-machine keys (add real public keys as you bootstrap each device) ──
-  # - &m5-air age1...
-  # - &mac-mini age1...
-  # - &mac-studio age1...
-  - &thinkpad age17wr89pw4umhg82r8y3qa9xh58d2ntr8445ammay7pyv8e6ek2u9q29tled
-  # - &vps-hetzner age1...
+  creation_rules:
+    - path_regex: secrets/secrets\.yaml$
+      key_groups:
+        - age: [ *admin, *mac-studio, *m5-pro, *thinkpad ]
 
-creation_rules:
-  # All secrets — encrypted for admin key (add per-machine keys as needed)
-  - path_regex: secrets/secrets\.yaml$
-    key_groups:
-      - age:
-          - *admin
-          # - *m5-air
-          # - *mac-mini
-          # - *mac-studio
-          - *thinkpad
-          # - *vps-hetzner
+
