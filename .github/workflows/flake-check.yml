@@ -1,0 +1,60 @@
+name: flake check
+
+# Catch a broken flake (eval errors, bad options, missing files, a malformed new
+# host entry) BEFORE it reaches a device — onboarding builds the flake live on the
+# new Mac and setup.sh masks darwin-rebuild failures, so without this a broken
+# config only surfaces during an onboard. See rh7/rh-device-management#12.
+#
+# Gate = pure EVALUATION of every darwinConfiguration's system derivation
+# (--no build). Evaluation is cross-platform, so a cheap Linux runner can validate
+# the aarch64-darwin Mac configs without macOS minutes and without building.
+# (`nix flake check --all-systems` is intentionally NOT used: it cross-evaluates
+# the aarch64-linux nixos-vm config against an x86_64-only package and false-fails.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flake-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval-darwin-configs:
+    name: eval darwinConfigurations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix (official installer)
+        uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Evaluate every darwinConfiguration (no build)
+        run: |
+          set -euo pipefail
+          hosts=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.attrNames' | jq -r '.[]')
+          echo "darwinConfigurations: $(echo "$hosts" | tr '\n' ' ')"
+          fail=0
+          for h in $hosts; do
+            echo "::group::eval $h"
+            if nix eval ".#darwinConfigurations.\"$h\".system.drvPath" >/dev/null; then
+              echo "$h: OK"
+            else
+              echo "$h: EVAL FAILED"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::one or more darwinConfigurations failed to evaluate"
+            exit 1
+          fi
+          echo "all darwinConfigurations evaluate cleanly"
