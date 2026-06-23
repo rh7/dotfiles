@@ -114,7 +114,11 @@ fetch_and_verify() {  # writes $CACHE on success
 # (rh-device-management#119). The runner script itself updates only on a re-install
 # or clone pull; the AUDIT logic it pulls still changes centrally (#83).
 resolve_self() {
-  if [ -f "$0" ] && [ -r "$0" ]; then
+  # Accept $0 only if it is actually an on-disk collector-runner.sh. A piped
+  # invocation sets $0 to the shell — "bash", or "/bin/bash" which IS a readable
+  # file — so a bare `[ -f "$0" ]` would hand back the shell binary and the
+  # schedule would exec `bash /bin/bash` (collector never runs). Match the name.
+  if [ -f "$0" ] && [ -r "$0" ] && [ "$(basename "$0")" = "collector-runner.sh" ]; then
     printf '%s\n' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     return 0
   fi
