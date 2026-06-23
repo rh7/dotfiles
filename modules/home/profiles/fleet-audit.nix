@@ -62,8 +62,10 @@ in
 {
   # ── macOS: user LaunchAgent ─────────────────────────────────────────────
   # Reuse Label com.rh7.collector-runner so home-manager's launchd activation
-  # supersedes any imperatively-installed agent of the same name (no manual
-  # launchctl). The runner's own first run still retires the legacy com.rh7.audit.
+  # supersedes an imperatively-installed agent of the SAME label. The legacy
+  # direct-audit agent has a DIFFERENT label (com.rh7.audit) and the runner only
+  # retires it in --install mode (not the default --run this agent uses), so it
+  # is retired explicitly in home.activation below.
   launchd.agents.fleet-audit = lib.mkIf isDarwin {
     enable = true;
     config = {
@@ -76,6 +78,22 @@ in
       EnvironmentVariables = { PATH = fullPath; };
     };
   };
+
+  # Retire the legacy imperative com.rh7.audit agent when a host comes under nix
+  # management. It has a different Label so the new agent won't supersede it, and
+  # the runner's retire-on-install path isn't reached in default --run mode —
+  # without this a migrating Mac runs BOTH (duplicate uploads; the legacy job
+  # bypasses the supply-chain gate). launchctl-only, so TCC-safe.
+  home.activation.retireLegacyAudit = lib.mkIf isDarwin (
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      legacy="$HOME/Library/LaunchAgents/com.rh7.audit.plist"
+      if [ -f "$legacy" ]; then
+        $DRY_RUN_CMD /bin/launchctl unload "$legacy" 2>/dev/null || true
+        $DRY_RUN_CMD rm -f "$legacy"
+        echo "retired legacy com.rh7.audit LaunchAgent (superseded by com.rh7.collector-runner)"
+      fi
+    ''
+  );
 
   # ── Linux: systemd user oneshot + timer ─────────────────────────────────
   # CAVEAT: a systemd --user timer fires only with an active or lingering user
