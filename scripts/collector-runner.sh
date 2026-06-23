@@ -28,11 +28,15 @@ RUN_ARGS="${COLLECTOR_RUN_ARGS:---run}"
 CACHE_DIR="${COLLECTOR_CACHE_DIR:-$HOME/.cache/fleet-collector}"
 LABEL="${COLLECTOR_LABEL:-com.rh7.collector-runner}"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
-# Short link to THIS runner (Vercel rewrite -> raw dotfiles). Used to self-install
-# a persistent copy when the runner is invoked clone-free via `curl … | bash`, so
-# a no-clone device can still get the gated pull path instead of the un-gated
-# audit fallback (rh-device-management#119).
+# Source(s) to self-install THIS runner from when invoked clone-free via
+# `curl … | bash`, so a no-clone device gets the gated pull path instead of the
+# un-gated audit fallback (rh-device-management#119). PRIMARY is the
+# config.rh7labs.com short link (a Vercel rewrite -> raw dotfiles); FALLBACK is
+# the raw dotfiles URL the short link proxies, tried if the short link is
+# undeployed/lagging (the #39 alias trap). Both are TLS; the AUDIT the runner
+# later pulls is still sha256 + scan + ref gated regardless of bootstrap source.
 RUNNER_URL="${COLLECTOR_RUNNER_URL:-https://config.rh7labs.com/collector-runner}"
+RUNNER_URL_FALLBACK="${COLLECTOR_RUNNER_URL_FALLBACK:-https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/collector-runner.sh}"
 OS="$(uname -s)"
 CACHE="$CACHE_DIR/$COLLECTOR"
 RUNNER_SELF="$CACHE_DIR/collector-runner.sh"
@@ -122,10 +126,22 @@ resolve_self() {
     printf '%s\n' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     return 0
   fi
-  log "no on-disk runner (\$0='$0') — self-installing from $RUNNER_URL to $RUNNER_SELF"
-  curl -fsSL --max-time 30 "$RUNNER_URL" -o "$RUNNER_SELF" || { log "failed to fetch runner from $RUNNER_URL"; return 1; }
-  chmod +x "$RUNNER_SELF"
-  printf '%s\n' "$RUNNER_SELF"
+  # Clone-free: self-install a persistent copy. Try the short link (primary),
+  # then the raw dotfiles URL (fallback) so enrollment still works if the Vercel
+  # route is undeployed/lagging (#39).
+  log "no on-disk runner (\$0='$0') — self-installing to $RUNNER_SELF"
+  local url
+  for url in "$RUNNER_URL" "$RUNNER_URL_FALLBACK"; do
+    if curl -fsSL --max-time 30 "$url" -o "$RUNNER_SELF" 2>/dev/null; then
+      chmod +x "$RUNNER_SELF"
+      log "self-installed runner from $url"
+      printf '%s\n' "$RUNNER_SELF"
+      return 0
+    fi
+    log "runner fetch failed from $url"
+  done
+  log "failed to fetch runner from primary ($RUNNER_URL) and fallback ($RUNNER_URL_FALLBACK)"
+  return 1
 }
 
 install_schedule() {
