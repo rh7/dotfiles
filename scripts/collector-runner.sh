@@ -28,11 +28,19 @@ RUN_ARGS="${COLLECTOR_RUN_ARGS:---run}"
 CACHE_DIR="${COLLECTOR_CACHE_DIR:-$HOME/.cache/fleet-collector}"
 LABEL="${COLLECTOR_LABEL:-com.rh7.collector-runner}"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
-# Short link to THIS runner (Vercel rewrite -> raw dotfiles). Used to self-install
-# a persistent copy when the runner is invoked clone-free via `curl … | bash`, so
-# a no-clone device can still get the gated pull path instead of the un-gated
-# audit fallback (rh-device-management#119).
-RUNNER_URL="${COLLECTOR_RUNNER_URL:-https://config.rh7labs.com/collector-runner}"
+# Source(s) to self-install THIS runner from when invoked clone-free via
+# `curl … | bash`, so a no-clone device gets the gated pull path instead of the
+# un-gated audit fallback (rh-device-management#119). PRIMARY is the
+# config.rh7labs.com short link (a Vercel rewrite -> raw dotfiles). The built-in
+# raw-dotfiles fallback is auto-used ONLY when the primary is this default short
+# link (so enrollment survives the short link being undeployed/lagging — the #39
+# alias trap). A CUSTOM COLLECTOR_RUNNER_URL (staging/fork) fails closed unless
+# the operator also sets COLLECTOR_RUNNER_URL_FALLBACK, so a custom primary's
+# transient failure never silently installs main's runner. Both are TLS; the
+# AUDIT the runner later pulls is still sha256 + scan + ref gated regardless.
+RUNNER_URL_DEFAULT="https://config.rh7labs.com/collector-runner"
+RUNNER_RAW_FALLBACK="https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/collector-runner.sh"
+RUNNER_URL="${COLLECTOR_RUNNER_URL:-$RUNNER_URL_DEFAULT}"
 OS="$(uname -s)"
 CACHE="$CACHE_DIR/$COLLECTOR"
 RUNNER_SELF="$CACHE_DIR/collector-runner.sh"
@@ -122,10 +130,29 @@ resolve_self() {
     printf '%s\n' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     return 0
   fi
-  log "no on-disk runner (\$0='$0') — self-installing from $RUNNER_URL to $RUNNER_SELF"
-  curl -fsSL --max-time 30 "$RUNNER_URL" -o "$RUNNER_SELF" || { log "failed to fetch runner from $RUNNER_URL"; return 1; }
-  chmod +x "$RUNNER_SELF"
-  printf '%s\n' "$RUNNER_SELF"
+  # Clone-free: self-install a persistent copy. Try the primary, then a fallback.
+  # The built-in raw-dotfiles fallback is auto-used ONLY when the primary is the
+  # default short link; a custom COLLECTOR_RUNNER_URL fails closed unless the
+  # operator sets COLLECTOR_RUNNER_URL_FALLBACK explicitly.
+  log "no on-disk runner (\$0='$0') — self-installing to $RUNNER_SELF"
+  local fallback=""
+  if [ -n "${COLLECTOR_RUNNER_URL_FALLBACK:-}" ]; then
+    fallback="$COLLECTOR_RUNNER_URL_FALLBACK"
+  elif [ "$RUNNER_URL" = "$RUNNER_URL_DEFAULT" ]; then
+    fallback="$RUNNER_RAW_FALLBACK"
+  fi
+  local url
+  for url in "$RUNNER_URL" ${fallback:+"$fallback"}; do
+    if curl -fsSL --max-time 30 "$url" -o "$RUNNER_SELF" 2>/dev/null; then
+      chmod +x "$RUNNER_SELF"
+      log "self-installed runner from $url"
+      printf '%s\n' "$RUNNER_SELF"
+      return 0
+    fi
+    log "runner fetch failed from $url"
+  done
+  log "failed to fetch runner (primary $RUNNER_URL${fallback:+, fallback $fallback})"
+  return 1
 }
 
 install_schedule() {
