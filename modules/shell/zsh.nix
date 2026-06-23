@@ -39,6 +39,11 @@ in {
         else "sudo nixos-rebuild switch --flake ~/dotfiles";
       nup = "nix flake update ~/dotfiles";
 
+      # Guarded rebuild (build → drift audit → nvd diff → confirm → switch).
+      # Use instead of `nrs` when you want to review/approve changes first —
+      # `nrs` is raw darwin-rebuild and skips the drift guard entirely.
+      nrsg = "~/dotfiles/scripts/rebuild.sh";
+
       # Quick access
       dots = "cd ~/dotfiles && zed .";
     };
