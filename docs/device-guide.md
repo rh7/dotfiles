@@ -114,10 +114,17 @@ The audit collects:
 | **Dock apps** | Current dock order and apps |
 | **CLI tools** | Which tools are in PATH (git, node, docker, etc.) |
 | **Node globals** | Globally installed npm packages |
+| **npm config** | Global prefix/root health, including accidental `/nix/store` targets |
 | **Services** | Homebrew services + launchd agents |
 | **Git config** | Global git configuration |
 | **SSH keys** | Key names (not the keys themselves) |
 | **Fonts** | Installed font families |
+
+> **Nix + npm global CLIs:** Node itself is provided by Nix/Home Manager, but
+> fast-moving npm CLIs such as Codex or Claude Code are intentionally mutable.
+> Keep npm's global prefix pointed at `~/.npm-global`, not `/nix/store`; the
+> audit's `npm_config.prefix_in_nix_store` and `global_root_in_nix_store` fields
+> should stay `false`.
 
 ### Step 3: Review gaps
 
