@@ -1,5 +1,8 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 
+let
+  npmPrefix = "${config.home.homeDirectory}/.npm-global";
+in
 {
   # ── Dev toolchains (shared across all developer machines) ─────────────────
   home.packages = with pkgs; [
@@ -8,7 +11,7 @@
 
     # Python
     python312
-    uv              # fast pip/venv replacement
+    uv # fast pip/venv replacement
 
     # Rust
     rustup
@@ -17,10 +20,15 @@
     git-lfs
     pre-commit
     supabase-cli
-    zellij          # terminal multiplexer
+    zellij # terminal multiplexer
   ];
 
   # ── Tools installed via npm/brew instead of Nix ──────────────────────────
+  # Nix-provided npm defaults its global prefix to the immutable Nix store.
+  # Keep mutable npm-installed CLIs in the user profile instead.
+  home.sessionVariables.NPM_CONFIG_PREFIX = npmPrefix;
+  home.sessionPath = [ "${npmPrefix}/bin" ];
+
   # Claude Code   → npm i -g @anthropic-ai/claude-code  (nixpkgs version lags)
   # Railway CLI   → brew install railway                 (not reliably in nixpkgs)
   # Bun           → brew install oven-sh/bun/bun         (better updates via brew)
