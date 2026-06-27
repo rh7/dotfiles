@@ -618,8 +618,9 @@ print(json.dumps({
 # Server expects: [{name, kind(docker|compose|launchd|systemd), status, port?,
 # image?, restart?, compose_project?}]. tier/deploy_repo are NOT set here — the
 # server curates those from src/workloads.ts. Reports running processes only and
-# stays bounded: docker containers, fleet launchd agents (com.local.*/com.rh7.*),
-# and running systemd services — not every OS daemon. Fails soft to [].
+# stays bounded: docker containers, non-Apple launchd agents (skips com.apple.*),
+# and running systemd services. The server classifies each into app/infra/system
+# and collapses OS plumbing in the UI. Fails soft to [].
 collect_workloads() {
   python3 - "$OS" <<'PYEOF' 2>/dev/null || echo '[]'
 import subprocess, json, sys, re
@@ -660,7 +661,13 @@ if run('command -v docker'):
         if project: w['compose_project'] = project
         workloads.append(w)
 
-# --- macOS: fleet launchd agents only (com.local.* / com.rh7.*), running ---
+# --- macOS: non-Apple launchd agents, running ---
+# Collect everything EXCEPT com.apple.* — that's ~500 OS agents/Mac (uniform,
+# Apple-managed, non-actionable: 10x payload bloat for ~zero fleet value). The
+# remaining non-Apple agents (com.local.*/com.rh7.* + homebrew + third-party) are
+# the actionable layer; the server classifies them (app/infra/system) and the
+# dashboard collapses any `system` ones. Drop com.apple here, not the meaningful
+# rest — collect-don't-drop, scoped only where the volume is absurd.
 if host_os == 'Darwin':
     out = run('launchctl list')
     for line in (out.split('\n')[1:] if out else []):
@@ -668,7 +675,10 @@ if host_os == 'Darwin':
         if len(cols) < 3:
             continue
         pid, label = cols[0].strip(), cols[2].strip()
-        if not (label.startswith('com.local.') or label.startswith('com.rh7.')):
+        # Skip com.apple.* (OS agents) and application.* (transient GUI-app
+        # instances like Terminal/1Password — not services; a "missing" GUI app
+        # isn't drift, so dropping these at collection is correct, not lossy).
+        if not label or label.startswith('com.apple.') or label.startswith('application.'):
             continue
         # Running == has a numeric PID (not '-').
         if not pid.isdigit():
