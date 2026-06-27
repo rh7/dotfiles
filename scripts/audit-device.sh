@@ -612,6 +612,85 @@ print(json.dumps({
 " 2>/dev/null || echo '{"installed": true, "error": "collection failed"}'
 }
 
+# Workload registry feed (rh-device-management #128, epic #126). Emits a flat,
+# normalized array of the managed processes RUNNING on this host so the config
+# service can answer "what runs where, how critical, healthy?" across the fleet.
+# Server expects: [{name, kind(docker|compose|launchd|systemd), status, port?,
+# image?, restart?, compose_project?}]. tier/deploy_repo are NOT set here — the
+# server curates those from src/workloads.ts. Reports running processes only and
+# stays bounded: docker containers, fleet launchd agents (com.local.*/com.rh7.*),
+# and running systemd services — not every OS daemon. Fails soft to [].
+collect_workloads() {
+  python3 - "$OS" <<'PYEOF' 2>/dev/null || echo '[]'
+import subprocess, json, sys, re
+host_os = sys.argv[1] if len(sys.argv) > 1 else ''
+
+def run(cmd):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else ''
+    except Exception:
+        return ''
+
+def first_host_port(ports):
+    # "0.0.0.0:3456->3456/tcp, :::3456->..." -> 3456 (first published host port)
+    m = re.search(r':(\d+)->', ports or '')
+    return int(m.group(1)) if m else None
+
+workloads = []
+
+# --- Docker (running only); compose-managed containers => kind 'compose' ---
+if run('command -v docker'):
+    out = run("docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Labels}}'")
+    for line in (out.split('\n') if out else []):
+        if not line.strip():
+            continue
+        p = line.split('\t')
+        if len(p) < 5:
+            p += [''] * (5 - len(p))
+        name, image, status, ports, labels = p[0], p[1], p[2], p[3], p[4]
+        project = None
+        for kv in (labels or '').split(','):
+            if kv.startswith('com.docker.compose.project='):
+                project = kv.split('=', 1)[1]
+        w = {'name': name, 'kind': 'compose' if project else 'docker',
+             'status': 'running', 'image': image}
+        port = first_host_port(ports)
+        if port: w['port'] = port
+        if project: w['compose_project'] = project
+        workloads.append(w)
+
+# --- macOS: fleet launchd agents only (com.local.* / com.rh7.*), running ---
+if host_os == 'Darwin':
+    out = run('launchctl list')
+    for line in (out.split('\n')[1:] if out else []):
+        cols = line.split('\t')
+        if len(cols) < 3:
+            continue
+        pid, label = cols[0].strip(), cols[2].strip()
+        if not (label.startswith('com.local.') or label.startswith('com.rh7.')):
+            continue
+        # Running == has a numeric PID (not '-').
+        if not pid.isdigit():
+            continue
+        workloads.append({'name': label, 'kind': 'launchd', 'status': 'running'})
+
+# --- Linux: running systemd services (user + system), de-duped ---
+else:
+    seen = set()
+    for scope in ('--user ', ''):
+        out = run("systemctl %s list-units --type=service --state=running --no-legend --plain 2>/dev/null" % scope)
+        for line in (out.split('\n') if out else []):
+            unit = line.split()[0] if line.split() else ''
+            if not unit.endswith('.service') or unit in seen:
+                continue
+            seen.add(unit)
+            workloads.append({'name': unit[:-len('.service')], 'kind': 'systemd', 'status': 'running'})
+
+print(json.dumps(workloads))
+PYEOF
+}
+
 collect_nix_state() {
   if ! command -v nix &>/dev/null; then echo '{"installed": false}'; return; fi
 
@@ -2007,6 +2086,8 @@ $(collect_ssh_keys)
 $(collect_fonts)
 ---SECTION: docker
 $(collect_docker)
+---SECTION: workloads
+$(collect_workloads)
 ---SECTION: orbstack
 $(collect_orbstack)
 ---SECTION: nix
