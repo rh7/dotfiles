@@ -11,7 +11,39 @@
 
 set -euo pipefail
 
-HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
+# Resolve a trustworthy device identity (#33 / rh-device-management#150).
+# `$(hostname)` alone is fragile: on a minimal Linux box the binary may be
+# absent (→ empty), or the box may carry a placeholder name ("hostname",
+# "localhost"), or a paste/CRLF artifact may sneak in — any of which used to
+# register a PHANTOM device + workloads under a bogus identity. Try several
+# sources (uname -n and /etc/hostname work even without the `hostname` binary),
+# validate, and skip the heartbeat rather than send junk. Mirrors the server's
+# isValidDeviceIdentity() guard so both ends agree on what a valid name is.
+resolve_hostname() {
+  local cand raw=""
+  for cand in "$(hostname 2>/dev/null || true)" "$(uname -n 2>/dev/null || true)" \
+              "$(cat /etc/hostname 2>/dev/null || true)" "${HOSTNAME:-}"; do
+    cand="$(printf '%s' "$cand" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    cand="${cand%.local}"
+    if [[ -n "$cand" ]]; then raw="$cand"; break; fi
+  done
+  local lc; lc="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$lc" in
+    ""|hostname|localhost|localhost.localdomain) return 1 ;;
+  esac
+  if [[ "$raw" =~ [[:space:]] || "$raw" == *'$('* || "$raw" == *'`'* || "$raw" == *'/'* ]]; then
+    return 1
+  fi
+  printf '%s' "$raw"
+}
+
+# Cron job (every 5 min): skip quietly on an invalid identity instead of failing
+# loud — the server would 400 it anyway, and exit 1 here would spam cron mail.
+HOSTNAME="$(resolve_hostname)" || {
+  echo "[heartbeat] no valid hostname (empty/placeholder); skipping heartbeat" >&2
+  exit 0
+}
+HOSTNAME="$(printf '%s' "$HOSTNAME" | tr '[:upper:]' '[:lower:]')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 

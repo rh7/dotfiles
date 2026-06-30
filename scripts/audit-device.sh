@@ -15,13 +15,44 @@
 
 set -euo pipefail
 
-# Preserve the hostname's canonical case (#62). The config service uses hostname
-# as the devices-table PRIMARY KEY, and setup.sh registers + the flake names hosts
-# in canonical case (scutil --set HostName "$HOSTNAME"). Lowercasing here made the
+# Resolve a trustworthy device identity (#33 / rh-device-management#150).
+# `$(hostname)` alone is fragile: on a minimal Linux box the binary may be
+# absent (→ empty), or the box may carry a placeholder name ("hostname",
+# "localhost"), or a paste/CRLF artifact may sneak in — any of which used to
+# register a PHANTOM device + workloads under a bogus identity (a daily audit on
+# the Coolify box did exactly this). Try several sources (uname -n and
+# /etc/hostname work even without the `hostname` binary), validate, and FAIL LOUD
+# rather than send junk. Mirrors the server's isValidDeviceIdentity() guard.
+#
+# Preserve the hostname's canonical CASE (#62): the config service uses hostname
+# as the devices-table PRIMARY KEY, and setup.sh + the flake name hosts in
+# canonical case (scutil --set HostName "$HOSTNAME"). Lowercasing here made the
 # daily audit POST under a different case, creating a SECOND (duplicate) row for
-# any mixed-case host (e.g. Kassie-M5-Air13 vs kassie-m5-air13). Match setup/flake:
-# strip a trailing .local, keep the case as the OS reports it.
-HOSTNAME="$(hostname | sed 's/\.local$//')"
+# any mixed-case host (e.g. Kassie-M5-Air13 vs kassie-m5-air13). So we strip a
+# trailing .local and keep the case as the OS reports it — NO lowercasing.
+resolve_hostname() {
+  local cand raw=""
+  for cand in "$(hostname 2>/dev/null || true)" "$(uname -n 2>/dev/null || true)" \
+              "$(cat /etc/hostname 2>/dev/null || true)" "${HOSTNAME:-}"; do
+    cand="$(printf '%s' "$cand" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    cand="${cand%.local}"
+    if [[ -n "$cand" ]]; then raw="$cand"; break; fi
+  done
+  local lc; lc="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$lc" in
+    ""|hostname|localhost|localhost.localdomain) return 1 ;;
+  esac
+  if [[ "$raw" =~ [[:space:]] || "$raw" == *'$('* || "$raw" == *'`'* || "$raw" == *'/'* ]]; then
+    return 1
+  fi
+  printf '%s' "$raw"   # original case preserved (#62)
+}
+
+HOSTNAME="$(resolve_hostname)" || {
+  echo "[ERROR] Could not determine a valid hostname (got empty or a placeholder like 'hostname'/'localhost')." >&2
+  echo "        Set a real hostname and retry — Linux: sudo hostnamectl set-hostname <name>; macOS: sudo scutil --set HostName <name>" >&2
+  exit 1
+}
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 MODE="${1:-interactive}"

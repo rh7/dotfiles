@@ -12,7 +12,38 @@
 set -euo pipefail
 
 DOTFILES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-HOSTNAME="$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//')"
+# Resolve a trustworthy device identity (#33 / rh-device-management#150).
+# `$(hostname)` alone is fragile: on a minimal Linux box the binary may be
+# absent (→ empty), or the box may carry a placeholder name ("hostname",
+# "localhost"), or a paste/CRLF artifact may sneak in — any of which used to
+# register a PHANTOM device + workloads under a bogus identity. Try several
+# sources (uname -n and /etc/hostname work even without the `hostname` binary),
+# validate the result, and FAIL LOUD rather than send junk. Mirrors the server's
+# isValidDeviceIdentity() guard so both ends agree on what a valid name is.
+resolve_hostname() {
+  local cand raw=""
+  for cand in "$(hostname 2>/dev/null || true)" "$(uname -n 2>/dev/null || true)" \
+              "$(cat /etc/hostname 2>/dev/null || true)" "${HOSTNAME:-}"; do
+    cand="$(printf '%s' "$cand" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    cand="${cand%.local}"
+    if [[ -n "$cand" ]]; then raw="$cand"; break; fi
+  done
+  local lc; lc="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$lc" in
+    ""|hostname|localhost|localhost.localdomain) return 1 ;;
+  esac
+  if [[ "$raw" =~ [[:space:]] || "$raw" == *'$('* || "$raw" == *'`'* || "$raw" == *'/'* ]]; then
+    return 1
+  fi
+  printf '%s' "$raw"
+}
+
+HOSTNAME="$(resolve_hostname)" || {
+  echo "[ERROR] Could not determine a valid hostname (got empty or a placeholder like 'hostname'/'localhost')." >&2
+  echo "        Set a real hostname and retry — Linux: sudo hostnamectl set-hostname <name>; macOS: sudo scutil --set HostName <name>" >&2
+  exit 1
+}
+HOSTNAME="$(printf '%s' "$HOSTNAME" | tr '[:upper:]' '[:lower:]')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
