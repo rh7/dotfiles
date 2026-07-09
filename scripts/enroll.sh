@@ -13,6 +13,9 @@
 # Flags:
 #   --status   check only; make no changes (report tailscale + audit state)
 #   --force    (re)run the audit and reinstall the schedule even if healthy
+#   --role R   set this device's fleet role so security posture is graded right
+#              (personal|developer|server|ai-inference|smart-home|mobile);
+#              also honors ROLE=R in the environment. Omit to leave it unchanged.
 #
 # The heavy lifting (inventory + registration + scheduling) lives in
 # audit-device.sh; this is just the safe, idempotent front-door around it.
@@ -27,14 +30,23 @@ HOST="$(hostname | sed 's/\.local$//')"
 AUDIT_URL="https://config.rh7labs.com/audit"
 LOCAL_AUDIT="$HOME/dotfiles/scripts/audit-device.sh"
 
-MODE="${1:-run}"
-MODE="${MODE//[$'\t\r\n ']/}"   # tolerate paste artifacts on the flag
-case "$MODE" in
-  run|--run|"") MODE="run" ;;
-  --status|status) MODE="status" ;;
-  --force|force) MODE="force" ;;
-  *) echo "usage: enroll.sh [--status | --force]" >&2; exit 2 ;;
-esac
+# One positional mode (run|--status|--force) plus an optional role. Role may come
+# from the environment (ROLE=server curl…|bash) or a flag (--role server); it's
+# applied to the device record after the audit (see post-flight below), so
+# posture is set at enroll instead of hand-PATCHed afterwards.
+MODE="run"
+ROLE="${ROLE:-}"
+while [[ $# -gt 0 ]]; do
+  arg="${1//[$'\t\r\n ']/}"   # tolerate paste artifacts on flags
+  case "$arg" in
+    --role=*) ROLE="${arg#--role=}"; shift ;;
+    --role)   ROLE="${2:-}"; shift; [[ $# -gt 0 ]] && shift ;;
+    run|--run|"") MODE="run"; shift ;;
+    --status|status) MODE="status"; shift ;;
+    --force|force) MODE="force"; shift ;;
+    *) echo "usage: enroll.sh [--status | --force] [--role <role>]" >&2; exit 2 ;;
+  esac
+done
 
 # ── Colors / helpers ───────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -178,8 +190,22 @@ run_audit() {  # run_audit MODE_FLAG
     info "Running: audit-device.sh ${flag} (local checkout)"
     bash "$LOCAL_AUDIT" "$flag"
   else
-    info "Running: curl config.rh7labs.com/audit | bash -s -- ${flag}"
-    curl -fsSL "$AUDIT_URL" | bash -s -- "$flag"
+    # Download-then-exec, NOT `curl … | bash`: the audit script's collectors
+    # shell out to commands that read stdin, and under `curl | bash` stdin *is*
+    # the script pipe — so a collector consumes the rest of the script and
+    # truncates the run before it uploads/registers/schedules. That silently
+    # half-enrolls every no-clone host (audit built, never sent). Running from a
+    # file makes stdin the terminal, so the collectors can't eat the script.
+    info "Running: audit-device.sh ${flag} (fetched)"
+    local tmp rc
+    tmp="$(mktemp)" || { err "mktemp failed"; return 1; }
+    if curl -fsSL "$AUDIT_URL" -o "$tmp"; then
+      bash "$tmp" "$flag"; rc=$?
+    else
+      err "Failed to download the audit script from ${AUDIT_URL}"; rc=1
+    fi
+    rm -f "$tmp"
+    return $rc
   fi
 }
 
@@ -226,12 +252,34 @@ if [[ -z "$dev_json" || "$dev_json" == *'"error"'* ]]; then
   exit 1
 fi
 
+# If a role was supplied (--role / ROLE=…), apply it now that the audit has
+# created the device row. Validated against the roles the config service actually
+# grades on; applied via PATCH (404s only if the device is absent, which it isn't
+# post-audit). No role supplied → the stored role is left untouched (the audit
+# preserves it), and the unknown-role hint below still fires.
+if [[ -n "$ROLE" && "$MODE" != "status" ]]; then
+  role_want="$(printf '%s' "$ROLE" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case " personal developer server ai-inference smart-home mobile " in
+    *" $role_want "*)
+      if curl -sf -X PATCH "${CONFIG_URL}/api/devices/${HOST}" \
+           -H 'content-type: application/json' \
+           -d "{\"role\":\"${role_want}\"}" --max-time 5 >/dev/null 2>&1; then
+        ok "role set to '${role_want}'"
+        dev_json="$(read_device)"   # refresh so the summary reflects it
+      else
+        warn "could not set role to '${role_want}' (PATCH failed) — set it later by hand"
+      fi ;;
+    *)
+      warn "ignoring role '${ROLE}': not one of personal/developer/server/ai-inference/smart-home/mobile" ;;
+  esac
+fi
+
 role="$(printf '%s' "$dev_json" | json_field role)"
 echo "${BOLD}Fleet status for ${HOST}:${NC}"
 case "$role" in
   ""|unknown)
     warn "role=${role:-unknown} — set it so security posture is graded correctly (e.g. server):"
-    echo "     curl -X PATCH ${CONFIG_URL}/api/devices/${HOST} -H 'content-type: application/json' -d '{\"role\":\"server\"}'" ;;
+    echo "     curl -fsSL config.rh7labs.com/enroll | bash -s -- --role server   (or PATCH /api/devices/${HOST})" ;;
   *) ok "role=${role}" ;;
 esac
 if printf '%s' "$dev_json" | json_is_null age_public_key; then
