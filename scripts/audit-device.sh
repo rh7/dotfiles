@@ -132,7 +132,11 @@ build_audit_cmd() {
   if [[ -f "$HOME/dotfiles/scripts/audit-device.sh" ]]; then
     echo "bash $HOME/dotfiles/scripts/audit-device.sh --run"
   else
-    echo "curl -fsSL $SCRIPT_URL | bash -s -- --run"
+    # Download-then-exec, NOT `curl … | bash`: under a pipe stdin is the script,
+    # and a collector that reads stdin consumes the rest of it — truncating the
+    # audit before it uploads (the no-clone daily audit would silently do
+    # nothing). Running from a temp file avoids it (mirrors enroll.sh run_audit).
+    echo "t=\"\$(mktemp)\" && curl -fsSL $SCRIPT_URL -o \"\$t\" && bash \"\$t\" --run; rm -f \"\$t\""
   fi
 }
 
