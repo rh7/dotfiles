@@ -186,21 +186,27 @@ fi
 # ── Decide ─────────────────────────────────────────────────────────────────
 run_audit() {  # run_audit MODE_FLAG
   local flag="$1"
+  # `</dev/null` on the audit invocation is load-bearing. The audit's collectors
+  # read stdin; when *enroll itself* is run via `curl … | bash`, the child audit
+  # inherits enroll's pipe as its stdin, so a collector consumes the rest of the
+  # ENROLL script — truncating enroll's own post-flight (the role apply and the
+  # #38 fail-loud registry read-back). Detaching the child's stdin prevents it
+  # from reaching back into the parent's pipe.
   if [[ -f "$LOCAL_AUDIT" ]]; then
     info "Running: audit-device.sh ${flag} (local checkout)"
-    bash "$LOCAL_AUDIT" "$flag"
+    bash "$LOCAL_AUDIT" "$flag" </dev/null
   else
     # Download-then-exec, NOT `curl … | bash`: the audit script's collectors
     # shell out to commands that read stdin, and under `curl | bash` stdin *is*
     # the script pipe — so a collector consumes the rest of the script and
     # truncates the run before it uploads/registers/schedules. That silently
     # half-enrolls every no-clone host (audit built, never sent). Running from a
-    # file makes stdin the terminal, so the collectors can't eat the script.
+    # file (with stdin detached) makes the collectors read nothing to eat.
     info "Running: audit-device.sh ${flag} (fetched)"
     local tmp rc
     tmp="$(mktemp)" || { err "mktemp failed"; return 1; }
     if curl -fsSL "$AUDIT_URL" -o "$tmp"; then
-      bash "$tmp" "$flag"; rc=$?
+      bash "$tmp" "$flag" </dev/null; rc=$?
     else
       err "Failed to download the audit script from ${AUDIT_URL}"; rc=1
     fi
