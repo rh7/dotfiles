@@ -72,6 +72,28 @@ json_is_null() {  # json_is_null KEY  → true if "key": null
   grep -qE "\"${key}\"[[:space:]]*:[[:space:]]*null"
 }
 
+echo "${BOLD}Fleet enroll — ${HOST} (${OS})${NC}"
+
+# ── 0. Validate our own identity up front ──────────────────────────────────
+# The config service rejects placeholder identities (#150) — an unexpanded
+# $(hostname), 'localhost', shell residue. Catch them here and fail with a clear
+# fix instead of running a full audit the server then 400s (the box literally
+# named 'hostname' that silently reported "enrolled", 2026-07-09).
+host_lc="$(printf '%s' "$HOST" | tr '[:upper:]' '[:lower:]')"
+case "$host_lc" in
+  ""|hostname|localhost|localhost.localdomain|unknown|'$(hostname)'|'${hostname}')
+    err "This machine reports its hostname as '${HOST}' — a placeholder, not a real name."
+    err "The fleet rejects it (#150), so enrollment can't proceed. Set a real hostname first:"
+    err "  Linux:  sudo hostnamectl set-hostname my-real-name   (then re-open the shell)"
+    err "  macOS:  sudo scutil --set HostName my-real-name"
+    exit 1 ;;
+esac
+if printf '%s' "$HOST" | grep -q '[[:space:]$`]'; then
+  err "Hostname '${HOST}' contains whitespace/shell characters — looks like an unexpanded variable (#150)."
+  err "Fix the machine's hostname before enrolling."
+  exit 1
+fi
+
 # ── 1. Tailscale ───────────────────────────────────────────────────────────
 TS=""
 for c in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale /usr/bin/tailscale; do
@@ -79,7 +101,6 @@ for c in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale /usr/bin
   [[ -x "$c" ]] && { TS="$c"; break; }
 done
 
-echo "${BOLD}Fleet enroll — ${HOST} (${OS})${NC}"
 if [[ -n "$TS" ]]; then
   ts_state="$(run_timeout 5 "$TS" status --json 2>/dev/null | json_field BackendState)"
   case "$ts_state" in
@@ -173,25 +194,41 @@ else
   run_audit --run-and-install
 fi
 
-# ── 5. Post-flight: role + age-key follow-ups (#208/#209) ──────────────────
+# ── 5. Post-flight: confirm the device actually landed, then role/age follow-ups ──
+# The read-back is authoritative: if the host isn't in the registry after the
+# audit run, the upload/registration was rejected (e.g. an invalid hostname the
+# server 400s, #150) — so FAIL LOUD, never print a false "enrolled".
 echo
-dev_json="$(curl -sf "${CONFIG_URL}/api/devices/${HOST}" --max-time 5 2>/dev/null || true)"
-if [[ -n "$dev_json" && "$dev_json" != *'"error"'* ]]; then
-  role="$(printf '%s' "$dev_json" | json_field role)"
-  echo "${BOLD}Fleet status for ${HOST}:${NC}"
-  case "$role" in
-    ""|unknown)
-      warn "role=${role:-unknown} — set it so security posture is graded correctly (e.g. server):"
-      echo "     curl -X PATCH ${CONFIG_URL}/api/devices/${HOST} -H 'content-type: application/json' -d '{\"role\":\"server\"}'" ;;
-    *) ok "role=${role}" ;;
-  esac
-  if printf '%s' "$dev_json" | json_is_null age_public_key; then
-    warn "no age key registered — secrets/retirement are blind for this host (follow-up: issue #209)"
-  else
-    ok "age key registered"
+read_device() { curl -sf "${CONFIG_URL}/api/devices/${HOST}" --max-time 5 2>/dev/null || true; }
+dev_json="$(read_device)"
+if [[ -z "$dev_json" || "$dev_json" == *'"error"'* ]]; then
+  sleep 2; dev_json="$(read_device)"   # one retry in case the ingest is still committing
+fi
+
+if [[ -z "$dev_json" || "$dev_json" == *'"error"'* ]]; then
+  if [[ "$MODE" == "status" ]]; then
+    warn "${HOST} is not in the fleet registry (never enrolled). Re-run without --status to enroll."
+    exit 0
   fi
+  err "${BOLD}Enrollment did NOT complete.${NC} ${HOST} is not in the fleet registry after the audit run."
+  err "The audit upload / registration was rejected — most likely an invalid hostname (#150) or a"
+  err "service-side error. Confirm the hostname is a real name (not 'hostname'/'localhost'), then"
+  err "re-run. If it persists, check the config-service logs on the Studio."
+  exit 1
+fi
+
+role="$(printf '%s' "$dev_json" | json_field role)"
+echo "${BOLD}Fleet status for ${HOST}:${NC}"
+case "$role" in
+  ""|unknown)
+    warn "role=${role:-unknown} — set it so security posture is graded correctly (e.g. server):"
+    echo "     curl -X PATCH ${CONFIG_URL}/api/devices/${HOST} -H 'content-type: application/json' -d '{\"role\":\"server\"}'" ;;
+  *) ok "role=${role}" ;;
+esac
+if printf '%s' "$dev_json" | json_is_null age_public_key; then
+  warn "no age key registered — secrets/retirement are blind for this host (follow-up: issue #209)"
 else
-  warn "Could not read back device record (service busy?) — audit still uploaded."
+  ok "age key registered"
 fi
 echo
-ok "${BOLD}Done.${NC} This device is enrolled; the daily audit keeps it current."
+ok "${BOLD}Done.${NC} ${HOST} is enrolled and reporting; the daily audit keeps it current."
