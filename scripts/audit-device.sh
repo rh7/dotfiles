@@ -142,7 +142,8 @@ install_launchagent() {
   local hour=8
   local minute=$(( RANDOM % 30 ))
 
-  mkdir -p "$HOME/Library/LaunchAgents"
+  mkdir -p "$HOME/Library/LaunchAgents" || {
+    err "Cannot create ~/Library/LaunchAgents — daily audit NOT scheduled."; return 1; }
   cat > "$LAUNCHAGENT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -178,8 +179,19 @@ install_launchagent() {
 </plist>
 PLIST
 
+  # Explicit checks (don't rely on errexit): install_cron is called as
+  # `install_cron || warn`, which suspends `set -e` inside this function, so a
+  # failed plist write or `launchctl load` would otherwise fall through to the
+  # "Installed" message and falsely return success.
+  if [[ ! -s "$LAUNCHAGENT_PLIST" ]]; then
+    err "Failed to write LaunchAgent plist ($LAUNCHAGENT_PLIST) — daily audit NOT scheduled."
+    return 1
+  fi
   launchctl unload "$LAUNCHAGENT_PLIST" 2>/dev/null || true
-  launchctl load "$LAUNCHAGENT_PLIST"
+  if ! launchctl load "$LAUNCHAGENT_PLIST"; then
+    err "Failed to load LaunchAgent (launchctl load) — daily audit NOT scheduled."
+    return 1
+  fi
   ok "Installed daily audit LaunchAgent ($(printf '%d:%02d' "$hour" "$minute") AM)"
   info "→ $LAUNCHAGENT_PLIST"
   info "→ $audit_cmd"
