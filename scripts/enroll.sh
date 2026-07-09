@@ -127,13 +127,18 @@ fi
 ok "Config service reachable: ${CONFIG_URL}"
 
 # ── 3. Is the daily audit already scheduled? ───────────────────────────────
+# A function so we can re-check AFTER the audit run (post-flight #6) and catch a
+# silently-failed schedule install instead of reporting a false "enrolled".
+schedule_installed() {
+  if [[ "$OS" == "Darwin" ]]; then
+    # collector-runner supersedes the direct audit agent; either counts as scheduled
+    launchctl list 2>/dev/null | grep -qE 'com\.rh7\.(collector-runner|audit)'
+  else
+    crontab -l 2>/dev/null | grep -qE 'fleet-audit|collector-runner|audit-device\.sh'
+  fi
+}
 scheduled=false
-if [[ "$OS" == "Darwin" ]]; then
-  # collector-runner supersedes the direct audit agent; either counts as scheduled
-  if launchctl list 2>/dev/null | grep -qE 'com\.rh7\.(collector-runner|audit)'; then scheduled=true; fi
-else
-  if crontab -l 2>/dev/null | grep -qE 'fleet-audit|collector-runner|audit-device\.sh'; then scheduled=true; fi
-fi
+schedule_installed && scheduled=true
 $scheduled && ok "Daily audit schedule: installed" || warn "Daily audit schedule: not installed"
 
 # ── 4. Is this host already reporting? ─────────────────────────────────────
@@ -193,6 +198,10 @@ else
   echo; info "Not yet enrolled — running the first audit and installing the daily schedule…"
   run_audit --run-and-install
 fi
+# Re-check the schedule after the run: the audit script installs cron at the end,
+# and a failure there must NOT be reported as a healthy enrollment (see #6).
+scheduled=false
+schedule_installed && scheduled=true
 
 # ── 5. Post-flight: confirm the device actually landed, then role/age follow-ups ──
 # The read-back is authoritative: if the host isn't in the registry after the
@@ -231,4 +240,16 @@ else
   ok "age key registered"
 fi
 echo
-ok "${BOLD}Done.${NC} ${HOST} is enrolled and reporting; the daily audit keeps it current."
+if $scheduled; then
+  ok "${BOLD}Done.${NC} ${HOST} is enrolled and reporting; the daily audit keeps it current."
+elif [[ "$MODE" == "status" ]]; then
+  warn "${BOLD}Enrolled, but no daily audit schedule is installed.${NC} Re-run without --status to install it."
+else
+  # The audit uploaded, but the recurring schedule did NOT install — don't claim
+  # "the daily audit keeps it current", or the host silently goes stale.
+  err "${BOLD}Enrolled, but the daily audit schedule did NOT install.${NC} ${HOST} uploaded an audit,"
+  err "but without a schedule it will go stale. See the audit run's messages above for the cause."
+  [[ "$OS" != "Darwin" ]] && err "Check cron:  command -v crontab || echo 'cron not installed'; systemctl status cron 2>/dev/null || true"
+  err "Then retry:  curl -fsSL config.rh7labs.com/enroll | bash -s -- --force"
+  exit 1
+fi

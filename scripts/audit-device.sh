@@ -142,7 +142,8 @@ install_launchagent() {
   local hour=8
   local minute=$(( RANDOM % 30 ))
 
-  mkdir -p "$HOME/Library/LaunchAgents"
+  mkdir -p "$HOME/Library/LaunchAgents" || {
+    err "Cannot create ~/Library/LaunchAgents — daily audit NOT scheduled."; return 1; }
   cat > "$LAUNCHAGENT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -178,21 +179,52 @@ install_launchagent() {
 </plist>
 PLIST
 
+  # Explicit checks (don't rely on errexit): install_cron is called as
+  # `install_cron || warn`, which suspends `set -e` inside this function, so a
+  # failed plist write or `launchctl load` would otherwise fall through to the
+  # "Installed" message and falsely return success.
+  if [[ ! -s "$LAUNCHAGENT_PLIST" ]]; then
+    err "Failed to write LaunchAgent plist ($LAUNCHAGENT_PLIST) — daily audit NOT scheduled."
+    return 1
+  fi
   launchctl unload "$LAUNCHAGENT_PLIST" 2>/dev/null || true
-  launchctl load "$LAUNCHAGENT_PLIST"
+  if ! launchctl load "$LAUNCHAGENT_PLIST"; then
+    err "Failed to load LaunchAgent (launchctl load) — daily audit NOT scheduled."
+    return 1
+  fi
   ok "Installed daily audit LaunchAgent ($(printf '%d:%02d' "$hour" "$minute") AM)"
   info "→ $LAUNCHAGENT_PLIST"
   info "→ $audit_cmd"
 }
 
 install_crontab() {
-  local audit_cmd cron_min cron_line
+  local audit_cmd cron_min cron_line existing new_crontab
+  if ! command -v crontab >/dev/null 2>&1; then
+    err "cron is not installed on this host — the daily audit was NOT scheduled."
+    err "Install it and re-run, e.g.: sudo apt-get install -y cron && sudo systemctl enable --now cron"
+    return 1
+  fi
   audit_cmd="$(build_audit_cmd)"
   cron_min=$(( RANDOM % 30 ))
   cron_line="${cron_min} 8 * * * ${audit_cmd} ${CRON_TAG}"
-  (crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG"; echo "$cron_line") | crontab -
-  ok "Installed daily audit cron (8:$(printf '%02d' "$cron_min") AM)"
-  info "→ $audit_cmd"
+  # Read the existing crontab, stripping any prior fleet entries. On a fresh box
+  # `crontab -l` is empty, so the `grep -v` filters find no match and exit 1;
+  # under `set -euo pipefail` that used to abort the whole script HERE — before
+  # the new line was ever written — so the schedule silently never installed.
+  # `|| true` neutralizes the empty-input exit; the assignment always succeeds.
+  existing="$(crontab -l 2>/dev/null | grep -v "$CRON_TAG" | grep -v "$OLD_CRON_TAG" || true)"
+  if [[ -n "$existing" ]]; then
+    new_crontab="${existing}"$'\n'"${cron_line}"
+  else
+    new_crontab="${cron_line}"
+  fi
+  if printf '%s\n' "$new_crontab" | crontab -; then
+    ok "Installed daily audit cron (8:$(printf '%02d' "$cron_min") AM)"
+    info "→ $audit_cmd"
+  else
+    err "Failed to write crontab (is the cron service running?) — daily audit NOT scheduled."
+    return 1
+  fi
 }
 
 install_cron() {
@@ -2199,12 +2231,16 @@ register_device() {
 show_checklist() {
   local config_url="$1"
   local role
-  role=$(fetch_device_role "$config_url")
+  # `|| true`: this is a cosmetic display step and MUST NOT abort the script.
+  # Under `set -euo pipefail`, a role the server has no checklist for (e.g.
+  # `server`, which 400s) makes `curl -sf` exit 22 — which used to kill the
+  # whole audit run right here, skipping the cron install that follows.
+  role=$(fetch_device_role "$config_url" || true)
   [[ -z "$role" ]] && role="workstation"
 
   local checklist
-  checklist=$(curl -sf "${config_url}/api/fleet/checklist/${role}" --max-time 5 2>/dev/null)
-  [[ -z "$checklist" ]] && return
+  checklist=$(curl -sf "${config_url}/api/fleet/checklist/${role}" --max-time 5 2>/dev/null || true)
+  [[ -z "$checklist" ]] && return 0
 
   echo "" >&2
   echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}" >&2
@@ -2255,17 +2291,19 @@ case "$MODE" in
       register_device "$CONFIG_URL" \
         && ok "Device registered with fleet" >&2 \
         || warn "Device registration failed" >&2
-      # Show checklist in interactive mode (not cron)
-      if [[ -t 1 || "$MODE" == "--run-and-install" ]] && [[ -z "${CRON_TAG_PRESENT:-}" ]]; then
-        show_checklist "$CONFIG_URL"
-      fi
     else
       warn "Config service not reachable — printing audit locally" >&2
       echo "$AUDIT"
     fi
-    # Install cron if requested
+    # Install the daily schedule FIRST — it's the critical step and must not be
+    # skipped by a later (cosmetic) failure. Runs whether or not the service was
+    # reachable; `|| warn` keeps a failed install from aborting under set -e.
     if [[ "$MODE" == "--run-and-install" ]]; then
-      install_cron
+      install_cron || warn "Daily audit schedule was NOT installed (see message above)" >&2
+    fi
+    # Then the post-setup checklist (cosmetic; only when the service is reachable).
+    if [[ -n "$CONFIG_URL" ]] && { [[ -t 1 || "$MODE" == "--run-and-install" ]]; } && [[ -z "${CRON_TAG_PRESENT:-}" ]]; then
+      show_checklist "$CONFIG_URL"
     fi
     ;;
 esac
