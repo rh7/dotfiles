@@ -34,6 +34,26 @@ SCRIPT_URL="https://config.rh7labs.com/audit"
 CRON_TAG="# fleet-audit"
 OLD_CRON_TAG="# fleet-heartbeat"
 
+# ── Self-reexec guard: survive `curl … | bash` (#217) ──
+# Under a pipe, fd 0 (stdin) *is* this script. Several collectors below shell out
+# to commands that read stdin, which consume the not-yet-executed remainder of
+# THIS script — so bash hits EOF and exits 0 *before* the upload/register/schedule
+# code runs, leaving a silent half-audit (JSON built, never sent). If we're being
+# read from a pipe (stdin is not a tty AND there is no real script file on disk),
+# re-fetch ourselves to a temp file and exec from there with stdin detached, so no
+# collector can eat the script:
+#   • `bash file` / cron's `bash "$t"`          → BASH_SOURCE[0] is a real file → skip
+#   • enroll's temp-file wrapper (`bash "$t" </dev/null`) → real file          → skip
+#   • `curl … | bash -s`                        → BASH_SOURCE[0] empty/not-file → re-exec
+# Fails soft: if the self-fetch (or mktemp) fails, fall through to the piped path,
+# no worse than today. AUDIT_REEXEC prevents any re-exec loop.
+if [[ -z "${AUDIT_REEXEC:-}" && ! -t 0 && ! -f "${BASH_SOURCE[0]:-/nonexistent}" ]]; then
+  if _self="$(mktemp 2>/dev/null)" && curl -fsSL "$SCRIPT_URL" -o "$_self" 2>/dev/null && [[ -s "$_self" ]]; then
+    AUDIT_REEXEC=1 exec bash "$_self" "$@" </dev/null
+  fi
+  [[ -n "${_self:-}" ]] && rm -f "$_self"   # couldn't self-fetch — fall through
+fi
+
 # ── Colors ──
 RED='\033[0;31m'
 GREEN='\033[0;32m'
