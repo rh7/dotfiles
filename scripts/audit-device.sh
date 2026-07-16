@@ -1287,7 +1287,7 @@ dirs_to_check = {
     '/nix/store': '/nix/store',
     'docker': '/var/lib/docker',
 }
-if os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1':
+if os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1' or platform.system() != 'Darwin':
     dirs_to_check['home'] = os.path.expanduser('~')
 # Add common cache dirs
 cache_dir = os.path.expanduser('~/.cache')
