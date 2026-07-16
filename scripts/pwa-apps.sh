@@ -42,13 +42,23 @@ slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//'
 }
 
+# Escape XML-significant chars so names like "R&D" produce a valid Info.plist.
+xml_escape() {
+  local s="$1"
+  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"; s="${s//\'/&apos;}"
+  printf '%s' "$s"
+}
+
 # Emit "name<TAB>url<TAB>icon" for each valid manifest line.
 read_manifest() {
   if [ ! -f "$MANIFEST" ]; then die "no manifest at $MANIFEST"; fi
-  local line name url icon
+  local line name url icon t
   while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%%#*}"
-    if [ -z "$(trim "$line")" ]; then continue; fi
+    t="$(trim "$line")"
+    # Skip blank lines and full-line comments; strip only " #" inline comments so a
+    # bare '#' inside a URL (hash-route fragments like https://x/#/inbox) survives.
+    case "$t" in ''|'#'*) continue;; esac
+    line="${line%% #*}"
     IFS='|' read -r name url icon <<<"$line"
     name="$(trim "${name:-}")"; url="$(trim "${url:-}")"; icon="$(trim "${icon:-}")"
     if [ -z "$name" ] || [ -z "$url" ]; then
@@ -66,7 +76,8 @@ create_stub() {
   local app="$APPS_DIR/$name.app"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  local iconkey=""
+  local iconkey="" xname
+  xname="$(xml_escape "$name")"
   if [ -n "$icon" ] && [ -f "$icon" ]; then
     cp "$icon" "$app/Contents/Resources/icon.icns"
     iconkey='  <key>CFBundleIconFile</key><string>icon</string>'
@@ -75,8 +86,8 @@ create_stub() {
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>$name</string>
-  <key>CFBundleDisplayName</key><string>$name</string>
+  <key>CFBundleName</key><string>$xname</string>
+  <key>CFBundleDisplayName</key><string>$xname</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIdentifier</key><string>com.rh7.pwa.$(slugify "$name")</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -147,6 +158,7 @@ pin_dock() {
 }
 
 cmd_build() {
+  if [ ! -f "$MANIFEST" ]; then die "no manifest at $MANIFEST"; fi
   mkdir -p "$APPS_DIR"
   if [ "$ENGINE" = "pake" ]; then ensure_rust; ensure_pake; fi
   local name url icon built=0 failed=0
@@ -162,9 +174,11 @@ cmd_build() {
   done < <(read_manifest)
   log "built $built app(s) into $APPS_DIR${failed:+ ($failed failed)}"
   if [ "$PIN" -eq 1 ] && command -v dockutil >/dev/null 2>&1; then killall Dock >/dev/null 2>&1 || true; fi
+  if [ "$failed" -gt 0 ]; then return 1; fi   # non-zero for automation when any build failed
 }
 
 cmd_list() {
+  if [ ! -f "$MANIFEST" ]; then die "no manifest at $MANIFEST"; fi
   local name url icon
   while IFS=$'\t' read -r name url icon; do
     printf '  %-24s %s%s\n' "$name" "$url" "${icon:+  [icon: $icon]}"
