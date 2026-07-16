@@ -110,11 +110,39 @@ LAUNCH
 }
 
 # --- pake engine: native Tauri app ---
+# A prior fallback pake install lives in a user prefix whose bin isn't on PATH in a
+# non-login script shell — surface it so build/doctor find it instead of missing it
+# or needlessly reinstalling (persisting the path is the job of development.nix).
+add_fallback_bin() {
+  if command -v pake >/dev/null 2>&1; then return 0; fi   # keep any pake already on PATH
+  local b="${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin"
+  case ":$PATH:" in
+    *":$b:"*) ;;
+    *) if [ -d "$b" ]; then PATH="$b:$PATH"; export PATH; fi ;;
+  esac
+}
+
 ensure_pake() {
   if command -v pake >/dev/null 2>&1; then return 0; fi
   if ! command -v npm >/dev/null 2>&1; then die "npm required to install pake-cli"; fi
-  log "installing pake-cli globally (npm)…"
-  npm install -g pake-cli
+  local prefix; prefix="$(npm config get prefix 2>/dev/null || true)"
+  # Nix-provided npm defaults its global prefix to the immutable Nix store, so a
+  # plain `npm i -g` fails EACCES. Fall back to a user-writable prefix — matching
+  # the NPM_CONFIG_PREFIX policy in modules/home/profiles/development.nix — so a
+  # fresh Nix Mac works without any manual `npm config`.
+  if [ -z "$prefix" ] || [ ! -w "$prefix/lib" ]; then
+    prefix="${NPM_CONFIG_PREFIX:-$HOME/.npm-global}"
+    log "npm global prefix not writable — installing pake-cli into $prefix"
+    mkdir -p "$prefix/lib" "$prefix/bin"
+    PATH="$prefix/bin:$PATH"; export PATH
+    npm install -g --prefix "$prefix" pake-cli
+  else
+    log "installing pake-cli globally (npm)…"
+    npm install -g pake-cli
+  fi
+  if ! command -v pake >/dev/null 2>&1; then
+    die "pake-cli installed but 'pake' is not on PATH — add ${prefix}/bin to your PATH"
+  fi
 }
 ensure_rust() {
   if command -v cargo >/dev/null 2>&1; then return 0; fi
@@ -134,9 +162,15 @@ create_pake() {
   local built
   built="$(/usr/bin/find "$tmp" -maxdepth 2 -name "$name.app" -print -quit 2>/dev/null)"
   if [ -z "$built" ]; then
-    # Fallback: pake compiles the .app into its own target dir before copying out.
-    local pdir; pdir="$(npm root -g 2>/dev/null)/pake-cli/src-tauri/target"
-    built="$(/usr/bin/find "$pdir" -maxdepth 6 -name "$name.app" -type d -print -quit 2>/dev/null)"
+    # Fallback: pake compiles the .app into its own package target dir before copying
+    # out. Resolve pake-cli from the actual pake binary (not `npm root -g`, which on a
+    # Nix Mac points at the read-only store, not the user-prefix fallback install).
+    local pbin pkgroot=""
+    pbin="$(command -v pake 2>/dev/null || true)"
+    if [ -n "$pbin" ]; then pkgroot="$(cd "$(dirname "$pbin")/../lib/node_modules" 2>/dev/null && pwd || true)"; fi
+    if [ -n "$pkgroot" ]; then
+      built="$(/usr/bin/find "$pkgroot/pake-cli/src-tauri/target" -maxdepth 6 -name "$name.app" -type d -print -quit 2>/dev/null)"
+    fi
   fi
   if [ -z "$built" ]; then rm -rf "$tmp"; warn "pake produced no .app for $name"; return 1; fi
   rm -rf "$APPS_DIR/$name.app"
@@ -195,6 +229,7 @@ cmd_doctor() {
 }
 
 main() {
+  add_fallback_bin   # pick up a prior user-prefix pake install not on PATH
   local cmd="${1:-}"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
