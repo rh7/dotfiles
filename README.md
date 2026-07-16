@@ -127,6 +127,10 @@ mackup/
 | New role bundle | Create `modules/roles/your-role.nix`, import profiles |
 | New machine | Add entry in `flake.nix` with hostname, role, and extras |
 
+Nix provides the shared Node runtime via Home Manager. For mutable npm-installed
+CLIs that need rapid updates, keep the global npm prefix user-owned
+(`~/.npm-global`) rather than under `/nix/store`.
+
 ## Device Management
 
 See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, including:

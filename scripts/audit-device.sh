@@ -510,6 +510,44 @@ except: print('[]')
 " 2>/dev/null || echo '[]'
 }
 
+collect_npm_config() {
+  if ! command -v npm &>/dev/null; then echo '{"installed":false}'; return; fi
+
+  local npm_path node_path prefix global_root cache userconfig globalconfig
+  npm_path="$(command -v npm 2>/dev/null || true)"
+  node_path="$(command -v node 2>/dev/null || true)"
+  prefix="$(npm config get prefix 2>/dev/null || true)"
+  global_root="$(npm root -g 2>/dev/null || true)"
+  cache="$(npm config get cache 2>/dev/null || true)"
+  userconfig="$(npm config get userconfig 2>/dev/null || true)"
+  globalconfig="$(npm config get globalconfig 2>/dev/null || true)"
+
+  python3 - "$npm_path" "$node_path" "$prefix" "$global_root" "$cache" "$userconfig" "$globalconfig" "$PATH" <<'PY' 2>/dev/null || echo '{}'
+import json, os, sys
+
+def clean(value):
+    value = (value or '').strip()
+    return '' if value == 'undefined' else value
+
+npm_path, node_path, prefix, global_root, cache, userconfig, globalconfig, path = map(clean, sys.argv[1:9])
+prefix_bin = os.path.join(prefix, 'bin') if prefix else ''
+
+print(json.dumps({
+    'installed': True,
+    'npm_path': npm_path,
+    'node_path': node_path,
+    'prefix': prefix,
+    'global_root': global_root,
+    'cache': cache,
+    'userconfig': userconfig,
+    'globalconfig': globalconfig,
+    'prefix_in_nix_store': prefix.startswith('/nix/store/'),
+    'global_root_in_nix_store': global_root.startswith('/nix/store/'),
+    'prefix_bin_on_path': bool(prefix_bin and prefix_bin in path.split(os.pathsep)),
+}))
+PY
+}
+
 collect_services() {
   if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
 
@@ -2142,6 +2180,8 @@ $(collect_dock_apps)
 $(collect_cli_tools)
 ---SECTION: node_globals
 $(collect_node_globals)
+---SECTION: npm_config
+$(collect_npm_config)
 ---SECTION: services
 $(collect_services)
 ---SECTION: git_config
