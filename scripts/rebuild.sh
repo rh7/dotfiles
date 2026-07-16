@@ -110,9 +110,11 @@ if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
   # Parse risky/benign counts from audit's machine-readable summary line.
   risky=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*risky=([0-9]+).*/\1/p')
   benign=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*benign=([0-9]+).*/\1/p')
+  informational=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*informational=([0-9]+).*/\1/p')
   rm -f "$audit_log"
   risky=${risky:-0}
   benign=${benign:-0}
+  informational=${informational:-0}
 
   case "$audit_rc" in
     0) : ;;  # no drift
@@ -130,7 +132,7 @@ if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
           fi
         fi
       else
-        info "Drift is in the safe direction ($benign declared item(s) pending) — proceeding."
+        info "Drift is non-destructive ($benign declared item(s) pending, $informational informational item(s) preserved) — proceeding."
       fi
       ;;
     *) warn "Audit failed (exit $audit_rc) — proceeding without drift check" ;;

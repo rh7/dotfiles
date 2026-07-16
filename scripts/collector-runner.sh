@@ -45,6 +45,7 @@ OS="$(uname -s)"
 CACHE="$CACHE_DIR/$COLLECTOR"
 RUNNER_SELF="$CACHE_DIR/collector-runner.sh"
 LOG="$CACHE_DIR/runner.log"
+AGENT_PATH="/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 mkdir -p "$CACHE_DIR"
 log() { echo "$(date -u +%FT%TZ) collector-runner: $*" | tee -a "$LOG" >&2; }
@@ -171,7 +172,7 @@ install_schedule() {
     <key>StartCalendarInterval</key>
     <dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
     <key>EnvironmentVariables</key>
-    <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+    <dict><key>PATH</key><string>${AGENT_PATH}</string></dict>
     <key>StandardOutPath</key><string>/tmp/${LABEL}.out.log</string>
     <key>StandardErrorPath</key><string>/tmp/${LABEL}.err.log</string>
     <key>RunAtLoad</key><false/>
