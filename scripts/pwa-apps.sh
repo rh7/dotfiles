@@ -113,8 +113,24 @@ LAUNCH
 ensure_pake() {
   if command -v pake >/dev/null 2>&1; then return 0; fi
   if ! command -v npm >/dev/null 2>&1; then die "npm required to install pake-cli"; fi
-  log "installing pake-cli globally (npm)…"
-  npm install -g pake-cli
+  local prefix; prefix="$(npm config get prefix 2>/dev/null || true)"
+  # Nix-provided npm defaults its global prefix to the immutable Nix store, so a
+  # plain `npm i -g` fails EACCES. Fall back to a user-writable prefix — matching
+  # the NPM_CONFIG_PREFIX policy in modules/home/profiles/development.nix — so a
+  # fresh Nix Mac works without any manual `npm config`.
+  if [ -z "$prefix" ] || [ ! -w "$prefix/lib" ]; then
+    prefix="${NPM_CONFIG_PREFIX:-$HOME/.npm-global}"
+    log "npm global prefix not writable — installing pake-cli into $prefix"
+    mkdir -p "$prefix/lib" "$prefix/bin"
+    PATH="$prefix/bin:$PATH"; export PATH
+    npm install -g --prefix "$prefix" pake-cli
+  else
+    log "installing pake-cli globally (npm)…"
+    npm install -g pake-cli
+  fi
+  if ! command -v pake >/dev/null 2>&1; then
+    die "pake-cli installed but 'pake' is not on PATH — add ${prefix}/bin to your PATH"
+  fi
 }
 ensure_rust() {
   if command -v cargo >/dev/null 2>&1; then return 0; fi
