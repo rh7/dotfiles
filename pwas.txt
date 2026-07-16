@@ -7,6 +7,7 @@
 #
 CC        | https://cc.rh7labs.com/
 Penumbra  | https://messaging.rh7labs.com/
+Kubera    | https://app.kubera.com/
 
 # Add more below (uncomment / edit):
 # Gmail        | https://mail.google.com/mail/u/0/
