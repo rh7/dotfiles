@@ -39,6 +39,7 @@ AUDIT_INCLUDE_PROTECTED="${AUDIT_INCLUDE_PROTECTED:-0}"
 for raw_arg in "$@"; do
   arg="${raw_arg//[$'\t\r\n ']/}"
   case "$arg" in
+    "") ;;
     --include-protected) AUDIT_INCLUDE_PROTECTED=1 ;;
     *)
       if [[ "$MODE_SEEN" == "1" ]]; then
