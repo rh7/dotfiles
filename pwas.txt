@@ -1,0 +1,19 @@
+# Declarative PWA list — regenerate app bundles on any Mac with:
+#   scripts/pwa-apps.sh build            # native (pake; needs Rust)
+#   scripts/pwa-apps.sh build --engine stub --pin   # zero-toolchain, pins to Dock
+#
+# One PWA per line:   Name | https://url | optional/icon.icns
+# (icon path is relative to the dotfiles root; omit to use the browser default)
+#
+CC        | https://cc.rh7labs.com/
+Penumbra  | https://messaging.rh7labs.com/
+
+# Add more below (uncomment / edit):
+# Gmail        | https://mail.google.com/mail/u/0/
+# Calendar     | https://calendar.google.com
+# YouTube Music| https://music.youtube.com
+# WhatsApp     | https://web.whatsapp.com
+# Linear       | https://linear.app
+# Notion       | https://www.notion.so
+# ChatGPT      | https://chatgpt.com
+# Figma        | https://www.figma.com/files
