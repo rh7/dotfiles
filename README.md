@@ -126,10 +126,41 @@ mackup/
 | Dev tool (all platforms) | `modules/home/profiles/development.nix` |
 | New role bundle | Create `modules/roles/your-role.nix`, import profiles |
 | New machine | Add entry in `flake.nix` with hostname, role, and extras |
+| PWA / web app (all Macs) | Add to [`pwas.txt`](pwas.txt), then `scripts/pwa-apps.sh build --pin` (see [Web Apps](#web-apps-pwas)) |
 
 Nix provides the shared Node runtime via Home Manager. For mutable npm-installed
 CLIs that need rapid updates, keep the global npm prefix user-owned
 (`~/.npm-global`) rather than under `/nix/store`.
+
+## Web Apps (PWAs)
+
+PWAs are declared once in [`pwas.txt`](pwas.txt) and regenerated as real `.app`
+launchers on any Mac by [`scripts/pwa-apps.sh`](scripts/pwa-apps.sh) — the
+reproducible alternative to Safari's GUI-only *Add to Dock*, whose OS-registered
+web apps don't survive Migration Assistant (that's what leaves `?` placeholders in
+the Dock on a new machine).
+
+```bash
+# pwas.txt — one PWA per line:  Name | https://url | optional/icon.icns
+scripts/pwa-apps.sh build --pin          # build every declared PWA + pin to the Dock
+scripts/pwa-apps.sh build --engine stub  # zero-toolchain variant (see below)
+scripts/pwa-apps.sh list                 # show declared PWAs
+scripts/pwa-apps.sh doctor               # check toolchain (pake / rust / dockutil)
+```
+
+Two engines, both reproducible from the same manifest:
+
+| Engine | What you get | Cost |
+|--------|--------------|------|
+| **pake** (default) | native Tauri app — own process, native notifications; fresh login per app | needs Rust + `pake-cli`; slow first build (~min) |
+| **stub** | `.app` that opens the URL in a browser `--app` window; reuses your logged-in profile | zero toolchain, instant |
+
+**Fresh Mac:** run `rustup default stable` once (Rust toolchain), then
+`scripts/pwa-apps.sh build --pin`. The script auto-installs `pake-cli` into
+`~/.npm-global` — self-healing the Nix read-only-npm-prefix `EACCES` — and builds
+every PWA. `brew install dockutil` is only needed for `--pin` (Dock pinning);
+without it the apps still build, just unpinned. First launch asks you to sign in
+once per app (each native app has its own cookie jar).
 
 ## Device Management
 
