@@ -7,6 +7,8 @@
 #   ./scripts/audit-device.sh --run        # audit + upload (non-interactive, for cron)
 #   ./scripts/audit-device.sh --local      # audit only, print JSON (no upload)
 #   ./scripts/audit-device.sh --save       # audit and save to ~/dotfiles-backups/audit/
+#   ./scripts/audit-device.sh --local --include-protected
+#                                              # opt in to cloud/browser/personal-folder checks
 #   ./scripts/audit-device.sh --install    # install daily schedule (LaunchAgent on macOS, cron on Linux)
 #   ./scripts/audit-device.sh --uninstall  # remove daily schedule
 #
@@ -28,12 +30,28 @@ ARCH="$(uname -m)"
 # Normalize them before collection so casks, MAS apps, and host config evaluation
 # do not silently report "not installed" on otherwise-managed Macs.
 export PATH="/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
-MODE="${1:-interactive}"
-# Be forgiving of copy-paste artifacts on the mode arg: a trailing CR/space/tab
-# (common when the curl|bash one-liner is pasted) would otherwise leave MODE as
-# e.g. "--install\r", which matches no branch and silently falls through to a
-# no-op audit. Strip ASCII whitespace so the flag still works.
-MODE="${MODE//[$'\t\r\n ']/}"
+MODE="interactive"
+MODE_SEEN=0
+# Standard and scheduled audits must not ask for access to personal folders,
+# cloud-provider roots, browser profiles, Wi-Fi identity, or System Events.
+# Operators can explicitly opt into those checks for a one-off deep audit.
+AUDIT_INCLUDE_PROTECTED="${AUDIT_INCLUDE_PROTECTED:-0}"
+for raw_arg in "$@"; do
+  arg="${raw_arg//[$'\t\r\n ']/}"
+  case "$arg" in
+    --include-protected) AUDIT_INCLUDE_PROTECTED=1 ;;
+    *)
+      if [[ "$MODE_SEEN" == "1" ]]; then
+        MODE="__multiple_modes__"
+      else
+        MODE="$arg"
+        MODE_SEEN=1
+      fi
+      ;;
+  esac
+done
+[[ "$AUDIT_INCLUDE_PROTECTED" == "1" ]] || AUDIT_INCLUDE_PROTECTED=0
+export AUDIT_INCLUDE_PROTECTED
 SCRIPT_URL="https://config.rh7labs.com/audit"
 CRON_TAG="# fleet-audit"
 OLD_CRON_TAG="# fleet-heartbeat"
@@ -103,6 +121,7 @@ case "$MODE" in
   *)
     err "Unknown mode: '$MODE'"
     err "Valid: --run | --local | --save | --install | --uninstall | --checklist (or no arg for the menu)"
+    err "Optional: --include-protected (may request access to personal/cloud folders and browser profiles)"
     exit 2
     ;;
 esac
@@ -1260,12 +1279,16 @@ if swap:
     if total and used:
         result['swap'] = {'total_mb': float(total.group(1)), 'used_mb': float(used.group(1))}
 
-# Disk usage by key directories
+# Disk usage by key directories. Never recurse through the whole home directory
+# in a standard audit: on macOS that crosses Desktop, Documents, iCloud Drive,
+# Dropbox/File Provider roots, and browser data, triggering a wall of TCC access
+# prompts. Root-disk capacity is already collected below.
 dirs_to_check = {
     '/nix/store': '/nix/store',
-    'home': os.path.expanduser('~'),
     'docker': '/var/lib/docker',
 }
+if os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1':
+    dirs_to_check['home'] = os.path.expanduser('~')
 # Add common cache dirs
 cache_dir = os.path.expanduser('~/.cache')
 if os.path.isdir(cache_dir):
@@ -1501,7 +1524,11 @@ def run(cmd, timeout=5):
 now = time.time()
 sys = platform.system()
 home = os.path.expanduser('~')
-result = {'platform': sys}
+include_protected = os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1'
+result = {
+    'platform': sys,
+    'protected_location_checks': 'collected' if include_protected else 'skipped',
+}
 
 def age_hours(epoch):
     try:
@@ -1549,17 +1576,23 @@ if sys == 'Darwin':
     # Mobile Documents, OR (more common) it stays a normal dir while CloudDocs
     # holds the Desktop/Documents copies. Check both; require BOTH folders in
     # CloudDocs to avoid a manually-created iCloud "Desktop" false positive.
-    icloud_root = os.path.expanduser('~/Library/Mobile Documents/com~apple~CloudDocs')
-    desk = os.path.realpath(os.path.expanduser('~/Desktop'))
-    docs = os.path.realpath(os.path.expanduser('~/Documents'))
-    dd_synced = (('Mobile Documents' in desk) or ('Mobile Documents' in docs) or
-                 (os.path.exists(os.path.join(icloud_root, 'Desktop')) and
-                  os.path.exists(os.path.join(icloud_root, 'Documents'))))
-    result['icloud_drive'] = {
-        'enabled': os.path.isdir(icloud_root),
-        'desktop_documents_synced': dd_synced,
-        'currency_verified': False,
-    }
+    if include_protected:
+        icloud_root = os.path.expanduser('~/Library/Mobile Documents/com~apple~CloudDocs')
+        desk = os.path.realpath(os.path.expanduser('~/Desktop'))
+        docs = os.path.realpath(os.path.expanduser('~/Documents'))
+        dd_synced = (('Mobile Documents' in desk) or ('Mobile Documents' in docs) or
+                     (os.path.exists(os.path.join(icloud_root, 'Desktop')) and
+                      os.path.exists(os.path.join(icloud_root, 'Documents'))))
+        result['icloud_drive'] = {
+            'enabled': os.path.isdir(icloud_root),
+            'desktop_documents_synced': dd_synced,
+            'currency_verified': False,
+        }
+    else:
+        result['icloud_drive'] = {
+            'collection_status': 'skipped',
+            'reason': 'protected macOS location; use --include-protected for a one-off deep audit',
+        }
 
     # FileVault personal recovery key escrow — needs root; report unknown if so.
     hprk = run('fdesetup haspersonalrecoverykey 2>/dev/null')
@@ -1591,22 +1624,25 @@ else:
 # macOS File Provider uses ONE shared ~/Library/CloudStorage container, so match
 # PROVIDER-SPECIFIC subfolders (GoogleDrive-*, OneDrive-*) rather than the
 # container itself, which any provider can create.
-cs = os.path.expanduser('~/Library/CloudStorage')
 cloud_sync = []
-for provider, proc, patterns in [
-    ('Dropbox', 'Dropbox', ['~/Dropbox', cs + '/Dropbox*']),
-    ('Google Drive', 'Google Drive', [cs + '/GoogleDrive-*']),
-    ('OneDrive', 'OneDrive', ['~/OneDrive', cs + '/OneDrive-*']),
+cs = os.path.expanduser('~/Library/CloudStorage')
+for provider, proc, app_name, patterns in [
+    ('Dropbox', 'Dropbox', 'Dropbox', ['~/Dropbox', cs + '/Dropbox*']),
+    ('Google Drive', 'Google Drive', 'Google Drive', [cs + '/GoogleDrive-*']),
+    ('OneDrive', 'OneDrive', 'OneDrive', ['~/OneDrive', cs + '/OneDrive-*']),
 ]:
     running = bool(run('pgrep -if "%s" 2>/dev/null' % proc))
+    installed = os.path.isdir('/Applications/%s.app' % app_name)
     root = None
-    for pat in patterns:
-        matches = glob.glob(os.path.expanduser(pat))
-        if matches:
-            root = matches[0].replace(home, '~'); break
-    if running or root:
-        cloud_sync.append({'provider': provider, 'running': running,
+    if include_protected:
+        for pat in patterns:
+            matches = glob.glob(os.path.expanduser(pat))
+            if matches:
+                root = matches[0].replace(home, '~'); break
+    if running or installed or root:
+        cloud_sync.append({'provider': provider, 'running': running, 'installed': installed,
                            'root': root, 'root_exists': root is not None,
+                           'root_collection_status': 'collected' if include_protected else 'skipped',
                            'currency_verified': False})
 if cloud_sync:
     result['cloud_sync'] = cloud_sync
@@ -1898,13 +1934,16 @@ import subprocess, json, plistlib, os
 
 result = {}
 
-# Login items via osascript
-try:
-    r = subprocess.run(['osascript', '-e', 'tell application \"System Events\" to get the name of every login item'],
-                       capture_output=True, text=True, timeout=10)
-    items = [i.strip() for i in r.stdout.strip().split(',') if i.strip()]
-    result['login_items'] = items
-except: result['login_items'] = []
+# Querying System Events causes an Automation permission dialog. Scheduled and
+# standard audits intentionally skip it; launch agents below remain visible.
+if os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1':
+    try:
+        r = subprocess.run(['osascript', '-e', 'tell application \"System Events\" to get the name of every login item'],
+                           capture_output=True, text=True, timeout=10)
+        result['login_items'] = [i.strip() for i in r.stdout.strip().split(',') if i.strip()]
+    except: result['login_items'] = []
+else:
+    result['login_items_collection'] = {'status': 'skipped', 'reason': 'avoids macOS Automation permission request'}
 
 # Launch agents (user)
 user_agents = os.path.expanduser('~/Library/LaunchAgents')
@@ -2022,7 +2061,7 @@ print(json.dumps(result))
 collect_wifi_networks() {
   if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
   python3 -c "
-import subprocess, json
+import subprocess, json, os
 
 def run(cmd):
     try:
@@ -2032,18 +2071,19 @@ def run(cmd):
 
 result = {}
 
-# Known Wi-Fi networks (names only, not passwords)
-networks_raw = run('networksetup -listpreferredwirelessnetworks en0 2>/dev/null')
-if networks_raw:
-    networks = [n.strip() for n in networks_raw.split('\n')[1:] if n.strip()]
-    result['known_networks'] = networks
-
-# Current Wi-Fi
-current = run('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null')
-for line in current.split('\n'):
-    if 'SSID' in line and 'BSSID' not in line:
-        result['current_ssid'] = line.split(':',1)[1].strip()
-        break
+# Wi-Fi names can require Location access on current macOS releases. They are
+# useful only for an intentional deep inventory, not fleet health.
+if os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1':
+    networks_raw = run('networksetup -listpreferredwirelessnetworks en0 2>/dev/null')
+    if networks_raw:
+        result['known_networks'] = [n.strip() for n in networks_raw.split('\n')[1:] if n.strip()]
+    current = run('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null')
+    for line in current.split('\n'):
+        if 'SSID' in line and 'BSSID' not in line:
+            result['current_ssid'] = line.split(':',1)[1].strip()
+            break
+else:
+    result['wifi_identity_collection'] = {'status': 'skipped', 'reason': 'avoids macOS Location permission request'}
 
 # Network services
 services = run('networksetup -listallnetworkservices 2>/dev/null')
@@ -2078,6 +2118,10 @@ print(json.dumps(printers))
 
 collect_browser_extensions() {
   if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  if [[ "$AUDIT_INCLUDE_PROTECTED" != "1" ]]; then
+    echo '{"collection_status":"skipped","reason":"browser profiles are protected personal data","opt_in_flag":"--include-protected"}'
+    return
+  fi
   python3 -c "
 import os, json, plistlib, glob
 
@@ -2166,6 +2210,14 @@ print(json.dumps(result) if result else '{}')
 # Assemble full audit
 # ══════════════════════════════════════════════════════════════════════════
 
+collect_audit_scope() {
+  if [[ "$AUDIT_INCLUDE_PROTECTED" == "1" ]]; then
+    echo '{"mode":"deep","protected_locations":true,"permission_note":"May request macOS access to personal/cloud folders, browser profiles, Location, and System Events."}'
+  else
+    echo '{"mode":"standard","protected_locations":false,"permission_note":"Does not request access to personal/cloud folders, browser profiles, Location, or System Events.","opt_in_flag":"--include-protected"}'
+  fi
+}
+
 echo "Auditing $HOSTNAME ($OS/$ARCH)..." >&2
 
 AUDIT=$(python3 -c "
@@ -2189,6 +2241,8 @@ for name, data in sections.items():
 
 print(json.dumps(result, indent=2))
 " <<AUDIT_DATA
+---SECTION: audit_scope
+$(collect_audit_scope)
 ---SECTION: system
 $(collect_system)
 ---SECTION: homebrew
