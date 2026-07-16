@@ -114,6 +114,7 @@ LAUNCH
 # non-login script shell — surface it so build/doctor find it instead of missing it
 # or needlessly reinstalling (persisting the path is the job of development.nix).
 add_fallback_bin() {
+  if command -v pake >/dev/null 2>&1; then return 0; fi   # keep any pake already on PATH
   local b="${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin"
   case ":$PATH:" in
     *":$b:"*) ;;
