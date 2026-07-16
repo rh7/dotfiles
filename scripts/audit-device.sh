@@ -24,6 +24,10 @@ set -euo pipefail
 HOSTNAME="$(hostname | sed 's/\.local$//')"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
+# Scheduled jobs do not inherit the interactive shell's Nix/Homebrew paths.
+# Normalize them before collection so casks, MAS apps, and host config evaluation
+# do not silently report "not installed" on otherwise-managed Macs.
+export PATH="/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 MODE="${1:-interactive}"
 # Be forgiving of copy-paste artifacts on the mode arg: a trailing CR/space/tab
 # (common when the curl|bash one-liner is pasted) would otherwise leave MODE as
@@ -464,6 +468,27 @@ try:
     print(json.dumps(apps))
 except: print('[]')
 "
+}
+
+collect_config_drift() {
+  if [[ "$OS" != "Darwin" ]]; then
+    echo '{"supported":false,"status":"unavailable","reason":"macOS only"}'
+    return
+  fi
+
+  local drift_script="${DOTFILES:-$HOME/dotfiles}/scripts/audit-config-drift.sh"
+  if [[ ! -x "$drift_script" ]]; then
+    echo '{"supported":false,"status":"unavailable","reason":"audit-config-drift.sh not found in dotfiles checkout"}'
+    return
+  fi
+
+  local result
+  result=$(run_timeout 180 "$drift_script" --json "$HOSTNAME" 2>/dev/null || true)
+  if [[ -n "$result" ]] && python3 -c 'import json,sys; json.load(sys.stdin)' <<<"$result" 2>/dev/null; then
+    echo "$result"
+  else
+    echo '{"supported":false,"status":"error","reason":"config drift audit failed or returned invalid JSON"}'
+  fi
 }
 
 collect_cli_tools() {
@@ -2176,6 +2201,8 @@ $(collect_applications)
 $(collect_macos_defaults)
 ---SECTION: dock_apps
 $(collect_dock_apps)
+---SECTION: config_drift
+$(collect_config_drift)
 ---SECTION: cli_tools
 $(collect_cli_tools)
 ---SECTION: node_globals
