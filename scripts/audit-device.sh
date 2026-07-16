@@ -1524,7 +1524,9 @@ def run(cmd, timeout=5):
 now = time.time()
 sys = platform.system()
 home = os.path.expanduser('~')
-include_protected = os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1'
+# Linux has no macOS TCC boundary, so preserve the existing root-based client
+# detection there. The opt-in gate applies to macOS protected locations.
+include_protected = os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1' or sys != 'Darwin'
 result = {
     'platform': sys,
     'protected_location_checks': 'collected' if include_protected else 'skipped',
@@ -1626,13 +1628,13 @@ else:
 # container itself, which any provider can create.
 cloud_sync = []
 cs = os.path.expanduser('~/Library/CloudStorage')
-for provider, proc, app_name, patterns in [
-    ('Dropbox', 'Dropbox', 'Dropbox', ['~/Dropbox', cs + '/Dropbox*']),
-    ('Google Drive', 'Google Drive', 'Google Drive', [cs + '/GoogleDrive-*']),
-    ('OneDrive', 'OneDrive', 'OneDrive', ['~/OneDrive', cs + '/OneDrive-*']),
+for provider, proc, app_name, binary, patterns in [
+    ('Dropbox', 'Dropbox', 'Dropbox', 'dropbox', ['~/Dropbox', cs + '/Dropbox*']),
+    ('Google Drive', 'Google Drive', 'Google Drive', None, [cs + '/GoogleDrive-*']),
+    ('OneDrive', 'OneDrive', 'OneDrive', 'onedrive', ['~/OneDrive', cs + '/OneDrive-*']),
 ]:
     running = bool(run('pgrep -if "%s" 2>/dev/null' % proc))
-    installed = os.path.isdir('/Applications/%s.app' % app_name)
+    installed = os.path.isdir('/Applications/%s.app' % app_name) or bool(binary and shutil.which(binary))
     root = None
     if include_protected:
         for pat in patterns:
@@ -1641,7 +1643,7 @@ for provider, proc, app_name, patterns in [
                 root = matches[0].replace(home, '~'); break
     if running or installed or root:
         cloud_sync.append({'provider': provider, 'running': running, 'installed': installed,
-                           'root': root, 'root_exists': root is not None,
+                           'root': root, 'root_exists': (root is not None) if include_protected else None,
                            'root_collection_status': 'collected' if include_protected else 'skipped',
                            'currency_verified': False})
 if cloud_sync:
@@ -2211,7 +2213,7 @@ print(json.dumps(result) if result else '{}')
 # ══════════════════════════════════════════════════════════════════════════
 
 collect_audit_scope() {
-  if [[ "$AUDIT_INCLUDE_PROTECTED" == "1" ]]; then
+  if [[ "$AUDIT_INCLUDE_PROTECTED" == "1" || "$OS" != "Darwin" ]]; then
     echo '{"mode":"deep","protected_locations":true,"permission_note":"May request macOS access to personal/cloud folders, browser profiles, Location, and System Events."}'
   else
     echo '{"mode":"standard","protected_locations":false,"permission_note":"Does not request access to personal/cloud folders, browser profiles, Location, or System Events.","opt_in_flag":"--include-protected"}'
