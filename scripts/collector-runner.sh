@@ -159,9 +159,14 @@ resolve_self() {
 install_schedule() {
   local self; self="$(resolve_self)" || { log "cannot resolve runner path for schedule — aborting install"; return 1; }
   if [ "$OS" = "Darwin" ]; then
-    local hour=8 minute=$(( RANDOM % 30 ))
+    local hour=8 minute=$(( RANDOM % 30 )) tmp_plist
     mkdir -p "$HOME/Library/LaunchAgents"
-    cat > "$PLIST" <<PLIST
+    # Write beside the target and replace it atomically. Home Manager may leave
+    # $PLIST as a symlink into the read-only Nix store; `cat > "$PLIST"` follows
+    # that symlink and fails with EACCES. Replacing the directory entry works for
+    # both a managed symlink and an ordinary stale/read-only plist.
+    tmp_plist="$(mktemp "$HOME/Library/LaunchAgents/.${LABEL}.XXXXXX")"
+    if ! cat > "$tmp_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -179,7 +184,18 @@ install_schedule() {
 </dict>
 </plist>
 PLIST
+    then
+      rm -f "$tmp_plist"
+      log "failed to write temporary LaunchAgent plist"
+      return 1
+    fi
     launchctl unload "$PLIST" 2>/dev/null || true
+    chmod 0644 "$tmp_plist"
+    if ! mv -f "$tmp_plist" "$PLIST"; then
+      rm -f "$tmp_plist"
+      log "failed to replace LaunchAgent plist at $PLIST"
+      return 1
+    fi
     launchctl load "$PLIST"
     log "installed LaunchAgent $LABEL (daily $(printf '%d:%02d' "$hour" "$minute"))"
     # Supersede the legacy direct-audit job (#38, #83): collector-runner replaces
