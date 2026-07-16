@@ -159,7 +159,8 @@ resolve_self() {
 install_schedule() {
   local self; self="$(resolve_self)" || { log "cannot resolve runner path for schedule — aborting install"; return 1; }
   if [ "$OS" = "Darwin" ]; then
-    local hour=8 minute=$(( RANDOM % 30 )) tmp_plist
+    local hour=8 minute=$(( RANDOM % 30 )) tmp_plist domain bootstrap_output
+    domain="gui/$(id -u)"
     mkdir -p "$HOME/Library/LaunchAgents"
     # Write beside the target and replace it atomically. Home Manager may leave
     # $PLIST as a symlink into the read-only Nix store; `cat > "$PLIST"` follows
@@ -189,19 +190,34 @@ PLIST
       log "failed to write temporary LaunchAgent plist"
       return 1
     fi
-    launchctl unload "$PLIST" 2>/dev/null || true
+    # Remove an existing registration by label before replacing its plist.
+    # `unload <path>` is deprecated and can return success without removing the
+    # service on current macOS; bootout addresses the actual per-user domain.
+    launchctl bootout "$domain/$LABEL" 2>/dev/null \
+      || launchctl unload "$PLIST" 2>/dev/null \
+      || true
     chmod 0644 "$tmp_plist"
     if ! mv -f "$tmp_plist" "$PLIST"; then
       rm -f "$tmp_plist"
       log "failed to replace LaunchAgent plist at $PLIST"
       return 1
     fi
-    launchctl load "$PLIST"
+    if ! bootstrap_output="$(launchctl bootstrap "$domain" "$PLIST" 2>&1)"; then
+      log "launchctl bootstrap failed for $PLIST: $bootstrap_output"
+      return 1
+    fi
+    launchctl enable "$domain/$LABEL" 2>/dev/null || true
+    if ! launchctl print "$domain/$LABEL" >/dev/null 2>&1; then
+      log "LaunchAgent bootstrap returned success but $domain/$LABEL is not registered"
+      return 1
+    fi
     log "installed LaunchAgent $LABEL (daily $(printf '%d:%02d' "$hour" "$minute"))"
     # Supersede the legacy direct-audit job (#38, #83): collector-runner replaces
     # it, so retire com.rh7.audit to avoid two daily audits firing.
     if [ -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist" ]; then
-      launchctl unload "$HOME/Library/LaunchAgents/com.rh7.audit.plist" 2>/dev/null || true
+      launchctl bootout "$domain/com.rh7.audit" 2>/dev/null \
+        || launchctl unload "$HOME/Library/LaunchAgents/com.rh7.audit.plist" 2>/dev/null \
+        || true
       rm -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist"
       log "retired legacy com.rh7.audit LaunchAgent (superseded by $LABEL)"
     fi
