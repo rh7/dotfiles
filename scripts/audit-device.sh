@@ -390,6 +390,30 @@ collect_homebrew() {
 JSON
 }
 
+collect_virtualization_prerequisites() {
+  local lima_version=""
+
+  if command -v limactl >/dev/null 2>&1; then
+    # `limactl --version` currently prints "limactl version X.Y.Z". Keep only
+    # the final token so the fleet audit exposes no executable or state paths.
+    lima_version="$(limactl --version 2>/dev/null | awk 'NR == 1 { print $NF }' || true)"
+    python3 - "$lima_version" <<'PY'
+import json
+import sys
+
+version = sys.argv[1].strip()
+print(json.dumps({
+    "lima": {
+        "installed": True,
+        "version": version or None,
+    }
+}))
+PY
+  else
+    echo '{"lima":{"installed":false,"version":null}}'
+  fi
+}
+
 collect_mas() {
   if ! command -v mas &>/dev/null; then echo '{"installed": false}'; return; fi
 
@@ -2250,6 +2274,8 @@ $(collect_audit_scope)
 $(collect_system)
 ---SECTION: homebrew
 $(collect_homebrew)
+---SECTION: virtualization_prerequisites
+$(collect_virtualization_prerequisites)
 ---SECTION: mas_apps
 $(collect_mas)
 ---SECTION: applications

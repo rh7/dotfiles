@@ -237,6 +237,53 @@ The config service runs on the Mac Studio (`rouvens-mac-studio-1:3456`).
 
 ---
 
+## Mac Studio Lima prerequisite
+
+The `rouvens-mac-studio` nix-darwin configuration installs Lima from `nixpkgs`.
+Its exact version is therefore pinned by the committed `flake.lock`, reviewed
+with the rest of a dotfiles change, and included in the normal nix-darwin
+generation rollback path. Lima is not managed through Homebrew.
+
+Dotfiles owns only the native prerequisite:
+
+- Lima runs on macOS and uses Apple Virtualization.framework when a workload
+  selects the `vz` VM type.
+- Dropbox sync, MLX/Ollama inference, and Tailscale remain native host services.
+- Workload repositories own VM definitions, guest packages, startup policy,
+  networks, credentials, and lifecycle.
+- This repository must not introduce implicit host-directory mounts, SSH-agent
+  forwarding, guest-to-host control credentials, or automatically started VMs.
+
+### Version review and activation
+
+Before activating a lock-file update on the Mac Studio:
+
+1. Evaluate
+   `.#darwinConfigurations.rouvens-mac-studio.pkgs.lima.version` before and
+   after the update and record the version change in the PR.
+2. Ensure every Darwin configuration evaluates and review the normal
+   `rebuild.sh` package-closure diff.
+3. Obtain owner approval because activation changes the live host.
+4. After activation, verify `limactl --version`. Starting or modifying a VM is
+   a separate workload-repository rollout.
+
+The standard fleet audit reports only
+`virtualization_prerequisites.lima.installed` and `.version`. It does not
+enumerate VM names, source paths, mounts, credentials, or guest contents.
+
+### Rollback and uninstall
+
+- Roll back the package with the previous nix-darwin system generation
+  (`sudo darwin-rebuild --rollback`). This does not change or delete guest data.
+- To stop managing Lima, remove `pkgs.lima` from the Mac Studio configuration,
+  review the diff, and rebuild. The executable leaves the managed system
+  closure, while existing `~/.lima` state remains untouched.
+- VM deletion is intentionally not part of dotfiles uninstall. The owning
+  workload must first stop the VM, verify backup/recovery requirements, and
+  explicitly remove its guest state.
+
+---
+
 ## Typical Workflow for Onboarding an Existing Mac
 
 ```bash
