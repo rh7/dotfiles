@@ -1563,6 +1563,31 @@ def age_hours(epoch):
     except Exception:
         return None
 
+# Presence of the paths the server's role policy may treat as important
+# (backup-policy.ts: common + personal + developer + server sets). The server
+# knows WHICH paths a role should protect but not which ones this device has,
+# so without this it cannot tell "never created" from "exists and unprotected"
+# — and reports a critical backup blocker for a directory that doesn't exist.
+#
+# Union of every role's set, so the server can look up whatever its policy
+# produces. isdir() is a stat, not a listing, so this stays permission-safe and
+# needs no --include-protected opt-in.
+result['important_path_presence'] = {
+    p: os.path.isdir(os.path.expanduser(p))
+    for p in [
+        '~/.config/sops/age',
+        '~/.ssh',
+        '~/.config',
+        '~/Documents',
+        '~/Desktop',
+        '~/Pictures',
+        '~/Projects',
+        '~/localtesting',
+        '~/code',
+        '~/mac-studio-services',
+    ]
+}
+
 if sys == 'Darwin':
     # Time Machine
     tm = {'configured': False, 'destinations': []}
