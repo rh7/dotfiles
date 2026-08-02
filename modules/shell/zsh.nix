@@ -37,7 +37,10 @@ in {
       nrs = if isDarwin
         then "sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)"
         else "sudo nixos-rebuild switch --flake ~/dotfiles";
-      nup = "nix flake update ~/dotfiles";
+      # `--flake` is required: since Nix 2.19 a bare positional arg is read as
+      # an *input name* to update, so `nix flake update ~/dotfiles` silently
+      # updates nothing and still exits 0.
+      nup = "nix flake update --flake ~/dotfiles";
 
       # Guarded rebuild (build → drift audit → nvd diff → confirm → switch).
       # Use instead of `nrs` when you want to review/approve changes first —
