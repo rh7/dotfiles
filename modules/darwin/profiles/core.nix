@@ -40,7 +40,9 @@
       [ -d "/Applications/Dia.app" ] && return 0
       echo "[INFO] Installing Dia browser from diabrowser.com…"
       local dmg mnt app
-      dmg="$(mktemp -t dia).dmg"; mnt="$(mktemp -d -t dia-mnt)"
+      # Use the system BSD mktemp explicitly: the nixpkgs GNU mktemp on the
+      # activation PATH rejects a template without XXXXXX.
+      dmg="$(/usr/bin/mktemp -t dia)"; mnt="$(/usr/bin/mktemp -d -t dia-mnt)"
       if ! /usr/bin/curl -fsSL --max-time 900 -o "$dmg" \
              "https://releases.diabrowser.com/release/Dia-latest.dmg"; then
         echo "[WARN] Dia install: download failed — install once from https://www.diabrowser.com"
@@ -61,6 +63,8 @@
       /usr/bin/hdiutil detach -quiet "$mnt" 2>/dev/null || true
       /bin/rm -rf "$dmg" "$mnt"
     }
-    install_dia
+    # `|| true` suspends set -e inside the function so a failure here can never
+    # abort activation (postActivation runs under set -e).
+    install_dia || true
   '';
 }
