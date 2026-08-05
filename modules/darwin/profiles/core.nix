@@ -14,7 +14,8 @@
     # "expressvpn"  # install manually — cask installer helper needs GUI auth, fails under brew bundle
     # "tripmode"  # install from App Store — Homebrew cask version hangs on activation dialog
     "tailscale-app"
-    # dia, speedtest — Mac App Store only, not in Homebrew
+    # dia — manual download only (no Homebrew cask, not on App Store); see postActivation warning below
+    # speedtest — Mac App Store only, not in Homebrew
   ];
 
   homebrew.brews = [
@@ -30,5 +31,9 @@
     # ExpressVPN cask installer needs GUI auth — can't run under brew bundle.
     # Warn if missing so the user runs `brew install --cask expressvpn` once.
     [ -d "/Applications/ExpressVPN.app" ] || echo "[WARN] ExpressVPN.app missing — install once via: brew install --cask expressvpn"
+
+    # Dia browser is distributed as a direct download only (no Homebrew cask,
+    # not on the Mac App Store). Warn if missing so the user installs it once.
+    [ -d "/Applications/Dia.app" ] || echo "[WARN] Dia.app missing — download once from https://www.diabrowser.com"
   '';
 }
