@@ -1337,6 +1337,184 @@ print(json.dumps(result))
 " 2>/dev/null || echo '{}'
 }
 
+# Usage and activity — is this machine actually being used, and by whom?
+#
+# Every other collector in this file records what a machine HAS: packages,
+# containers, services, keys, config. None record whether anyone or anything
+# is USING it. That gap is why a box can sit in the registry for months looking
+# identical whether it is a daily driver or a forgotten VPS still paying rent.
+# `resource_usage` is one instantaneous load-average reading per night, which
+# cannot distinguish the two.
+#
+# This collects the cheap, high-signal answers: when a human last logged in,
+# who is on the box right now, whether there are live tmux sessions, what is
+# actually consuming CPU and memory, and per-container resource use.
+#
+# PRIVACY: process COMMAND LINES are deliberately not collected — only the
+# executable name (`comm`). Full argv routinely carries tokens, connection
+# strings and API keys, and this payload is POSTed to the config service and
+# stored there. Shell history is reported by MODIFICATION TIME only, never
+# content: "a human typed something here 4 hours ago" is the signal we want,
+# and the commands themselves are none of the registry's business.
+collect_usage_activity() {
+  python3 -c "
+import subprocess, json, os, platform, time, re, glob
+
+def run(cmd, timeout=10):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ''
+
+now = time.time()
+result = {}
+is_mac = platform.system() == 'Darwin'
+
+# Boot time and uptime in SECONDS — comparable across hosts, unlike 'up 4 weeks'.
+if is_mac:
+    bt = run('sysctl -n kern.boottime')
+    m = re.search(r'sec\s*=\s*(\d+)', bt)
+    if m:
+        result['boot_epoch'] = int(m.group(1))
+        result['uptime_seconds'] = int(now - int(m.group(1)))
+else:
+    up = run('cat /proc/uptime')
+    if up:
+        try:
+            secs = int(float(up.split()[0]))
+            result['uptime_seconds'] = secs
+            result['boot_epoch'] = int(now - secs)
+        except Exception:
+            pass
+
+# Login history — the headline signal: when did a real person last touch this?
+# Pseudo-entries are excluded so a rebooting box does not read as an active one.
+SYSTEM_USERS = {'reboot', 'shutdown', 'runlevel', 'wtmp', 'btmp'}
+logins = []
+for line in run('last -n 60 2>/dev/null').split('\n'):
+    line = line.strip()
+    if not line or line.startswith('wtmp') or line.startswith('btmp'):
+        continue
+    parts = line.split()
+    if len(parts) < 3 or parts[0] in SYSTEM_USERS:
+        continue
+    logins.append({'user': parts[0], 'tty': parts[1], 'from': parts[2],
+                   'when': ' '.join(parts[3:8])})
+result['recent_logins'] = logins[:25]
+result['distinct_login_users'] = sorted({l['user'] for l in logins})
+result['login_count_recent'] = len(logins)
+
+# Who is on the box RIGHT NOW.
+sessions = []
+for line in run('who 2>/dev/null').split('\n'):
+    parts = line.split()
+    if len(parts) >= 2:
+        sessions.append({'user': parts[0], 'tty': parts[1],
+                         'since': ' '.join(parts[2:4]),
+                         'from': parts[-1].strip('()') if parts[-1].startswith('(') else ''})
+result['active_sessions'] = sessions
+result['active_session_count'] = len(sessions)
+
+# tmux — how this operator actually works. A long-lived attached session is the
+# strongest cheap signal that a box is in daily hands-on use.
+tmux_sessions = []
+for line in run(\"tmux ls -F '#{session_name}|#{session_attached}|#{session_activity}' 2>/dev/null\").split('\n'):
+    if '|' in line:
+        name, attached, activity = (line.split('|') + ['', '', ''])[:3]
+        entry = {'name': name, 'attached': attached not in ('0', '')}
+        try:
+            entry['idle_seconds'] = int(now - int(activity))
+        except Exception:
+            pass
+        tmux_sessions.append(entry)
+result['tmux_sessions'] = tmux_sessions
+result['tmux_session_count'] = len(tmux_sessions)
+
+# Shell history recency, by mtime only. Never the contents — see PRIVACY above.
+hist = []
+for pattern in ('/root/.zsh_history', '/root/.bash_history',
+                '/home/*/.zsh_history', '/home/*/.bash_history',
+                '/Users/*/.zsh_history', '/Users/*/.bash_history'):
+    for path in glob.glob(pattern):
+        try:
+            st = os.stat(path)
+            segs = path.split('/')
+            hist.append({'path': path,
+                         'user': segs[2] if len(segs) > 2 else '',
+                         'modified_epoch': int(st.st_mtime),
+                         'age_hours': round((now - st.st_mtime) / 3600, 1)})
+        except Exception:
+            pass
+hist.sort(key=lambda h: h['modified_epoch'], reverse=True)
+result['shell_history_activity'] = hist[:10]
+if hist:
+    result['hours_since_human_shell'] = hist[0]['age_hours']
+
+# Top processes. Executable name only — see the PRIVACY note above.
+#
+# BSD and GNU ps disagree here: Linux has 'etimes' (raw seconds), macOS has only
+# 'etime' ([[dd-]hh:]mm:ss). Asking macOS for 'etimes' does not fail the command —
+# it warns on stderr and prints the remaining columns, so the row silently loses a
+# field and every parse below drops it. That produced an empty process list on
+# every Mac in the fleet while looking like a working collector.
+def elapsed_to_seconds(v):
+    try:
+        return int(v)                      # Linux: already seconds
+    except ValueError:
+        pass
+    days = 0
+    if '-' in v:                           # macOS: [[dd-]hh:]mm:ss
+        d, _, v = v.partition('-')
+        days = int(d)
+    bits = [int(x) for x in v.split(':')]
+    while len(bits) < 3:
+        bits.insert(0, 0)
+    return days * 86400 + bits[0] * 3600 + bits[1] * 60 + bits[2]
+
+procs = []
+fmt = 'ps -Aeo pcpu,rss,etime,comm -r' if is_mac else 'ps -eo pcpu,rss,etimes,comm --sort=-pcpu'
+for line in run(fmt).split('\n')[1:26]:
+    parts = line.split(None, 3)
+    if len(parts) == 4:
+        try:
+            cmd = os.path.basename(parts[3].strip())
+            # Drop the measuring instrument: ps samples its own CPU during
+            # startup and reports several hundred percent, so it lands at the top
+            # of every host's list every night and pushes out a real entry. The
+            # collector's own python3 may still appear; that one is at least
+            # indistinguishable from a genuine python workload.
+            #
+            # NB: no backticks anywhere inside this python3 -c "..." string. It is
+            # double-quoted shell, so a backtick pair is command substitution --
+            # the shell runs it and pastes the OUTPUT into the python source. That
+            # yields a SyntaxError, which the trailing 2>/dev/null || echo '{}'
+            # then swallows into an empty section on every host, indefinitely.
+            if cmd == 'ps':
+                continue
+            procs.append({'cpu_pct': float(parts[0]),
+                          'rss_mb': round(int(parts[1]) / 1024, 1),
+                          'elapsed_seconds': elapsed_to_seconds(parts[2]),
+                          'command': cmd})
+        except Exception:
+            pass
+result['top_processes_by_cpu'] = procs[:12]
+result['top_processes_by_memory'] = sorted(procs, key=lambda p: p['rss_mb'], reverse=True)[:12]
+
+# Per-container resource use. Container PRESENCE is already collected elsewhere;
+# this says whether a running container is doing work or merely resident.
+stats = []
+for line in run(\"docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}' 2>/dev/null\", timeout=25).split('\n'):
+    if '|' in line:
+        name, cpu, mem, memp, net = (line.split('|') + [''] * 5)[:5]
+        stats.append({'name': name, 'cpu_pct': cpu, 'mem_usage': mem,
+                      'mem_pct': memp, 'net_io': net})
+result['container_stats'] = stats
+
+print(json.dumps(result))
+" 2>/dev/null || echo '{}'
+}
+
 collect_shell_env() {
   python3 -c "
 import subprocess, json, os, platform
@@ -2343,6 +2521,8 @@ $(collect_tailscale)
 $(collect_crontabs)
 ---SECTION: resource_usage
 $(collect_resource_usage)
+---SECTION: usage_activity
+$(collect_usage_activity)
 ---SECTION: shell_env
 $(collect_shell_env)
 ---SECTION: editor_extensions
