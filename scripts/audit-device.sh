@@ -298,6 +298,171 @@ uninstall_schedule() {
   fi
 }
 
+# ── Find config service ─────────────────────────────────────────────────
+#
+# Defined HERE, above the mode dispatch, because `--checklist` below calls it.
+# It used to be defined ~10 lines further down, after that call, so
+# `--checklist` has never worked -- it died on
+# `line 312: find_config_service: command not found`, and under `set -e` the
+# failing command substitution took the whole invocation with it.
+#
+# CONTRACT -- DO NOT CHANGE: echo a base URL or nothing, and ALWAYS return 0.
+# Both call sites run `CONFIG_URL=$(find_config_service)` under `set -euo
+# pipefail`, so a non-zero return aborts the entire audit instead of degrading
+# to the "print locally" path they carefully implement for an empty result.
+#
+# WHY THIS IS NOT A PROBE-FIRST LIST ANY MORE
+# The previous implementation walked a hardcoded host list and took the FIRST
+# RESPONDER, starting with `localhost`. Two consequences:
+#
+#   1. Any host that happens to run its own config-service instance silently
+#      registers itself into that local database instead of the fleet's. Every
+#      side looks perfectly healthy; each simply holds a subset of the fleet.
+#      Moving the service to another host makes this near-certain rather than
+#      theoretical, because the new host answers its own probe first.
+#   2. Relocating the service means editing this list and waiting for every
+#      host to pick up a new script -- discovery encoded as source control.
+#
+# So: an explicit pin wins, and probing survives only to bootstrap a host that
+# has never been told anything. `/api/health` carries no instance identity
+# (every instance returns the same body but for a timestamp), so a client
+# CANNOT tell the authoritative service from any other by asking it. That is
+# precisely why the answer has to be configuration rather than interrogation.
+CONFIG_SERVICE_PORT="${CONFIG_SERVICE_PORT:-3456}"
+CONFIG_SERVICE_PIN_SYSTEM="${CONFIG_SERVICE_PIN_SYSTEM:-/etc/rh7/config-service}"
+CONFIG_SERVICE_PIN_USER="${CONFIG_SERVICE_PIN_USER:-${XDG_CONFIG_HOME:-$HOME/.config}/rh7/config-service}"
+# `localhost` is deliberately ABSENT. A host must never default to itself --
+# that is bug 1 above, and it is the whole reason this rewrite exists.
+#
+# This list names the CURRENT authority only, and is updated AT cutover, never
+# before. Listing the migration target here early is its own split-brain: a
+# staging instance is reachable long before it is authoritative, and every
+# unpinned host would silently adopt it the moment the network allowed. That
+# nearly happened here -- vps-honcho was first in this list during development
+# while a rehearsal instance was already running on it, held back only by an
+# unmerged ACL grant (rh7/tailscale-acl#36) that would have opened the path.
+#
+# Pins are what move the fleet. The migration is: deploy pins -> verify ->
+# retire the old instance -> only then repoint this list.
+CONFIG_SERVICE_FALLBACKS="${CONFIG_SERVICE_FALLBACKS:-rouvens-mac-studio rouvens-mac-studio-1 Rouvens-Mac-Studio.local 100.100.241.110}"
+
+# A 200 on :3456/api/health used to be accepted as proof. Anything at all
+# listening on that port would do. Check the service actually identifies
+# itself; it is a cheap guard against pointing the fleet's audit POSTs at some
+# unrelated process.
+_config_service_answers() {
+  local url="$1" body=""
+  body=$(curl -sf "${url%/}/api/health" --max-time 2 2>/dev/null) || return 1
+  case "$body" in
+    *'"service":"config-service"'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# First non-comment, non-blank line of a pin file, whitespace stripped.
+_config_service_pin() {
+  local file="$1" value=""
+  [[ -r "$file" ]] || return 1
+  value=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$file" 2>/dev/null | grep -m1 . || true)
+  [[ -n "$value" ]] || return 1
+  printf '%s' "$value"
+}
+
+find_config_service() {
+  local pin="" source="" host="" url=""
+
+  if [[ -n "${CONFIG_SERVICE_URL:-}" ]]; then
+    pin="$CONFIG_SERVICE_URL"; source="\$CONFIG_SERVICE_URL"
+  elif pin=$(_config_service_pin "$CONFIG_SERVICE_PIN_SYSTEM"); then
+    source="$CONFIG_SERVICE_PIN_SYSTEM"
+  elif pin=$(_config_service_pin "$CONFIG_SERVICE_PIN_USER"); then
+    source="$CONFIG_SERVICE_PIN_USER"
+  fi
+
+  if [[ -n "$pin" ]]; then
+    if _config_service_answers "$pin"; then
+      printf '%s\n' "${pin%/}"
+    else
+      # FAIL CLOSED. Falling back to probing here would be the worst possible
+      # moment for it: the pinned service is down, so a probe is most likely to
+      # find some *other* instance and quietly start writing the fleet's audits
+      # into it. A missed audit is recoverable on the next run; a split
+      # registry is not obviously wrong until someone goes looking.
+      echo "WARN: pinned config service '$pin' (from $source) did not answer — not probing for another instance" >&2
+    fi
+    return 0
+  fi
+
+  # Bootstrap only: this host has never been pinned.
+  for host in $CONFIG_SERVICE_FALLBACKS; do
+    case "$host" in
+      *://*) url="${host%/}" ;;
+      *)     url="http://${host}:${CONFIG_SERVICE_PORT}" ;;
+    esac
+    if _config_service_answers "$url"; then
+      echo "WARN: no config-service pin on this host; discovered $url by probing." >&2
+      echo "      Pin it:  echo $url | sudo tee $CONFIG_SERVICE_PIN_SYSTEM" >&2
+      printf '%s\n' "$url"
+      return 0
+    fi
+  done
+
+  # Nothing found. Empty output, exit 0 — see the CONTRACT note above.
+  return 0
+}
+
+# `--checklist` above calls both of these, so like find_config_service they
+# must be defined before the mode dispatch rather than ~2300 lines below it.
+# They were not, so fixing the find_config_service ordering only moved the
+# failure one line on, to `show_checklist: command not found`. Pure
+# relocation — no logic changed. The later --run path calls them too and is
+# unaffected, since a definition merely has to precede first RUNTIME use.
+fetch_device_role() {
+  local config_url="$1"
+  curl -sf "${config_url}/api/devices/${HOSTNAME}" --max-time 5 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('role','') or '')" 2>/dev/null
+}
+
+show_checklist() {
+  local config_url="$1"
+  local role
+  # `|| true`: this is a cosmetic display step and MUST NOT abort the script.
+  # Under `set -euo pipefail`, a role the server has no checklist for (e.g.
+  # `server`, which 400s) makes `curl -sf` exit 22 — which used to kill the
+  # whole audit run right here, skipping the cron install that follows.
+  role=$(fetch_device_role "$config_url" || true)
+  [[ -z "$role" ]] && role="workstation"
+
+  local checklist
+  checklist=$(curl -sf "${config_url}/api/fleet/checklist/${role}" --max-time 5 2>/dev/null || true)
+  [[ -z "$checklist" ]] && return 0
+
+  echo "" >&2
+  echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}" >&2
+  echo -e "${BOLD}${CYAN}│       Post-Setup Checklist               │${NC}" >&2
+  echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}" >&2
+
+  for cat in "sign-in" "permissions" "setup" "verify"; do
+    local items
+    items=$(echo "$checklist" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+steps = [s for s in data.get('steps', []) if s['category'] == '$cat']
+if steps:
+    print('${cat^^}')
+    for s in steps:
+        notes = f\"  ({s['notes']})\" if s.get('notes') else ''
+        print(f\"  [ ] {s['app']}: {s['action']}{notes}\")
+" 2>/dev/null)
+    if [[ -n "$items" ]]; then
+      echo "" >&2
+      echo -e "${BOLD}${items%%$'\n'*}${NC}" >&2
+      echo "$items" | tail -n +2 >&2
+    fi
+  done
+  echo "" >&2
+}
+
 if [[ "$MODE" == "--install" ]]; then
   install_cron
   exit 0
@@ -317,16 +482,6 @@ if [[ "$MODE" == "--checklist" ]]; then
   fi
   exit 0
 fi
-
-# ── Find config service ─────────────────────────────────────────────────
-find_config_service() {
-  for host in localhost Rouvens-Mac-Studio.local rouvens-mac-studio-1 rouvens-mac-studio 100.100.241.110; do
-    if curl -sf "http://${host}:3456/api/health" --max-time 2 &>/dev/null; then
-      echo "http://${host}:3456"; return
-    fi
-  done
-  echo ""
-}
 
 # ══════════════════════════════════════════════════════════════════════════
 # Collectors — each outputs a JSON fragment
@@ -2556,11 +2711,6 @@ AUDIT_DATA
 # Read this device's currently-assigned role from the config service.
 # Echoes the role, or empty string if the device isn't registered yet /
 # the service is unreachable (callers decide the default).
-fetch_device_role() {
-  local config_url="$1"
-  curl -sf "${config_url}/api/devices/${HOSTNAME}" --max-time 5 2>/dev/null \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('role','') or '')" 2>/dev/null
-}
 
 register_device() {
   local config_url="$1"
@@ -2607,45 +2757,6 @@ register_device() {
 }
 
 # ── Post-setup checklist ───────────────────────────────────────────────
-show_checklist() {
-  local config_url="$1"
-  local role
-  # `|| true`: this is a cosmetic display step and MUST NOT abort the script.
-  # Under `set -euo pipefail`, a role the server has no checklist for (e.g.
-  # `server`, which 400s) makes `curl -sf` exit 22 — which used to kill the
-  # whole audit run right here, skipping the cron install that follows.
-  role=$(fetch_device_role "$config_url" || true)
-  [[ -z "$role" ]] && role="workstation"
-
-  local checklist
-  checklist=$(curl -sf "${config_url}/api/fleet/checklist/${role}" --max-time 5 2>/dev/null || true)
-  [[ -z "$checklist" ]] && return 0
-
-  echo "" >&2
-  echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}" >&2
-  echo -e "${BOLD}${CYAN}│       Post-Setup Checklist               │${NC}" >&2
-  echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}" >&2
-
-  for cat in "sign-in" "permissions" "setup" "verify"; do
-    local items
-    items=$(echo "$checklist" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-steps = [s for s in data.get('steps', []) if s['category'] == '$cat']
-if steps:
-    print('${cat^^}')
-    for s in steps:
-        notes = f\"  ({s['notes']})\" if s.get('notes') else ''
-        print(f\"  [ ] {s['app']}: {s['action']}{notes}\")
-" 2>/dev/null)
-    if [[ -n "$items" ]]; then
-      echo "" >&2
-      echo -e "${BOLD}${items%%$'\n'*}${NC}" >&2
-      echo "$items" | tail -n +2 >&2
-    fi
-  done
-  echo "" >&2
-}
 
 # ── Output based on mode ────────────────────────────────────────────────
 case "$MODE" in
