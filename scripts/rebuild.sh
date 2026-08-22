@@ -67,10 +67,14 @@ cleanup() {
 # INT/TERM/HUP as well as EXIT: a Ctrl-C partway through a rebuild must still
 # revoke the sudo window and remove the scratch dir. (SIGKILL cannot be caught —
 # a `kill -9` leaves the timestamp to expire on its own 5-minute timeout.)
+#
+# The signal handlers only `exit`; they must NOT call cleanup themselves, since
+# exiting fires the EXIT trap which does. Calling it in both places ran the
+# whole cleanup — sudo -k, rm -rf, kill — twice per interrupt.
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
-trap 'cleanup; exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # ── Parse args ──
 while [[ $# -gt 0 ]]; do
