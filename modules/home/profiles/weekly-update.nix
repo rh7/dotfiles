@@ -7,18 +7,25 @@
 # update LOGIC lives in scripts/weekly-update.sh in the same checkout nix
 # rebuilds from, so changing what the job does is a merge, not a fleet rebuild.
 #
-# SCOPED TO DECLARED PACKAGES — the job upgrades what homebrew.brews/casks
-# declare and nothing else. `brew outdated` also lists hand-installed software;
-# upgrading that here would make the weekly job broader than a rebuild and quietly
-# demote the flake from source of truth. Undeclared outdated packages are
-# reported as drift in the log so they stay visible instead of silently rotting.
+# SCOPED TO DECLARED FORMULAE — the job upgrades formulae that homebrew.brews
+# declares, and nothing else. `brew outdated` also lists hand-installed
+# software; upgrading that here would make the weekly job broader than a
+# rebuild and quietly demote the flake from source of truth. Undeclared
+# packages are reported as drift so they stay visible instead of rotting.
+# (Homebrew still resolves dependencies, so an undeclared dependency of a
+# declared formula may be upgraded — only target SELECTION is restricted.)
 #
-# ROOTLESS BY DESIGN — this is a user LaunchAgent, not a system daemon. See the
-# long rationale at the top of scripts/weekly-update.sh; the short version is
-# that unattended root would require either auto-deploying whatever is on `main`
-# or a standing NOPASSWD grant, and neither is worth it for convenience. Casks
-# that need root are skipped and reported, then finished by an interactive
-# rebuild.sh run. Do NOT "fix" that by promoting this to launchd.daemons.
+# FORMULAE ONLY, AND THAT IS THE SECURITY BOUNDARY — an earlier version also
+# upgraded casks, skipping the ones that failed on the theory they had needed
+# root. That could not actually deny root: modules/darwin/sudo-rebuild.nix
+# keeps a user-global sudo timestamp open for the length of a rebuild, and a
+# cask install running in this agent during that window would have inherited
+# it and escalated silently, unattended. Formulae install under the Homebrew
+# prefix this user owns, so restricting to them makes "never needs root" true
+# by construction instead of by hope. Outdated casks are reported and
+# prefetched for an interactive rebuild.sh, where a human authenticates once
+# and watches. Do NOT re-add cask upgrades here, and do NOT promote this to
+# launchd.daemons — both reintroduce unattended privileged installs.
 #
 # WIRING (staged, per the same convention fleet-audit.nix documents): imported
 # from a single host's `extraHomeModules` in flake.nix first. Promote to

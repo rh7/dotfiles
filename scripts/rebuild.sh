@@ -15,6 +15,7 @@ DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
 HOSTNAME=$(hostname -s)
 AUTO_CONFIRM=false
 BUILD_ONLY=false
+PLAN_ONLY=false
 FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
 
 # ── Colors ──
@@ -31,17 +32,43 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# ── Cleanup ──
+# ONE EXIT trap for the whole script. bash replaces a trap rather than adding to
+# it, so a second `trap ... EXIT` further down would silently disable this one —
+# every cleanup must be registered through here.
+PLAN_TMP=""             # Homebrew plan scratch dir (step 4b)
+SUDO_KEEPALIVE_PID=""   # sudo timestamp refresher (step 5b)
+SUDO_AUTHENTICATED=false
+cleanup() {
+  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$PLAN_TMP" && -d "$PLAN_TMP" ]]; then
+    rm -rf "$PLAN_TMP"
+  fi
+  # Close the sudo window immediately rather than letting the 5-minute default
+  # lapse — but only if this script opened it. Revoking a timestamp the user
+  # established elsewhere would make unrelated sudo calls re-prompt.
+  if $SUDO_AUTHENTICATED; then
+    sudo -k 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
 # ── Parse args ──
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes|-y)        AUTO_CONFIRM=true; shift ;;
     --build-only)    BUILD_ONLY=true; shift ;;
+    --plan-only)     PLAN_ONLY=true; shift ;;
     --flake)         FLAKE_REF="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: rebuild.sh [--yes] [--build-only] [--flake REF]"
+      echo "Usage: rebuild.sh [--yes] [--build-only|--plan-only] [--flake REF]"
       echo ""
       echo "  --yes, -y      Auto-confirm (skip interactive approval)"
       echo "  --build-only   Build only, don't activate"
+      echo "  --plan-only    Show the Homebrew upgrade plan only — no build,"
+      echo "                 no activation, no root. Read-only."
       echo "  --flake REF    Override flake reference (default: ~/dotfiles#\$HOSTNAME)"
       echo ""
       echo "Logs: every run is mirrored to \$REBUILD_LOG_DIR (default:"
@@ -65,6 +92,118 @@ while IFS= read -r _old_log; do rm -f "$_old_log"; done < <(
 )
 
 OS=$(uname -s)
+
+# ── Step 4b: Homebrew plan ──
+# A function, not an inline block, so `--plan-only` can run it without building
+# or activating — which also makes its failure paths testable. Everything it
+# does is read-only and needs no root.
+#
+# `homebrew.onActivation.upgrade = true` upgrades outdated packages during
+# activation. That is the bulk of a long rebuild and the part that used to
+# happen invisibly behind context-free Touch ID prompts, so surface it BEFORE
+# asking for authentication.
+#
+# CRUCIALLY: `brew bundle` only touches what the Brewfile DECLARES, while
+# `brew outdated` lists everything installed. Reporting raw `brew outdated`
+# here promised upgrades that activation then did not perform (e.g. manually
+# installed `bash`/`session` were listed, then left untouched). Intersect with
+# the flake's declared set so this preview states what will actually happen,
+# and report the undeclared remainder separately as drift.
+#
+# `brew update` refreshes metadata and needs no root. Activation would run it
+# anyway (autoUpdate = true), so doing it here costs nothing and makes the
+# preview accurate rather than stale.
+homebrew_plan() {
+  if [[ "$OS" != "Darwin" ]] || ! command -v brew &>/dev/null; then
+    return 0
+  fi
+  echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
+  echo ""
+  info "Refreshing Homebrew metadata..."
+  brew update --quiet &>/dev/null || warn "brew update failed (preview may be stale)"
+
+  # Checked explicitly so a missing helper reports itself rather than dying on
+  # an opaque "source: no such file" from `set -e`.
+  DECLARED_LIB="$DOTFILES_DIR/scripts/lib/declared-brew.sh"
+  if [[ ! -r "$DECLARED_LIB" ]]; then
+    err "Helper not found at $DECLARED_LIB"
+    exit 1
+  fi
+  # shellcheck source=lib/declared-brew.sh
+  source "$DECLARED_LIB"
+
+  # PLAN_TMP is cleaned by the shared EXIT trap, not an inline rm, so an
+  # interrupt between here and the end of this block cannot leak it.
+  PLAN_TMP=$(mktemp -d -t rebuild-plan.XXXXXX)
+
+  # Inventory status is checked, never assumed. A failed `brew outdated` that
+  # was treated as "nothing outdated" would silently print a clean plan.
+  plan_known=true
+  if ! brew outdated --formula --quiet >"$PLAN_TMP/outdated_formulae" 2>/dev/null; then
+    warn "'brew outdated --formula' failed — formula plan unavailable"
+    plan_known=false
+  fi
+  if ! brew outdated --cask --quiet >"$PLAN_TMP/outdated_casks" 2>/dev/null; then
+    warn "'brew outdated --cask' failed — cask plan unavailable"
+    plan_known=false
+  fi
+
+  # Per-category checks. A failure in ONE category must not read as "nothing
+  # declared there" — that would relabel every package of that kind as drift.
+  if $plan_known; then
+    if ! declared_brew_names brews "$FLAKE_REF" >"$PLAN_TMP/declared_formulae"; then
+      warn "Could not evaluate homebrew.brews for $FLAKE_REF"
+      plan_known=false
+    elif ! declared_brew_names casks "$FLAKE_REF" >"$PLAN_TMP/declared_casks"; then
+      warn "Could not evaluate homebrew.casks for $FLAKE_REF"
+      plan_known=false
+    fi
+  fi
+
+  if ! $plan_known; then
+    # Say nothing about what activation WILL do — at this point the script has
+    # no evidence either way. Claiming the raw outdated list here is what the
+    # original bug did, and doing it under a warning would not make it true.
+    warn "Homebrew activation plan unavailable — showing raw outdated inventory:"
+    if [[ -s "$PLAN_TMP/outdated_formulae" ]]; then
+      echo "    outdated formulae: $(tr '\n' ' ' <"$PLAN_TMP/outdated_formulae")"
+    fi
+    if [[ -s "$PLAN_TMP/outdated_casks" ]]; then
+      echo "    outdated casks:    $(tr '\n' ' ' <"$PLAN_TMP/outdated_casks")"
+    fi
+    echo "    (some of these may or may not be upgraded by activation)"
+  else
+    will_formulae=$(intersect_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
+    will_casks=$(intersect_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
+    skip_formulae=$(subtract_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
+    skip_casks=$(subtract_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
+
+    n_will=$(wc -w <<<"$will_formulae $will_casks" | tr -d ' ')
+    n_skip=$(wc -w <<<"$skip_formulae $skip_casks" | tr -d ' ')
+
+    if [[ "$n_will" -eq 0 ]]; then
+      ok "No declared Homebrew packages need upgrading"
+    else
+      warn "Activation will UPGRADE $n_will declared package(s):"
+      # if/fi, not `[[ ]] && echo` — under `set -e` a false test would abort here.
+      if [[ -n "$will_formulae" ]]; then echo "    formulae: $will_formulae"; fi
+      if [[ -n "$will_casks" ]]; then echo "    casks:    $will_casks"; fi
+      echo "    (Homebrew may also upgrade undeclared dependencies of these.)"
+    fi
+
+    # Not a warning: undeclared packages are yours to manage by hand, and
+    # cleanup = "none" means activation preserves them. Surfaced so an outdated
+    # package that never seems to update has a visible explanation.
+    if [[ "$n_skip" -gt 0 ]]; then
+      echo ""
+      info "$n_skip outdated package(s) are NOT declared — not upgrade targets:"
+      if [[ -n "$skip_formulae" ]]; then echo "    formulae: $skip_formulae"; fi
+      if [[ -n "$skip_casks" ]]; then echo "    casks:    $skip_casks"; fi
+      echo "    (upgrade by hand with 'brew upgrade <name>', or declare them in a profile)"
+    fi
+  fi
+  echo ""
+}
 
 echo ""
 echo -e "${BOLD}${CYAN}┌──────────────────────────────────────────┐${NC}"
@@ -94,6 +233,16 @@ if ! command -v nix &>/dev/null; then
     err "Nix not found. Install it first: curl -fsSL config.rh7labs.com/setup | bash"
     exit 1
   fi
+fi
+
+# ── --plan-only: preview the Homebrew plan and stop ──
+# Placed after the nix-in-PATH setup (the plan evaluates the flake) but before
+# the drift audit and build, so it stays fast and read-only. Nothing below this
+# point runs: no build, no activation, no sudo.
+if $PLAN_ONLY; then
+  homebrew_plan
+  ok "Plan complete (--plan-only). Nothing was built or applied."
+  exit 0
 fi
 
 # Catch manual changes (dock pins, brew installs, MAS apps, defaults)
@@ -202,78 +351,8 @@ if $BUILD_ONLY; then
   exit 0
 fi
 
-# ── Step 4b: Homebrew plan ──
-# `homebrew.onActivation.upgrade = true` upgrades outdated packages during
-# activation. That is the bulk of a long rebuild and the part that used to
-# happen invisibly behind context-free Touch ID prompts, so surface it BEFORE
-# asking for authentication.
-#
-# CRUCIALLY: `brew bundle` only touches what the Brewfile DECLARES, while
-# `brew outdated` lists everything installed. Reporting raw `brew outdated`
-# here promised upgrades that activation then did not perform (e.g. manually
-# installed `bash`/`session` were listed, then left untouched). Intersect with
-# the flake's declared set so this preview states what will actually happen,
-# and report the undeclared remainder separately as drift.
-#
-# `brew update` refreshes metadata and needs no root. Activation would run it
-# anyway (autoUpdate = true), so doing it here costs nothing and makes the
-# preview accurate rather than stale.
-if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
-  echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
-  echo ""
-  info "Refreshing Homebrew metadata..."
-  brew update --quiet &>/dev/null || warn "brew update failed (preview may be stale)"
 
-  # shellcheck source=lib/declared-brew.sh
-  source "$DOTFILES_DIR/scripts/lib/declared-brew.sh"
-  PLAN_HOST="${FLAKE_REF##*#}"
-
-  plan_tmp=$(mktemp -d -t rebuild-plan.XXXXXX)
-  brew outdated --formula --quiet 2>/dev/null >"$plan_tmp/outdated_formulae" || true
-  brew outdated --cask --quiet 2>/dev/null >"$plan_tmp/outdated_casks" || true
-  declared_brew_names brews "$PLAN_HOST" "$DOTFILES_DIR" >"$plan_tmp/declared_formulae"
-  declared_brew_names casks "$PLAN_HOST" "$DOTFILES_DIR" >"$plan_tmp/declared_casks"
-
-  # An empty declared set means "nix eval failed", not "nothing is declared" —
-  # this repo always declares packages. Fall back to the raw outdated list and
-  # say so, rather than claiming activation will do nothing.
-  if [[ ! -s "$plan_tmp/declared_formulae" && ! -s "$plan_tmp/declared_casks" ]]; then
-    warn "Could not read declared packages from the flake — showing raw outdated list"
-    will_formulae=$(tr '\n' ' ' <"$plan_tmp/outdated_formulae" | sed 's/ $//')
-    will_casks=$(tr '\n' ' ' <"$plan_tmp/outdated_casks" | sed 's/ $//')
-    skip_formulae=""; skip_casks=""
-  else
-    will_formulae=$(intersect_lines "$plan_tmp/outdated_formulae" "$plan_tmp/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
-    will_casks=$(intersect_lines "$plan_tmp/outdated_casks" "$plan_tmp/declared_casks" | tr '\n' ' ' | sed 's/ $//')
-    skip_formulae=$(subtract_lines "$plan_tmp/outdated_formulae" "$plan_tmp/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
-    skip_casks=$(subtract_lines "$plan_tmp/outdated_casks" "$plan_tmp/declared_casks" | tr '\n' ' ' | sed 's/ $//')
-  fi
-  rm -rf "$plan_tmp"
-
-  n_will=$(wc -w <<<"$will_formulae $will_casks" | tr -d ' ')
-  n_skip=$(wc -w <<<"$skip_formulae $skip_casks" | tr -d ' ')
-
-  if [[ "$n_will" -eq 0 ]]; then
-    ok "No declared Homebrew packages need upgrading"
-  else
-    warn "Activation will UPGRADE $n_will declared package(s):"
-    # if/fi, not `[[ ]] && echo` — under `set -e` a false test would abort here.
-    if [[ -n "$will_formulae" ]]; then echo "    formulae: $will_formulae"; fi
-    if [[ -n "$will_casks" ]]; then echo "    casks:    $will_casks"; fi
-  fi
-
-  # Not a warning: undeclared packages are yours to manage by hand, and
-  # cleanup = "none" means activation preserves them. Surfaced so an outdated
-  # package that never seems to update has a visible explanation.
-  if [[ "$n_skip" -gt 0 ]]; then
-    echo ""
-    info "$n_skip outdated package(s) are NOT declared — activation leaves them alone:"
-    if [[ -n "$skip_formulae" ]]; then echo "    formulae: $skip_formulae"; fi
-    if [[ -n "$skip_casks" ]]; then echo "    casks:    $skip_casks"; fi
-    echo "    (upgrade by hand with 'brew upgrade <name>', or declare them in a profile)"
-  fi
-  echo ""
-fi
+homebrew_plan
 
 # ── Step 5: Confirm ──
 if ! $AUTO_CONFIRM; then
@@ -300,16 +379,6 @@ fi
 # Requires `Defaults:<user> timestamp_type=global` to cover brew's children;
 # see modules/darwin/sudo-rebuild.nix. Without that module this still works,
 # it just may not suppress every downstream prompt.
-SUDO_KEEPALIVE_PID=""
-cleanup_sudo() {
-  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
-    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-  fi
-  # Close the window immediately instead of letting the 5-minute default lapse.
-  sudo -k 2>/dev/null || true
-}
-trap cleanup_sudo EXIT
-
 if sudo -n true 2>/dev/null; then
   info "sudo already authenticated — no prompt needed"
 else
@@ -319,6 +388,10 @@ else
     err "Build result is in ./result for inspection."
     exit 1
   fi
+  # Only this branch opened the window, so only this branch may close it in
+  # cleanup(). If sudo was already authenticated above, the timestamp belongs
+  # to something else and revoking it would re-prompt unrelated commands.
+  SUDO_AUTHENTICATED=true
 fi
 
 # Refresh the timestamp every 60s so a long run (large casks, multi-GB MAS
