@@ -33,6 +33,43 @@ sudo darwin-rebuild switch --flake .#MACHINE
 
 Or use the bootstrap script: `bash bootstrap.sh`
 
+## Making Changes
+
+This repo drives a fleet of Macs, so changes go through review rather than
+straight to `main`:
+
+```
+branch → commit → PR → external review → squash-merge → ./scripts/rebuild.sh
+```
+
+**Every non-trivial change gets an external code review before merging** — a
+second model reading the diff, asked for a merge verdict. A blocking verdict
+blocks the merge; fix and re-review until it approves. Several rounds on one PR
+is normal.
+
+This is not ceremony. In the session that produced
+[Software Updates](docs/software-updates.md), review blocked the merge eight
+times across four PRs and every finding was real — including bugs introduced
+while fixing earlier bugs, a security claim overstated from a single
+observation, and a flag that silently invalidated the premise a whole design
+rested on.
+
+Two rules that make it work:
+
+- **Verify findings against the code rather than accepting them.** Some are
+  wrong. A finding that contradicts a deliberate repo convention should be
+  recorded as an accepted risk, not silently "fixed".
+- **Don't trust your own "verified" either** — check what the evidence actually
+  covers. One App Store app upgrading without a sudo prompt does not prove
+  `mas` cannot escalate; the binary embeds `/usr/bin/sudo`.
+
+Prefer empirical proof over description: fault-inject (a fake `nix`, `brew` or
+`mas` on `PATH` that fails one specific query) and assert exit codes, rather
+than asserting a failure path works. `scripts/tests/` holds the fixtures.
+
+Skip review only for genuinely trivial edits — a typo, a comment, one line in a
+package list — and say so.
+
 ## Daily Usage
 
 ```bash
