@@ -64,7 +64,13 @@ cleanup() {
     sudo -k 2>/dev/null || true
   fi
 }
+# INT/TERM/HUP as well as EXIT: a Ctrl-C partway through a rebuild must still
+# revoke the sudo window and remove the scratch dir. (SIGKILL cannot be caught —
+# a `kill -9` leaves the timestamp to expire on its own 5-minute timeout.)
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
 
 # ── Parse args ──
 while [[ $# -gt 0 ]]; do
@@ -400,6 +406,13 @@ fi
 # Requires `Defaults:<user> timestamp_type=global` to cover brew's children;
 # see modules/darwin/sudo-rebuild.nix. Without that module this still works,
 # it just may not suppress every downstream prompt.
+# Set BEFORE the first sudo call, not after. Setting it afterwards left a race:
+# a signal arriving between a successful `sudo -v` and the assignment would run
+# cleanup with SUDO_TOUCHED still false, leaving a just-renewed timestamp live.
+# Claiming it early is the safe direction — if we die before sudo ever succeeds,
+# the worst case is a `sudo -k` that revokes nothing (or costs one extra prompt).
+SUDO_TOUCHED=true
+
 if sudo -n true 2>/dev/null; then
   info "sudo already authenticated — no prompt needed"
 else
@@ -410,11 +423,6 @@ else
     exit 1
   fi
 fi
-
-# Set regardless of which branch ran: the keep-alive below refreshes the
-# timestamp either way, so either way this script is responsible for revoking
-# it. See cleanup() for why this is not conditional on having created it.
-SUDO_TOUCHED=true
 
 # Refresh the timestamp every 60s so a long run (large casks, multi-GB MAS
 # downloads) never lapses mid-flight and re-prompts. Dies with this script via
