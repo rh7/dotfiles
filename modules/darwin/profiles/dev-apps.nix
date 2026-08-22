@@ -30,4 +30,11 @@
     "tmux"       # terminal multiplexer
     "yq"         # YAML/JSON processor
   ];
+
+  # Mac App Store apps — mas_install helper defined in modules/darwin/mas.nix.
+  system.activationScripts.postActivation.text = ''
+    # Xcode is a ~10 GB download — the first activation on a new machine will
+    # take a while. Afterwards `mas list` short-circuits the install.
+    mas_install 497799835 "Xcode"
+  '';
 }
