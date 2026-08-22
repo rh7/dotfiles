@@ -43,6 +43,9 @@ RUNNER_RAW_FALLBACK="https://raw.githubusercontent.com/rh7/dotfiles/main/scripts
 RUNNER_URL="${COLLECTOR_RUNNER_URL:-$RUNNER_URL_DEFAULT}"
 OS="$(uname -s)"
 CACHE="$CACHE_DIR/$COLLECTOR"
+# Set by fetch_and_verify to the instance the collector was actually fetched and
+# verified against; exported to the collector below so one run cannot straddle two.
+RESOLVED_CONFIG_URL=""
 RUNNER_SELF="$CACHE_DIR/collector-runner.sh"
 LOG="$CACHE_DIR/runner.log"
 AGENT_PATH="/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -50,19 +53,107 @@ AGENT_PATH="/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/nix
 mkdir -p "$CACHE_DIR"
 log() { echo "$(date -u +%FT%TZ) collector-runner: $*" | tee -a "$LOG" >&2; }
 
+# >>> BEGIN SHARED CONFIG-SERVICE RESOLVER >>>
+# This block is duplicated VERBATIM in scripts/audit-device.sh and
+# scripts/collector-runner.sh, and scripts/tests/find-config-service.test.sh
+# fails if the two copies drift.
+#
+# It cannot be a sourced library. Both scripts are distributed as SINGLE
+# SELF-CONTAINED FILES over HTTP: the collector is served as one blob by
+# `git show <ref>:scripts/audit-device.sh` (config-service collectors.ts) and
+# written to a cache file with no siblings on the device; the runner is fetched
+# standalone via `curl ... | bash`. A `source` would break the no-clone path
+# that is the entire point of both.
+#
+# Duplication was NOT the bug. Silent duplication was: collector-runner.sh kept
+# the pre-#63 probe-first implementation for two months after audit-device.sh
+# was fixed, and nothing noticed. Hence the drift test.
+CONFIG_SERVICE_PORT="${CONFIG_SERVICE_PORT:-3456}"
+CONFIG_SERVICE_PIN_SYSTEM="${CONFIG_SERVICE_PIN_SYSTEM:-/etc/rh7/config-service}"
+CONFIG_SERVICE_PIN_USER="${CONFIG_SERVICE_PIN_USER:-${XDG_CONFIG_HOME:-$HOME/.config}/rh7/config-service}"
+# `localhost` is deliberately ABSENT. A host must never default to itself --
+# that is bug 1 above, and it is the whole reason this rewrite exists.
+#
+# This list names the CURRENT authority only, and is updated AT cutover, never
+# before. Listing the migration target here early is its own split-brain: a
+# staging instance is reachable long before it is authoritative, and every
+# unpinned host would silently adopt it the moment the network allowed. That
+# nearly happened here -- vps-honcho was first in this list during development
+# while a rehearsal instance was already running on it, held back only by an
+# unmerged ACL grant (rh7/tailscale-acl#36) that would have opened the path.
+#
+# Pins are what move the fleet. The migration is: deploy pins -> verify ->
+# retire the old instance -> only then repoint this list.
+# `rouvens-mac-studio-1` was removed 2026-08-22: verified absent from `tailscale
+# status` -- the only Studio node is `rouvens-mac-studio` at 100.100.241.110. A
+# dead name here costs a curl timeout on every bootstrap probe.
+CONFIG_SERVICE_FALLBACKS="${CONFIG_SERVICE_FALLBACKS:-rouvens-mac-studio Rouvens-Mac-Studio.local 100.100.241.110}"
+
+# A 200 on :3456/api/health used to be accepted as proof. Anything at all
+# listening on that port would do. Check the service actually identifies
+# itself; it is a cheap guard against pointing the fleet's audit POSTs at some
+# unrelated process.
+_config_service_answers() {
+  local url="$1" body=""
+  body=$(curl -sf "${url%/}/api/health" --max-time 2 2>/dev/null) || return 1
+  case "$body" in
+    *'"service":"config-service"'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# First non-comment, non-blank line of a pin file, whitespace stripped.
+_config_service_pin() {
+  local file="$1" value=""
+  [[ -r "$file" ]] || return 1
+  value=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$file" 2>/dev/null | grep -m1 . || true)
+  [[ -n "$value" ]] || return 1
+  printf '%s' "$value"
+}
+
 find_config_service() {
-  if [ -n "${CONFIG_SERVICE_URL:-}" ]; then
-    curl -sf "${CONFIG_SERVICE_URL}/api/health" --max-time 3 &>/dev/null && { echo "$CONFIG_SERVICE_URL"; return 0; }
-    return 1
+  local pin="" source="" host="" url=""
+
+  if [[ -n "${CONFIG_SERVICE_URL:-}" ]]; then
+    pin="$CONFIG_SERVICE_URL"; source="\$CONFIG_SERVICE_URL"
+  elif pin=$(_config_service_pin "$CONFIG_SERVICE_PIN_SYSTEM"); then
+    source="$CONFIG_SERVICE_PIN_SYSTEM"
+  elif pin=$(_config_service_pin "$CONFIG_SERVICE_PIN_USER"); then
+    source="$CONFIG_SERVICE_PIN_USER"
   fi
-  local host
-  for host in localhost rouvens-mac-studio-1 Rouvens-Mac-Studio.local rouvens-mac-studio 100.100.241.110; do
-    if curl -sf "http://${host}:3456/api/health" --max-time 3 &>/dev/null; then
-      echo "http://${host}:3456"; return 0
+
+  if [[ -n "$pin" ]]; then
+    if _config_service_answers "$pin"; then
+      printf '%s\n' "${pin%/}"
+    else
+      # FAIL CLOSED. Falling back to probing here would be the worst possible
+      # moment for it: the pinned service is down, so a probe is most likely to
+      # find some *other* instance and quietly start writing the fleet's audits
+      # into it. A missed audit is recoverable on the next run; a split
+      # registry is not obviously wrong until someone goes looking.
+      echo "WARN: pinned config service '$pin' (from $source) did not answer — not probing for another instance" >&2
+    fi
+    return 0
+  fi
+
+  # Bootstrap only: this host has never been pinned.
+  for host in $CONFIG_SERVICE_FALLBACKS; do
+    case "$host" in
+      *://*) url="${host%/}" ;;
+      *)     url="http://${host}:${CONFIG_SERVICE_PORT}" ;;
+    esac
+    if _config_service_answers "$url"; then
+      echo "WARN: no config-service pin on this host; discovered $url by probing." >&2
+      echo "      Pin it:  echo $url | sudo tee $CONFIG_SERVICE_PIN_SYSTEM" >&2
+      printf '%s\n' "$url"
+      return 0
     fi
   done
-  return 1
+
+  # Nothing found. Empty output, exit 0 — see the CONTRACT note above.
+  return 0
 }
+# <<< END SHARED CONFIG-SERVICE RESOLVER <<<
 
 json_field() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 sha_of() {
@@ -72,7 +163,17 @@ sha_of() {
 
 fetch_and_verify() {  # writes $CACHE on success
   local base manifest want clean tmp got
-  base="$(find_config_service)" || { log "config service not reachable"; return 1; }
+  # The shared resolver's contract is: echo a URL or nothing, and ALWAYS return 0
+  # (it must, because audit-device.sh calls it under `set -e`). So test the VALUE,
+  # never the exit status -- `|| { ... }` here would be dead code that reads like a
+  # guard. An empty result means no pin answered and no fallback responded.
+  base="$(find_config_service)"
+  [ -n "$base" ] || { log "config service not reachable"; return 1; }
+  # Hand the RESOLVED url to the collector so it does not re-resolve independently.
+  # Without this the runner can fetch and sha256-verify the collector against one
+  # instance while the collector POSTs its audit to another -- the integrity gate
+  # evaluated against a server that never receives the data.
+  RESOLVED_CONFIG_URL="$base"
   manifest="$(curl -fsS --max-time 15 "$base/api/collector/$COLLECTOR/manifest")" || { log "manifest fetch failed"; return 1; }
   want="$(printf '%s' "$manifest" | json_field 'd.get("sha256","")')"
   clean="$(printf '%s' "$manifest" | json_field 'str(d.get("read_only_scan",{}).get("clean",False)).lower()')"
@@ -254,4 +355,11 @@ case "${1:-run}" in
 esac
 
 log "running: bash $CACHE $RUN_ARGS"
+# Pin the collector to the same instance this run verified against. In --local mode
+# nothing was fetched, so there is nothing to pin and the collector resolves on its
+# own -- which is correct, not a gap.
+if [ -n "$RESOLVED_CONFIG_URL" ]; then
+  export CONFIG_SERVICE_URL="$RESOLVED_CONFIG_URL"
+  log "pinning collector to $RESOLVED_CONFIG_URL for this run"
+fi
 exec bash "$CACHE" $RUN_ARGS
