@@ -1,0 +1,90 @@
+name: shell tests
+
+# The repo has carried test scripts under scripts/tests/ that NOTHING ran. That is
+# how scripts/collector-runner.sh kept the pre-#63 config-service resolver —
+# localhost-first, no pin support — for two months after audit-device.sh was fixed,
+# with a passing test suite sitting in the tree that only ever covered the other
+# copy. See rh7/rh-device-management#306.
+#
+# These scripts are the fleet's highest-blast-radius code: they decide which
+# database every device's audit is written to, and they run on every Mac nightly.
+# A syntax error or a drifted resolver reaches devices through a merge to main,
+# because the short links serve raw main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shell-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell-tests:
+    name: bash -n + scripts/tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check every shell script
+        run: |
+          set -euo pipefail
+          # Discover by SHEBANG, not by suffix, and from the repo root rather than
+          # scripts/. A `*.sh` filter under scripts/ silently skipped two shipped
+          # entrypoints — `scripts/device` (bash, no extension) and the root
+          # `bootstrap.sh` — so the gate could pass with a broken one. A syntax
+          # gate that misses files is worse than none: it reads as coverage.
+          files=()
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              *.sh) files+=("$f"); continue ;;
+            esac
+            IFS= read -r first < "$f" 2>/dev/null || continue
+            case "$first" in
+              '#!'*bash*|'#!'*/sh|'#!'*env?sh) files+=("$f") ;;
+            esac
+          done < <(find . -path ./.git -prune -o -type f -print0)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no shell scripts discovered — this gate would be silently vacuous"
+            exit 1
+          fi
+          echo "discovered ${#files[@]} shell scripts"
+
+          fail=0
+          for f in "${files[@]}"; do
+            if bash -n "$f"; then
+              echo "ok   $f"
+            else
+              echo "::error file=$f::bash -n failed"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || { echo "::error::one or more scripts failed bash -n"; exit 1; }
+
+      - name: Run scripts/tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(scripts/tests/*.test.sh)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::no test scripts found — this job would be silently vacuous"
+            exit 1
+          fi
+          fail=0
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            if bash "$t"; then
+              echo "$t: PASSED"
+            else
+              echo "::error file=$t::test suite failed"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          [ "$fail" -eq 0 ] || { echo "::error::one or more test suites failed"; exit 1; }

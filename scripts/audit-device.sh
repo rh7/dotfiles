@@ -328,6 +328,21 @@ uninstall_schedule() {
 # (every instance returns the same body but for a timestamp), so a client
 # CANNOT tell the authoritative service from any other by asking it. That is
 # precisely why the answer has to be configuration rather than interrogation.
+# >>> BEGIN SHARED CONFIG-SERVICE RESOLVER >>>
+# This block is duplicated VERBATIM in scripts/audit-device.sh and
+# scripts/collector-runner.sh, and scripts/tests/find-config-service.test.sh
+# fails if the two copies drift.
+#
+# It cannot be a sourced library. Both scripts are distributed as SINGLE
+# SELF-CONTAINED FILES over HTTP: the collector is served as one blob by
+# `git show <ref>:scripts/audit-device.sh` (config-service collectors.ts) and
+# written to a cache file with no siblings on the device; the runner is fetched
+# standalone via `curl ... | bash`. A `source` would break the no-clone path
+# that is the entire point of both.
+#
+# Duplication was NOT the bug. Silent duplication was: collector-runner.sh kept
+# the pre-#63 probe-first implementation for two months after audit-device.sh
+# was fixed, and nothing noticed. Hence the drift test.
 CONFIG_SERVICE_PORT="${CONFIG_SERVICE_PORT:-3456}"
 CONFIG_SERVICE_PIN_SYSTEM="${CONFIG_SERVICE_PIN_SYSTEM:-/etc/rh7/config-service}"
 CONFIG_SERVICE_PIN_USER="${CONFIG_SERVICE_PIN_USER:-${XDG_CONFIG_HOME:-$HOME/.config}/rh7/config-service}"
@@ -344,7 +359,10 @@ CONFIG_SERVICE_PIN_USER="${CONFIG_SERVICE_PIN_USER:-${XDG_CONFIG_HOME:-$HOME/.co
 #
 # Pins are what move the fleet. The migration is: deploy pins -> verify ->
 # retire the old instance -> only then repoint this list.
-CONFIG_SERVICE_FALLBACKS="${CONFIG_SERVICE_FALLBACKS:-rouvens-mac-studio rouvens-mac-studio-1 Rouvens-Mac-Studio.local 100.100.241.110}"
+# `rouvens-mac-studio-1` was removed 2026-08-22: verified absent from `tailscale
+# status` -- the only Studio node is `rouvens-mac-studio` at 100.100.241.110. A
+# dead name here costs a curl timeout on every bootstrap probe.
+CONFIG_SERVICE_FALLBACKS="${CONFIG_SERVICE_FALLBACKS:-rouvens-mac-studio Rouvens-Mac-Studio.local 100.100.241.110}"
 
 # A 200 on :3456/api/health used to be accepted as proof. Anything at all
 # listening on that port would do. Check the service actually identifies
@@ -410,6 +428,7 @@ find_config_service() {
   # Nothing found. Empty output, exit 0 — see the CONTRACT note above.
   return 0
 }
+# <<< END SHARED CONFIG-SERVICE RESOLVER <<<
 
 # `--checklist` above calls both of these, so like find_config_service they
 # must be defined before the mode dispatch rather than ~2300 lines below it.
