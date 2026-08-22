@@ -255,6 +255,20 @@ homebrew_plan() {
     plan_known=false
   fi
 
+  # Formulae pulled in as DEPENDENCIES are not drift. `brew outdated` lists
+  # them, but they are not yours to declare — Homebrew owns them on behalf of
+  # the formula that requires them (e.g. `bash` exists only because the declared
+  # `direnv` depends on it, and upgrades with it). Reporting them as undeclared
+  # drift meant a permanent, unfixable warning: declaring a dependency is wrong,
+  # so the message could never be acted on. `brew leaves` is the set that was
+  # actually requested, so drift is restricted to it.
+  if $plan_known; then
+    if ! brew leaves >"$PLAN_TMP/leaves" 2>/dev/null; then
+      warn "'brew leaves' failed — dependency formulae may appear as drift"
+      : >"$PLAN_TMP/leaves"
+    fi
+  fi
+
   # Per-category checks. A failure in ONE category must not read as "nothing
   # declared there" — that would relabel every package of that kind as drift.
   if $plan_known; then
@@ -282,7 +296,10 @@ homebrew_plan() {
   else
     will_formulae=$(intersect_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
     will_casks=$(intersect_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
-    skip_formulae=$(subtract_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
+    # Undeclared formulae are narrowed to leaves — a dependency is not drift.
+    subtract_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" \
+      >"$PLAN_TMP/undeclared_formulae"
+    skip_formulae=$(intersect_lines "$PLAN_TMP/undeclared_formulae" "$PLAN_TMP/leaves" | tr '\n' ' ' | sed 's/ $//')
     skip_casks=$(subtract_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
 
     n_will=$(wc -w <<<"$will_formulae $will_casks" | tr -d ' ')

@@ -23,7 +23,7 @@
     "mackup"     # settings sync
   ];
 
-  # Note: laptop/desktop-only MAS apps (TripMode, Perplexity, Endel) live in
+  # Note: laptop/desktop-only MAS apps (Perplexity, Endel) live in
   # productivity.nix so they reach workstation + personal Macs but NOT servers.
   # See rh7/rh-device-management#50 for why masApps is disabled in brew bundle.
   # mas_install helper is defined in modules/darwin/mas.nix.
