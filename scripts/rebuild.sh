@@ -203,35 +203,74 @@ if $BUILD_ONLY; then
 fi
 
 # ── Step 4b: Homebrew plan ──
-# `homebrew.onActivation.upgrade = true` means activation upgrades everything
-# outdated, not just newly-declared apps. That is the bulk of a long rebuild and
-# the part that used to happen invisibly behind context-free Touch ID prompts,
-# so surface it BEFORE asking for authentication.
+# `homebrew.onActivation.upgrade = true` upgrades outdated packages during
+# activation. That is the bulk of a long rebuild and the part that used to
+# happen invisibly behind context-free Touch ID prompts, so surface it BEFORE
+# asking for authentication.
+#
+# CRUCIALLY: `brew bundle` only touches what the Brewfile DECLARES, while
+# `brew outdated` lists everything installed. Reporting raw `brew outdated`
+# here promised upgrades that activation then did not perform (e.g. manually
+# installed `bash`/`session` were listed, then left untouched). Intersect with
+# the flake's declared set so this preview states what will actually happen,
+# and report the undeclared remainder separately as drift.
 #
 # `brew update` refreshes metadata and needs no root. Activation would run it
 # anyway (autoUpdate = true), so doing it here costs nothing and makes the
-# preview below accurate rather than stale.
+# preview accurate rather than stale.
 if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
   echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
   echo ""
   info "Refreshing Homebrew metadata..."
   brew update --quiet &>/dev/null || warn "brew update failed (preview may be stale)"
 
-  outdated_formulae=$(brew outdated --formula --quiet 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
-  outdated_casks=$(brew outdated --cask --quiet 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
-  n_formulae=$(wc -w <<<"$outdated_formulae" | tr -d ' ')
-  n_casks=$(wc -w <<<"$outdated_casks" | tr -d ' ')
+  # shellcheck source=lib/declared-brew.sh
+  source "$DOTFILES_DIR/scripts/lib/declared-brew.sh"
+  PLAN_HOST="${FLAKE_REF##*#}"
 
-  if [[ "$n_formulae" -eq 0 && "$n_casks" -eq 0 ]]; then
-    ok "Homebrew is up to date — nothing to upgrade"
+  plan_tmp=$(mktemp -d -t rebuild-plan.XXXXXX)
+  brew outdated --formula --quiet 2>/dev/null >"$plan_tmp/outdated_formulae" || true
+  brew outdated --cask --quiet 2>/dev/null >"$plan_tmp/outdated_casks" || true
+  declared_brew_names brews "$PLAN_HOST" "$DOTFILES_DIR" >"$plan_tmp/declared_formulae"
+  declared_brew_names casks "$PLAN_HOST" "$DOTFILES_DIR" >"$plan_tmp/declared_casks"
+
+  # An empty declared set means "nix eval failed", not "nothing is declared" —
+  # this repo always declares packages. Fall back to the raw outdated list and
+  # say so, rather than claiming activation will do nothing.
+  if [[ ! -s "$plan_tmp/declared_formulae" && ! -s "$plan_tmp/declared_casks" ]]; then
+    warn "Could not read declared packages from the flake — showing raw outdated list"
+    will_formulae=$(tr '\n' ' ' <"$plan_tmp/outdated_formulae" | sed 's/ $//')
+    will_casks=$(tr '\n' ' ' <"$plan_tmp/outdated_casks" | sed 's/ $//')
+    skip_formulae=""; skip_casks=""
   else
-    warn "Activation will UPGRADE $n_formulae formula(e) and $n_casks cask(s):"
+    will_formulae=$(intersect_lines "$plan_tmp/outdated_formulae" "$plan_tmp/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
+    will_casks=$(intersect_lines "$plan_tmp/outdated_casks" "$plan_tmp/declared_casks" | tr '\n' ' ' | sed 's/ $//')
+    skip_formulae=$(subtract_lines "$plan_tmp/outdated_formulae" "$plan_tmp/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
+    skip_casks=$(subtract_lines "$plan_tmp/outdated_casks" "$plan_tmp/declared_casks" | tr '\n' ' ' | sed 's/ $//')
+  fi
+  rm -rf "$plan_tmp"
+
+  n_will=$(wc -w <<<"$will_formulae $will_casks" | tr -d ' ')
+  n_skip=$(wc -w <<<"$skip_formulae $skip_casks" | tr -d ' ')
+
+  if [[ "$n_will" -eq 0 ]]; then
+    ok "No declared Homebrew packages need upgrading"
+  else
+    warn "Activation will UPGRADE $n_will declared package(s):"
     # if/fi, not `[[ ]] && echo` — under `set -e` a false test would abort here.
-    if [[ "$n_formulae" -gt 0 ]]; then echo "    formulae: $outdated_formulae"; fi
-    if [[ "$n_casks" -gt 0 ]]; then echo "    casks:    $outdated_casks"; fi
+    if [[ -n "$will_formulae" ]]; then echo "    formulae: $will_formulae"; fi
+    if [[ -n "$will_casks" ]]; then echo "    casks:    $will_casks"; fi
+  fi
+
+  # Not a warning: undeclared packages are yours to manage by hand, and
+  # cleanup = "none" means activation preserves them. Surfaced so an outdated
+  # package that never seems to update has a visible explanation.
+  if [[ "$n_skip" -gt 0 ]]; then
     echo ""
-    echo "    (This is homebrew.onActivation.upgrade = true — it upgrades"
-    echo "     everything outdated, not only what this rebuild adds.)"
+    info "$n_skip outdated package(s) are NOT declared — activation leaves them alone:"
+    if [[ -n "$skip_formulae" ]]; then echo "    formulae: $skip_formulae"; fi
+    if [[ -n "$skip_casks" ]]; then echo "    casks:    $skip_casks"; fi
+    echo "    (upgrade by hand with 'brew upgrade <name>', or declare them in a profile)"
   fi
   echo ""
 fi

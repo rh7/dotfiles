@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# Weekly unattended software update — Homebrew only, and deliberately rootless.
+# Weekly unattended software update — Homebrew only, deliberately rootless, and
+# scoped to packages the flake DECLARES.
 #
 # Install: declared by modules/home/profiles/weekly-update.nix (launchd agent).
 # Run once by hand: ./scripts/weekly-update.sh
 # Preview without changing anything: ./scripts/weekly-update.sh --dry-run
+#
+# ── SCOPE: DECLARED PACKAGES ONLY ───────────────────────────────────────────
+# `brew outdated` lists everything installed; `brew bundle` only manages what
+# the Brewfile declares. This job follows the flake, not the machine: declared
+# packages are upgraded, undeclared ones are REPORTED as drift and left alone.
+# Otherwise a hand-installed tool would start changing on a weekly schedule
+# nobody asked for, and the flake would stop being the source of truth.
 #
 # ── WHY THIS DOES NOT USE ROOT ──────────────────────────────────────────────
 # The obvious design — a launchd *daemon* running `darwin-rebuild switch` — is
@@ -30,7 +38,9 @@
 set -uo pipefail  # no -e: one failed formula must not abort the whole run
 
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
-HOSTNAME="$(hostname -s)"
+# Overridable so the "flake eval failed" bail-out path can actually be tested;
+# in normal use this resolves to the host's darwinConfiguration attribute name.
+HOSTNAME="${WEEKLY_UPDATE_HOST:-$(hostname -s)}"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -41,7 +51,8 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "  --dry-run   Show what would be upgraded, change nothing"
       echo ""
-      echo "Upgrades Homebrew formulae and casks that do not require root."
+      echo "Upgrades DECLARED Homebrew packages that do not require root."
+      echo "Undeclared packages are reported as drift, never upgraded."
       echo "Casks needing root are skipped and reported for a rebuild.sh run."
       echo "Logs to \$WEEKLY_UPDATE_LOG_DIR (default:"
       echo "  ~/.local/state/dotfiles/weekly-update/). Last 12 retained."
@@ -77,6 +88,16 @@ if ! command -v brew &>/dev/null; then
   exit 1
 fi
 
+# ── Locate nix ──
+# Needed to evaluate which packages the flake declares. Same reason as brew:
+# a launchd agent's PATH is minimal, and the module sets one, but don't depend
+# on it when run by hand.
+if ! command -v nix &>/dev/null; then
+  for candidate in /run/current-system/sw/bin /nix/var/nix/profiles/default/bin; do
+    [[ -x "$candidate/nix" ]] && { PATH="$candidate:$PATH"; export PATH; break; }
+  done
+fi
+
 # Never let brew try to escalate. With no tty and no askpass, a cask needing
 # root fails fast and cleanly instead of hanging forever waiting on a prompt
 # that no human will ever see.
@@ -89,19 +110,56 @@ export HOMEBREW_NO_INSTALL_CLEANUP=1
 log "Refreshing Homebrew metadata..."
 brew update --quiet || log "WARN: brew update failed — continuing with cached metadata"
 
-outdated_formulae=$(brew outdated --formula --quiet 2>/dev/null || true)
-outdated_casks=$(brew outdated --cask --quiet 2>/dev/null || true)
+# ── Step 1b: Restrict to what the flake declares ──
+# `brew outdated` lists everything installed, including packages installed by
+# hand that the flake deliberately does not manage. Upgrading those here would
+# make this job quietly broader than a rebuild — the flake would stop being the
+# source of truth, and hand-installed software would change under you on a
+# schedule you never asked for. So: upgrade DECLARED packages only, and report
+# the rest as drift for you to either declare or remove.
+# shellcheck source=lib/declared-brew.sh
+source "$DOTFILES_DIR/scripts/lib/declared-brew.sh"
+
+tmp=$(mktemp -d -t weekly-update.XXXXXX)
+trap 'rm -rf "$tmp"' EXIT
+
+brew outdated --formula --quiet 2>/dev/null >"$tmp/outdated_formulae" || true
+brew outdated --cask --quiet 2>/dev/null >"$tmp/outdated_casks" || true
+declared_brew_names brews "$HOSTNAME" "$DOTFILES_DIR" >"$tmp/declared_formulae"
+declared_brew_names casks "$HOSTNAME" "$DOTFILES_DIR" >"$tmp/declared_casks"
+
+# Empty declared set means the nix eval failed, not that nothing is declared.
+# Bail rather than guess: upgrading nothing is a silent no-op that would look
+# like success week after week.
+if [[ ! -s "$tmp/declared_formulae" && ! -s "$tmp/declared_casks" ]]; then
+  log "ERROR: could not read declared packages from $DOTFILES_DIR (nix eval failed)"
+  log "       refusing to guess — no upgrades performed"
+  exit 1
+fi
+
+outdated_formulae=$(intersect_lines "$tmp/outdated_formulae" "$tmp/declared_formulae")
+outdated_casks=$(intersect_lines "$tmp/outdated_casks" "$tmp/declared_casks")
+undeclared=$(cat \
+  <(subtract_lines "$tmp/outdated_formulae" "$tmp/declared_formulae") \
+  <(subtract_lines "$tmp/outdated_casks" "$tmp/declared_casks"))
+
 n_formulae=$(grep -c . <<<"$outdated_formulae" || true)
 n_casks=$(grep -c . <<<"$outdated_casks" || true)
+n_undeclared=$(grep -c . <<<"$undeclared" || true)
 n_formulae=${n_formulae:-0}
 n_casks=${n_casks:-0}
+n_undeclared=${n_undeclared:-0}
 
-log "Outdated: $n_formulae formula(e), $n_casks cask(s)"
+log "Outdated + declared: $n_formulae formula(e), $n_casks cask(s)"
 if [[ "$n_formulae" -gt 0 ]]; then log "  formulae: $(tr '\n' ' ' <<<"$outdated_formulae")"; fi
 if [[ "$n_casks" -gt 0 ]]; then log "  casks:    $(tr '\n' ' ' <<<"$outdated_casks")"; fi
+if [[ "$n_undeclared" -gt 0 ]]; then
+  log "Outdated but NOT declared — left alone (drift): $(tr '\n' ' ' <<<"$undeclared")"
+  log "  -> declare them in a profile, or 'brew upgrade <name>' by hand"
+fi
 
 if [[ "$n_formulae" -eq 0 && "$n_casks" -eq 0 ]]; then
-  log "Already up to date — nothing to do"
+  log "No declared package needs upgrading — nothing to do"
   log "=== weekly update complete ==="
   exit 0
 fi

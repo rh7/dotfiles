@@ -7,6 +7,12 @@
 # update LOGIC lives in scripts/weekly-update.sh in the same checkout nix
 # rebuilds from, so changing what the job does is a merge, not a fleet rebuild.
 #
+# SCOPED TO DECLARED PACKAGES — the job upgrades what homebrew.brews/casks
+# declare and nothing else. `brew outdated` also lists hand-installed software;
+# upgrading that here would make the weekly job broader than a rebuild and quietly
+# demote the flake from source of truth. Undeclared outdated packages are
+# reported as drift in the log so they stay visible instead of silently rotting.
+#
 # ROOTLESS BY DESIGN — this is a user LaunchAgent, not a system daemon. See the
 # long rationale at the top of scripts/weekly-update.sh; the short version is
 # that unattended root would require either auto-deploying whatever is on `main`
@@ -37,12 +43,16 @@ let
   hour = 10;
   minute = 0;
 
-  # Load-bearing PATH: the script needs bash/git/coreutils from nix and brew
-  # itself from the Homebrew prefix. launchd agents otherwise get a minimal
-  # PATH — the script has a brew-locating fallback, but set it properly here.
-  toolPath = lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.git ];
+  # Load-bearing PATH: the script needs bash/git/coreutils/jq from nix, brew
+  # from the Homebrew prefix, and `nix` itself — it evaluates the flake to
+  # learn which packages are DECLARED (undeclared ones are reported, never
+  # upgraded). launchd agents get a minimal PATH, and without the nix profile
+  # dirs below that eval fails and the job refuses to run, every week. The
+  # script has locating fallbacks for brew and nix, but set it properly here.
+  toolPath = lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.git pkgs.jq ];
+  nixPath = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin";
   appPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-  fullPath = "${toolPath}:${appPath}";
+  fullPath = "${toolPath}:${nixPath}:${appPath}";
 in
 {
   launchd.agents.weekly-update = lib.mkIf isDarwin {
