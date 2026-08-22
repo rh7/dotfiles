@@ -255,6 +255,28 @@ homebrew_plan() {
     plan_known=false
   fi
 
+  # Formulae pulled in as DEPENDENCIES are not drift. `brew outdated` lists
+  # them, but they are not yours to declare — Homebrew owns them on behalf of
+  # the formula that requires them (e.g. `bash` exists only because the declared
+  # `direnv` depends on it, and upgrades with it). Reporting them as undeclared
+  # drift meant a permanent, unfixable warning: declaring a dependency is wrong,
+  # so the message could never be acted on.
+  #
+  # `brew list --installed-on-request`, NOT `brew leaves`. Leaves means "nothing
+  # else depends on it", which is a different question: a formula you explicitly
+  # asked for that later became some other formula's dependency drops out of
+  # `leaves` and would silently stop being reported. Installed-on-request is
+  # exactly "you asked for this".
+  requested_known=false
+  if $plan_known; then
+    if brew list --installed-on-request >"$PLAN_TMP/requested" 2>/dev/null; then
+      requested_known=true
+    else
+      warn "'brew list --installed-on-request' failed — reporting drift unfiltered"
+      warn "  (dependency formulae may appear below; they are not yours to declare)"
+    fi
+  fi
+
   # Per-category checks. A failure in ONE category must not read as "nothing
   # declared there" — that would relabel every package of that kind as drift.
   if $plan_known; then
@@ -282,7 +304,18 @@ homebrew_plan() {
   else
     will_formulae=$(intersect_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
     will_casks=$(intersect_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
-    skip_formulae=$(subtract_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
+    # Undeclared formulae are narrowed to the requested set — a dependency is
+    # not drift. On failure to determine that set, report UNFILTERED rather than
+    # intersecting against an empty file: intersecting would silently produce
+    # zero drift, which is the encode-failure-as-emptiness bug this codebase
+    # keeps having to unlearn. Over-reporting is the safe direction.
+    subtract_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" \
+      >"$PLAN_TMP/undeclared_formulae"
+    if $requested_known; then
+      skip_formulae=$(intersect_lines "$PLAN_TMP/undeclared_formulae" "$PLAN_TMP/requested" | tr '\n' ' ' | sed 's/ $//')
+    else
+      skip_formulae=$(tr '\n' ' ' <"$PLAN_TMP/undeclared_formulae" | sed 's/ $//')
+    fi
     skip_casks=$(subtract_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
 
     n_will=$(wc -w <<<"$will_formulae $will_casks" | tr -d ' ')

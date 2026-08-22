@@ -12,7 +12,9 @@
     "dropbox"
     # "obsidian"  # moved to dev-apps profile
     # "expressvpn"  # install manually — cask installer helper needs GUI auth, fails under brew bundle
-    # "tripmode"  # install from App Store — Homebrew cask version hangs on activation dialog
+    # "tripmode"  # cask hangs on the system-extension approval dialog under
+    #             # brew bundle — provisioned from the App Store instead, in
+    #             # productivity.nix. Keep it undeclared; see the note there.
     "tailscale-app"
     # dia — no Homebrew cask / not on App Store; auto-installed from the official DMG in postActivation below
     # speedtest — Mac App Store only, not in Homebrew
