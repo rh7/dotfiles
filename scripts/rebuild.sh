@@ -183,6 +183,13 @@ declared_outdated_mas() {
   fi
   ensure_declared_lib
 
+  # This function is called twice (plan, then post-activation). If the first
+  # call failed it deliberately left its directory for the EXIT trap — so clear
+  # it BEFORE allocating another, or the second assignment orphans the first
+  # beyond the trap's reach.
+  if [[ -n "$MAS_TMP" && -d "$MAS_TMP" ]]; then
+    rm -rf "$MAS_TMP"
+  fi
   MAS_TMP=$(mktemp -d -t rebuild-mas.XXXXXX) || return 1
 
   if ! "$mas_bin" outdated 2>/dev/null | awk '{print $1}' >"$MAS_TMP/outdated"; then
@@ -316,8 +323,17 @@ homebrew_plan() {
   case $rc in
     0)
       if [[ -n "$mas_ids" ]]; then
-        warn "Will also UPGRADE $(wc -w <<<"$mas_ids" | tr -d ' ') declared App Store app(s):"
-        echo "    mas: $(tr '\n' ' ' <<<"$mas_ids" | sed 's/ $//')"
+        # Describe what will ACTUALLY happen. The gate below skips App Store
+        # upgrades under --yes without --upgrade-mas, so promising an upgrade
+        # here would be the same class of lie as the original Homebrew preview.
+        if $AUTO_CONFIRM && ! $FORCE_MAS; then
+          info "$(wc -w <<<"$mas_ids" | tr -d ' ') declared App Store app(s) outdated — will be SKIPPED:"
+          echo "    mas: $(tr '\n' ' ' <<<"$mas_ids" | sed 's/ $//')"
+          echo "    (--yes without --upgrade-mas; run interactively to upgrade)"
+        else
+          warn "Will also UPGRADE $(wc -w <<<"$mas_ids" | tr -d ' ') declared App Store app(s):"
+          echo "    mas: $(tr '\n' ' ' <<<"$mas_ids" | sed 's/ $//')"
+        fi
       else
         ok "No declared App Store apps need upgrading"
       fi
