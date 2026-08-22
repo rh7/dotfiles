@@ -26,6 +26,13 @@
   #   "sqlpro-for-postgres"
   #   "anaconda"         # Python — using uv instead
   #
+  # Communication:
+  #   "session"          # onion-routing messenger (com.loki-project.messenger-desktop).
+  #                      # Removed 2026-08-22 — not used. Do NOT confuse with
+  #                      # "Session Pomodoro Focus Timer" (MAS 1521432881,
+  #                      # com.philipyoungg.session), which IS wanted and is
+  #                      # declared in productivity.nix. Same name, unrelated apps.
+  #
   # Security:
   #   "boxcryptor"       # replaced by Cryptomator
   #   "rustdesk"         # remote desktop
