@@ -19,11 +19,22 @@
 #   * A failed cask does not prove root was the reason. A running app, a
 #     checksum mismatch or a network error look identical here.
 #
-# Formulae install under the Homebrew prefix, which this user owns, so a
-# formula upgrade never needs root. Restricting to formulae makes "unprivileged"
-# true by construction rather than by hope. Outdated casks are REPORTED and
-# PREFETCHED so an interactive rebuild.sh finishes them quickly, with one
-# attributable authentication and a human watching.
+# Formulae install under the Homebrew prefix, which this user owns, so by
+# Homebrew's own convention a formula upgrade does not need root. That removes
+# the expected privileged path — the cask installer — and is a large practical
+# improvement.
+#
+# It is NOT a hard security boundary, and this file previously overclaimed that.
+# `brew upgrade --formula` still runs formula/tap-authored install and
+# post-install code as this user, and such code can invoke sudo and reuse a
+# valid user-global timestamp exactly as a cask installer would. A real
+# boundary would require the agent to be unable to use sudo at all — a separate
+# non-admin identity — which this design does not implement. What is claimed
+# here is narrower: this job does not itself run privileged installers.
+#
+# Outdated casks are REPORTED and PREFETCHED so an interactive rebuild.sh
+# finishes them quickly, with one attributable authentication and a human
+# watching.
 #
 # ── SCOPE: DECLARED PACKAGES ONLY (with one honest caveat) ──────────────────
 # `brew outdated` lists everything installed; `brew bundle` only manages what

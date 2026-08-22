@@ -15,17 +15,30 @@
 # (Homebrew still resolves dependencies, so an undeclared dependency of a
 # declared formula may be upgraded — only target SELECTION is restricted.)
 #
-# FORMULAE ONLY, AND THAT IS THE SECURITY BOUNDARY — an earlier version also
-# upgraded casks, skipping the ones that failed on the theory they had needed
-# root. That could not actually deny root: modules/darwin/sudo-rebuild.nix
-# keeps a user-global sudo timestamp open for the length of a rebuild, and a
-# cask install running in this agent during that window would have inherited
-# it and escalated silently, unattended. Formulae install under the Homebrew
-# prefix this user owns, so restricting to them makes "never needs root" true
-# by construction instead of by hope. Outdated casks are reported and
-# prefetched for an interactive rebuild.sh, where a human authenticates once
-# and watches. Do NOT re-add cask upgrades here, and do NOT promote this to
-# launchd.daemons — both reintroduce unattended privileged installs.
+# FORMULAE ONLY — an earlier version also upgraded casks, skipping the ones
+# that failed on the theory they had needed root. That could not actually deny
+# root: modules/darwin/sudo-rebuild.nix keeps a user-global sudo timestamp open
+# for the length of a rebuild, and a cask install running in this agent during
+# that window would have inherited it and escalated silently, unattended.
+#
+# Restricting to formulae removes the expected privileged path (the cask
+# installer). Be precise about what that does and does not buy: formula
+# install/post-install code still runs as this user and could invoke sudo
+# against a valid timestamp. This is a large practical risk reduction, not a
+# technical guarantee — a real boundary would need a separate non-admin
+# identity that cannot use sudo at all.
+#
+# Outdated casks are reported and prefetched for an interactive rebuild.sh,
+# where a human authenticates once and watches. Do NOT re-add cask upgrades
+# here, and do NOT promote this to launchd.daemons — both reintroduce
+# unattended privileged installs.
+#
+# ACCEPTED RISK (not a fix): this agent runs the script from the mutable
+# ~/dotfiles checkout, per the same convention fleet-audit.nix documents, so
+# its notion of "declared" comes from the checkout rather than the activated
+# generation. A dirty or ahead-of-activation checkout can therefore select a
+# different upgrade set than the running system declares. Changing that is a
+# repo-wide architectural decision, deliberately out of scope here.
 #
 # WIRING (staged, per the same convention fleet-audit.nix documents): imported
 # from a single host's `extraHomeModules` in flake.nix first. Promote to

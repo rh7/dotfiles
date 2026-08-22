@@ -38,7 +38,7 @@ err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # every cleanup must be registered through here.
 PLAN_TMP=""             # Homebrew plan scratch dir (step 4b)
 SUDO_KEEPALIVE_PID=""   # sudo timestamp refresher (step 5b)
-SUDO_AUTHENTICATED=false
+SUDO_TOUCHED=false      # true once this script refreshes the sudo timestamp
 cleanup() {
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -47,9 +47,20 @@ cleanup() {
     rm -rf "$PLAN_TMP"
   fi
   # Close the sudo window immediately rather than letting the 5-minute default
-  # lapse — but only if this script opened it. Revoking a timestamp the user
-  # established elsewhere would make unrelated sudo calls re-prompt.
-  if $SUDO_AUTHENTICATED; then
+  # lapse.
+  #
+  # This revokes even a timestamp that already existed when the script started.
+  # That is deliberate: the keep-alive below runs `sudo -n -v` every 60s, so by
+  # the end of a long rebuild ANY timestamp — pre-existing or not — has been
+  # repeatedly renewed by this script and would outlive the run. An earlier
+  # version skipped `sudo -k` for pre-existing timestamps on the theory that
+  # they "belonged to something else"; the result was that it extended a
+  # credential it declined to clean up, leaving a fresh global window open for
+  # unrelated processes. Renewing it makes it ours to revoke.
+  #
+  # Cost of being wrong in this direction: an unrelated sudo elsewhere prompts
+  # once more than it would have. That is the right way to be wrong.
+  if $SUDO_TOUCHED; then
     sudo -k 2>/dev/null || true
   fi
 }
@@ -67,8 +78,9 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "  --yes, -y      Auto-confirm (skip interactive approval)"
       echo "  --build-only   Build only, don't activate"
-      echo "  --plan-only    Show the Homebrew upgrade plan only — no build,"
-      echo "                 no activation, no root. Read-only."
+      echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
+      echo "                 activation, no upgrades, no root. Does refresh brew"
+      echo "                 metadata (network + Homebrew repo state)."
       echo "  --flake REF    Override flake reference (default: ~/dotfiles#\$HOSTNAME)"
       echo ""
       echo "Logs: every run is mirrored to \$REBUILD_LOG_DIR (default:"
@@ -79,6 +91,13 @@ while [[ $# -gt 0 ]]; do
     *) err "Unknown argument: $1"; exit 1 ;;
   esac
 done
+
+# Rejected rather than silently resolved: --plan-only short-circuits before the
+# build, so passing both would quietly ignore --build-only.
+if $BUILD_ONLY && $PLAN_ONLY; then
+  err "--build-only and --plan-only are mutually exclusive"
+  exit 1
+fi
 
 # ── Log file ──
 # Mirror full output to ~/.local/state/dotfiles/rebuild/ so failures from brew
@@ -95,8 +114,9 @@ OS=$(uname -s)
 
 # ── Step 4b: Homebrew plan ──
 # A function, not an inline block, so `--plan-only` can run it without building
-# or activating — which also makes its failure paths testable. Everything it
-# does is read-only and needs no root.
+# or activating — which also makes its failure paths testable. It needs no root
+# and upgrades nothing, but it is NOT read-only: `brew update` below mutates
+# Homebrew's local repo/metadata and hits the network.
 #
 # `homebrew.onActivation.upgrade = true` upgrades outdated packages during
 # activation. That is the bulk of a long rebuild and the part that used to
@@ -237,11 +257,12 @@ fi
 
 # ── --plan-only: preview the Homebrew plan and stop ──
 # Placed after the nix-in-PATH setup (the plan evaluates the flake) but before
-# the drift audit and build, so it stays fast and read-only. Nothing below this
-# point runs: no build, no activation, no sudo.
+# the drift audit and build, so it stays fast. Nothing below this point runs:
+# no build, no activation, no sudo. (The plan itself does refresh Homebrew
+# metadata — see homebrew_plan.)
 if $PLAN_ONLY; then
   homebrew_plan
-  ok "Plan complete (--plan-only). Nothing was built or applied."
+  ok "Plan complete (--plan-only). Nothing was built, upgraded, or activated."
   exit 0
 fi
 
@@ -388,11 +409,12 @@ else
     err "Build result is in ./result for inspection."
     exit 1
   fi
-  # Only this branch opened the window, so only this branch may close it in
-  # cleanup(). If sudo was already authenticated above, the timestamp belongs
-  # to something else and revoking it would re-prompt unrelated commands.
-  SUDO_AUTHENTICATED=true
 fi
+
+# Set regardless of which branch ran: the keep-alive below refreshes the
+# timestamp either way, so either way this script is responsible for revoking
+# it. See cleanup() for why this is not conditional on having created it.
+SUDO_TOUCHED=true
 
 # Refresh the timestamp every 60s so a long run (large casks, multi-GB MAS
 # downloads) never lapses mid-flight and re-prompts. Dies with this script via
