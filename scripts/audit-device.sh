@@ -1564,7 +1564,12 @@ else:
 
 # Login history — the headline signal: when did a real person last touch this?
 # Pseudo-entries are excluded so a rebooting box does not read as an active one.
-SYSTEM_USERS = {'reboot', 'shutdown', 'runlevel', 'wtmp', 'btmp'}
+# The marker is load-bearing, not decoration. The config service statically
+# scans this collector for device-mutating verbs and REFUSES to serve it if the
+# scan is not clean; the words below are pseudo-usernames `last` reports, so an
+# unmarked line here silently froze the whole fleet's collector for 9 days
+# (rh7/rh-device-management#308). Nothing on this line executes.
+SYSTEM_USERS = {'reboot', 'shutdown', 'runlevel', 'wtmp', 'btmp'}  # read-only-scan: data
 logins = []
 for line in run('last -n 60 2>/dev/null').split('\n'):
     line = line.strip()
