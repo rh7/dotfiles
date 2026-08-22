@@ -9,9 +9,9 @@
     "codex-app"
     # "claude-code"  # moved to dev-apps profile
     "superwhisper"
-    "buzz"          # offline Whisper transcription/translation (chidiwilliams/buzz)
     "lm-studio"     # local LLM runner; MLX backend selectable in-app on Apple Silicon
     "block-goose"   # Block's open-source AI agent (Goose.app)
+    "block-buzz"    # Block's workspace for humans and AI agents (Buzz.app)
   ];
 
   homebrew.brews = [
