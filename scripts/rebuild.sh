@@ -202,6 +202,40 @@ if $BUILD_ONLY; then
   exit 0
 fi
 
+# ── Step 4b: Homebrew plan ──
+# `homebrew.onActivation.upgrade = true` means activation upgrades everything
+# outdated, not just newly-declared apps. That is the bulk of a long rebuild and
+# the part that used to happen invisibly behind context-free Touch ID prompts,
+# so surface it BEFORE asking for authentication.
+#
+# `brew update` refreshes metadata and needs no root. Activation would run it
+# anyway (autoUpdate = true), so doing it here costs nothing and makes the
+# preview below accurate rather than stale.
+if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
+  echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
+  echo ""
+  info "Refreshing Homebrew metadata..."
+  brew update --quiet &>/dev/null || warn "brew update failed (preview may be stale)"
+
+  outdated_formulae=$(brew outdated --formula --quiet 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+  outdated_casks=$(brew outdated --cask --quiet 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+  n_formulae=$(wc -w <<<"$outdated_formulae" | tr -d ' ')
+  n_casks=$(wc -w <<<"$outdated_casks" | tr -d ' ')
+
+  if [[ "$n_formulae" -eq 0 && "$n_casks" -eq 0 ]]; then
+    ok "Homebrew is up to date — nothing to upgrade"
+  else
+    warn "Activation will UPGRADE $n_formulae formula(e) and $n_casks cask(s):"
+    # if/fi, not `[[ ]] && echo` — under `set -e` a false test would abort here.
+    if [[ "$n_formulae" -gt 0 ]]; then echo "    formulae: $outdated_formulae"; fi
+    if [[ "$n_casks" -gt 0 ]]; then echo "    casks:    $outdated_casks"; fi
+    echo ""
+    echo "    (This is homebrew.onActivation.upgrade = true — it upgrades"
+    echo "     everything outdated, not only what this rebuild adds.)"
+  fi
+  echo ""
+fi
+
 # ── Step 5: Confirm ──
 if ! $AUTO_CONFIRM; then
   echo -e "${BOLD}━━━ Activation ━━━${NC}"
@@ -217,6 +251,49 @@ if ! $AUTO_CONFIRM; then
   fi
   echo ""
 fi
+
+# ── Step 5b: Authenticate ONCE for the whole run ──
+# Without this, the prompts arrive one-per-root-requiring-cask from inside
+# `brew bundle` (nix-darwin drops root back to the user to run brew), each
+# giving no clue what it is for. Authenticating here — after the plan above —
+# means the single prompt you get is one you can actually attribute.
+#
+# Requires `Defaults:<user> timestamp_type=global` to cover brew's children;
+# see modules/darwin/sudo-rebuild.nix. Without that module this still works,
+# it just may not suppress every downstream prompt.
+SUDO_KEEPALIVE_PID=""
+cleanup_sudo() {
+  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  fi
+  # Close the window immediately instead of letting the 5-minute default lapse.
+  sudo -k 2>/dev/null || true
+}
+trap cleanup_sudo EXIT
+
+if sudo -n true 2>/dev/null; then
+  info "sudo already authenticated — no prompt needed"
+else
+  info "Authenticating once for the entire rebuild (Touch ID)..."
+  if ! sudo -v; then
+    err "Authentication failed or cancelled — nothing was applied."
+    err "Build result is in ./result for inspection."
+    exit 1
+  fi
+fi
+
+# Refresh the timestamp every 60s so a long run (large casks, multi-GB MAS
+# downloads) never lapses mid-flight and re-prompts. Dies with this script via
+# the EXIT trap, and self-exits if the parent disappears or sudo is revoked.
+(
+  while kill -0 "$$" 2>/dev/null; do
+    sudo -n -v 2>/dev/null || exit 0
+    sleep 60
+  done
+) &
+SUDO_KEEPALIVE_PID=$!
+ok "Authenticated — you should not be prompted again for this run"
+echo ""
 
 # ── Step 6: Activate (requires sudo) ──
 # Classify darwin-rebuild exit into success / known-harmless / real failure.

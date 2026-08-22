@@ -12,6 +12,7 @@
     ../darwin/profiles/media.nix
     ../darwin/profiles/security.nix
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
+    ../darwin/sudo-rebuild.nix      # one Touch ID per rebuild, not one per cask
   ];
 
   homebrew.casks = [
