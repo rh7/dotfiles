@@ -183,16 +183,26 @@ fi
 # Dependencies are not drift. `brew outdated` lists formulae that exist only
 # because a declared formula requires them (e.g. `bash` for `direnv`); they are
 # upgraded with their parent and must not be declared. Reporting them produced a
-# permanent warning that could never be acted on, so drift is narrowed to
-# `brew leaves` — the formulae actually requested.
-if ! brew leaves >"$tmp/leaves" 2>/dev/null; then
-  log "WARN: 'brew leaves' failed — dependency formulae may appear as drift"
-  : >"$tmp/leaves"
+# permanent warning that could never be acted on.
+#
+# `brew list --installed-on-request`, NOT `brew leaves`: leaves means "nothing
+# else depends on it", so a formula you explicitly asked for that later became
+# another formula's dependency would silently stop being reported.
+requested_known=true
+if ! brew list --installed-on-request >"$tmp/requested" 2>/dev/null; then
+  log "WARN: 'brew list --installed-on-request' failed — reporting drift unfiltered"
+  requested_known=false
 fi
 
 mapfile -t targets < <(intersect_lines "$tmp/outdated_formulae" "$tmp/declared_formulae")
 subtract_lines "$tmp/outdated_formulae" "$tmp/declared_formulae" >"$tmp/undeclared_raw"
-mapfile -t undeclared_formulae < <(intersect_lines "$tmp/undeclared_raw" "$tmp/leaves")
+# On failure, report UNFILTERED rather than intersecting against an empty file —
+# that would silently yield zero drift, the encode-failure-as-emptiness bug.
+if $requested_known; then
+  mapfile -t undeclared_formulae < <(intersect_lines "$tmp/undeclared_raw" "$tmp/requested")
+else
+  mapfile -t undeclared_formulae < "$tmp/undeclared_raw"
+fi
 mapfile -t declared_casks_outdated < <(intersect_lines "$tmp/outdated_casks" "$tmp/declared_casks")
 mapfile -t undeclared_casks < <(subtract_lines "$tmp/outdated_casks" "$tmp/declared_casks")
 
