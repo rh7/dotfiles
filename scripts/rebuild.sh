@@ -3,7 +3,7 @@
 #
 # Usage:
 #   rebuild.sh              # interactive: build → diff → confirm → switch
-#   rebuild.sh --yes        # auto-confirm (for cron/CI)
+#   rebuild.sh --yes        # auto-confirm (still needs you to authenticate)
 #   rebuild.sh --build-only # just build, don't switch
 #
 # This script avoids blind sudo by showing exactly what will change
@@ -16,6 +16,7 @@ HOSTNAME=$(hostname -s)
 AUTO_CONFIRM=false
 BUILD_ONLY=false
 PLAN_ONLY=false
+FORCE_MAS=false
 FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
 
 # ── Colors ──
@@ -86,11 +87,16 @@ while [[ $# -gt 0 ]]; do
     --yes|-y)        AUTO_CONFIRM=true; shift ;;
     --build-only)    BUILD_ONLY=true; shift ;;
     --plan-only)     PLAN_ONLY=true; shift ;;
+    --upgrade-mas)   FORCE_MAS=true; shift ;;
     --flake)         FLAKE_REF="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: rebuild.sh [--yes] [--build-only|--plan-only] [--flake REF]"
       echo ""
-      echo "  --yes, -y      Auto-confirm (skip interactive approval)"
+      echo "  --yes, -y      Auto-confirm (skip interactive approval). Skips"
+      echo "                 App Store upgrades unless --upgrade-mas is given,"
+      echo "                 since those must not run unattended."
+      echo "  --upgrade-mas  Upgrade declared App Store apps even with --yes."
+      echo "                 Only pass this when you are at the machine."
       echo "  --build-only   Build only, don't activate"
       echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
       echo "                 activation, no upgrades, no root. Does refresh brew"
@@ -160,7 +166,14 @@ ensure_declared_lib() {
 #
 # Here the situation is different in the way that counts: a human ran this,
 # saw the plan, and authenticated deliberately. Same treatment as casks.
+# Result is returned via the MAS_OUTDATED global, NOT stdout. That is not
+# stylistic: callers used `x=$(declared_outdated_mas)`, which runs the function
+# in a SUBSHELL, so its `MAS_TMP=` assignment never reached the parent and the
+# shared EXIT trap could not clean the directory after an early return. Setting
+# a global keeps the function in the parent shell, where the trap works.
+MAS_OUTDATED=""
 declared_outdated_mas() {
+  MAS_OUTDATED=""
   # Indirected so the "mas missing" branch is reachable in tests; `mas` lives in
   # the same dir as `brew`, so it cannot be hidden via PATH without also
   # breaking brew.
@@ -170,12 +183,10 @@ declared_outdated_mas() {
   fi
   ensure_declared_lib
 
-  # Registered on the global so the shared EXIT trap removes it even if the run
-  # is interrupted mid-function.
   MAS_TMP=$(mktemp -d -t rebuild-mas.XXXXXX) || return 1
 
   if ! "$mas_bin" outdated 2>/dev/null | awk '{print $1}' >"$MAS_TMP/outdated"; then
-    return 1
+    return 1   # dir left for the EXIT trap, which can now see it
   fi
   if ! declared_mas_ids "$FLAKE_REF" >"$MAS_TMP/declared"; then
     return 1
@@ -183,12 +194,10 @@ declared_outdated_mas() {
 
   # Status captured explicitly: ending on `rm` would have returned the CLEANUP's
   # exit code, so a failed intersection would have looked like success.
-  local out rc=0
-  out=$(intersect_lines "$MAS_TMP/outdated" "$MAS_TMP/declared") || rc=1
+  local rc=0
+  MAS_OUTDATED=$(intersect_lines "$MAS_TMP/outdated" "$MAS_TMP/declared") || rc=1
   rm -rf "$MAS_TMP"; MAS_TMP=""
-  if [[ $rc -ne 0 ]]; then return 1; fi
-  if [[ -n "$out" ]]; then printf '%s\n' "$out"; fi
-  return 0
+  return $rc
 }
 
 # ── Step 4b: Homebrew plan ──
@@ -296,11 +305,14 @@ homebrew_plan() {
 
   # Mac App Store, shown in the same breath as Homebrew so the plan covers
   # everything this run will change before you authenticate.
-  # `if mas_ids=$(...)`, NOT `mas_ids=$(...); rc=$?` — under `set -e` a failing
-  # command substitution in a bare assignment aborts the script, so a missing
-  # `mas` silently killed the whole run instead of warning.
+  # `if declared_outdated_mas; then` — NOT `x=$(...)`. Two reasons: under
+  # `set -e` a failing command substitution in a bare assignment aborts the
+  # script (a missing `mas` silently killed the whole run), and command
+  # substitution would put the function in a subshell where its temp-dir
+  # bookkeeping cannot reach the EXIT trap.
   local mas_ids rc
-  if mas_ids=$(declared_outdated_mas); then rc=0; else rc=$?; fi
+  if declared_outdated_mas; then rc=0; else rc=$?; fi
+  mas_ids="$MAS_OUTDATED"
   case $rc in
     0)
       if [[ -n "$mas_ids" ]]; then
@@ -596,9 +608,22 @@ echo ""
 # See declared_outdated_mas() for why this is here and not in the weekly agent:
 # mas invokes /usr/bin/sudo internally, which is acceptable with a human present
 # who authenticated for this run, and not acceptable unattended.
-if [[ "$OS" == "Darwin" ]]; then
+# The whole justification for doing this here rather than in the weekly agent is
+# that a human is present and authenticated deliberately. `--yes` breaks that
+# premise — it exists to skip the prompt — so it must not silently authorise
+# privileged App Store upgrades. Skipped by default there, with `--upgrade-mas`
+# as an explicit "I am at the machine" override. Without this the safety
+# argument would be a comment rather than a property of the script.
+if $AUTO_CONFIRM && ! $FORCE_MAS; then
+  if [[ "$OS" == "Darwin" ]]; then
+    info "Skipping App Store upgrades (--yes without --upgrade-mas)."
+    info "  mas can invoke sudo; run interactively, or pass --upgrade-mas."
+    echo ""
+  fi
+elif [[ "$OS" == "Darwin" ]]; then
   mas_rc=0
-  mas_to_upgrade=$(declared_outdated_mas) || mas_rc=$?
+  declared_outdated_mas || mas_rc=$?
+  mas_to_upgrade="$MAS_OUTDATED"
   case $mas_rc in
     0)
       if [[ -n "$mas_to_upgrade" ]]; then

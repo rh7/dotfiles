@@ -30,18 +30,12 @@ check() { # check <name> <expected> <actual>
   if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected [$2], got [$3]"; fi
 }
 
-# The scrape is the part worth testing; drive it directly with fixture text by
-# reusing the same awk program the library uses. Kept in sync by extracting it
-# from the library source rather than duplicating it here — if the library's
-# parser changes and this stops matching, the extraction fails loudly.
+# Drives the REAL parser from the library — scrape_mas_ids is exported for
+# exactly this reason. An earlier version of this file duplicated the awk
+# program while claiming to extract it, so the library and its tests could
+# diverge and the suite would still pass.
 scrape() {
-  printf '%s\n' "$1" | awk '
-    match($0, /^[[:space:]]*mas_install[[:space:]]+"?[0-9]+"?([[:space:]]|$)/) {
-      id = substr($0, RSTART, RLENGTH)
-      gsub(/[^0-9]/, "", id)
-      print id
-    }
-  ' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//'
+  printf '%s\n' "$1" | scrape_mas_ids | tr '\n' ' ' | sed 's/ $//'
 }
 
 echo "declared-packages.sh — mas_install scrape"
@@ -75,6 +69,14 @@ check "mid-line mention is NOT a declaration" \
 check "quoted id is accepted" \
   "497799835" \
   "$(scrape 'mas_install "497799835" "Xcode"')"
+
+check "mismatched opening quote is rejected" \
+  "" \
+  "$(scrape 'mas_install "497799835 \"Xcode\"')"
+
+check "mismatched closing quote is rejected" \
+  "" \
+  "$(scrape 'mas_install 497799835" "Xcode"')"
 
 check "id with trailing garbage is rejected" \
   "" \

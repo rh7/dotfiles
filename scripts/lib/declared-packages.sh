@@ -103,16 +103,29 @@ declared_mas_ids() {
 
   text=$(jq -r '.' <<<"$raw" 2>/dev/null) || return 1
 
-  # awk rather than `grep | awk | sort -u || true`. awk exits 0 when nothing
-  # matches, so "no declarations" needs no status masking — whereas the old
-  # trailing `|| true` swallowed EVERY failure in the pipeline (grep, awk, sort,
-  # write errors), not just grep's no-match, despite a comment claiming
-  # otherwise.
-  printf '%s\n' "$text" | awk '
-    match($0, /^[[:space:]]*mas_install[[:space:]]+"?[0-9]+"?([[:space:]]|$)/) {
-      id = substr($0, RSTART, RLENGTH)
-      gsub(/[^0-9]/, "", id)   # "mas_install" carries no digits, so this is the id
-      print id
+  printf '%s\n' "$text" | scrape_mas_ids
+}
+
+# scrape_mas_ids  — reads activation-script text on stdin, prints ids.
+#
+# Split out as its own function so the fixture tests can drive the REAL parser
+# instead of a copy of it. An earlier test duplicated this awk program while
+# claiming to extract it, which meant the library and its tests could diverge
+# and the suite would still pass.
+#
+# awk rather than `grep | awk | sort -u || true`: awk exits 0 when nothing
+# matches, so "no declarations" needs no status masking — whereas the old
+# trailing `|| true` swallowed EVERY failure in the pipeline (grep, awk, sort,
+# write errors), not just grep's no-match, despite a comment claiming otherwise.
+#
+# Quotes must MATCH. `"?[0-9]+"?` accepted `mas_install "123` and
+# `mas_install 123"`, so the two forms are spelled out as alternatives instead.
+scrape_mas_ids() {
+  awk '
+    /^[[:space:]]*mas_install[[:space:]]+[0-9]+([[:space:]]|$)/ ||
+    /^[[:space:]]*mas_install[[:space:]]+"[0-9]+"([[:space:]]|$)/ {
+      match($0, /[0-9]+/)
+      print substr($0, RSTART, RLENGTH)
     }
   ' | LC_ALL=C sort -u
 }
