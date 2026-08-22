@@ -46,6 +46,16 @@
 # one it depends on. Only the selection of targets is restricted — this is not
 # an absolute guarantee that undeclared packages never change.
 #
+# NOT covered by this job, stated so its scope is never mistaken for full
+# coverage: macOS system updates, nix flake inputs (flake.lock), undeclared
+# packages, declared casks, and Mac App Store apps.
+#
+# MAS is excluded on purpose, not by oversight. `mas_install` in postActivation
+# only installs apps that are MISSING, so declared App Store apps otherwise
+# never upgrade — a real gap. It is closed in scripts/rebuild.sh instead,
+# because mas 7.0.0 spawns /usr/bin/sudo internally for update operations and
+# must not run unattended while a rebuild holds a global sudo timestamp open.
+#
 # Nix/system config is intentionally NOT touched here — that stays rebuild.sh.
 
 set -uo pipefail  # no -e: one failed formula must not abort the whole run
@@ -71,6 +81,9 @@ while [[ $# -gt 0 ]]; do
       echo "post-install code still runs as you. Outdated casks and undeclared"
       echo "packages are reported; outdated casks are prefetched for a later"
       echo "rebuild.sh run."
+      echo ""
+      echo "Does NOT cover: macOS updates, flake.lock, undeclared packages,"
+      echo "or App Store apps (those upgrade via rebuild.sh — see header)."
       echo "Logs to \$WEEKLY_UPDATE_LOG_DIR (default:"
       echo "  ~/.local/state/dotfiles/weekly-update/). Last 12 retained."
       echo ""
@@ -126,13 +139,13 @@ export HOMEBREW_NO_INSTALL_CLEANUP=1
 # Checked explicitly: this script runs without `set -e`, so a failed `source`
 # would otherwise continue to "declared_brew_names: command not found" and a
 # misleading "could not evaluate" error that blames nix for a missing file.
-DECLARED_LIB="$DOTFILES_DIR/scripts/lib/declared-brew.sh"
+DECLARED_LIB="$DOTFILES_DIR/scripts/lib/declared-packages.sh"
 if [[ ! -r "$DECLARED_LIB" ]]; then
   log "ERROR: helper not found at $DECLARED_LIB"
   log "       (is DOTFILES_DIR=$DOTFILES_DIR correct?)"
   exit 1
 fi
-# shellcheck source=lib/declared-brew.sh
+# shellcheck source=lib/declared-packages.sh
 source "$DECLARED_LIB"
 
 tmp=$(mktemp -d -t weekly-update.XXXXXX)
@@ -155,7 +168,7 @@ if ! brew outdated --cask --quiet >"$tmp/outdated_casks" 2>/dev/null; then
 fi
 
 # Per-category status checks. A failure in ONE category must not be mistaken
-# for "that category declares nothing" — see the header of declared-brew.sh.
+# for "that category declares nothing" — see the header of declared-packages.sh.
 if ! declared_brew_names brews "$FLAKE_REF" >"$tmp/declared_formulae"; then
   log "ERROR: could not evaluate homebrew.brews for $FLAKE_REF"
   log "       refusing to guess — no upgrades performed"

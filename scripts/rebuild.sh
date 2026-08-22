@@ -37,6 +37,7 @@ err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # it, so a second `trap ... EXIT` further down would silently disable this one —
 # every cleanup must be registered through here.
 PLAN_TMP=""             # Homebrew plan scratch dir (step 4b)
+MAS_TMP=""              # App Store scratch dir (declared_outdated_mas)
 SUDO_KEEPALIVE_PID=""   # sudo timestamp refresher (step 5b)
 SUDO_TOUCHED=false      # true once this script refreshes the sudo timestamp
 cleanup() {
@@ -45,6 +46,9 @@ cleanup() {
   fi
   if [[ -n "$PLAN_TMP" && -d "$PLAN_TMP" ]]; then
     rm -rf "$PLAN_TMP"
+  fi
+  if [[ -n "$MAS_TMP" && -d "$MAS_TMP" ]]; then
+    rm -rf "$MAS_TMP"
   fi
   # Close the sudo window immediately rather than letting the 5-minute default
   # lapse.
@@ -122,6 +126,71 @@ while IFS= read -r _old_log; do rm -f "$_old_log"; done < <(
 
 OS=$(uname -s)
 
+# Idempotent so both the plan and the post-activation MAS step can call it.
+# Checked explicitly so a missing helper reports itself rather than dying on an
+# opaque "source: no such file" from `set -e`.
+DECLARED_LIB_SOURCED=false
+ensure_declared_lib() {
+  if $DECLARED_LIB_SOURCED; then return 0; fi
+  local lib="$DOTFILES_DIR/scripts/lib/declared-packages.sh"
+  if [[ ! -r "$lib" ]]; then
+    err "Helper not found at $lib"
+    exit 1
+  fi
+  # shellcheck source=lib/declared-packages.sh
+  source "$lib"
+  DECLARED_LIB_SOURCED=true
+}
+
+# ── Declared Mac App Store apps that are outdated ────────────────────────────
+# Prints one id per line. Returns nonzero if state could not be determined, so
+# callers can distinguish "nothing to upgrade" from "could not tell".
+#
+# WHY THIS LIVES IN rebuild.sh AND NOT THE WEEKLY AGENT:
+# `mas_install` in postActivation only installs apps that are MISSING — it never
+# upgrades — so declared App Store apps were installed once and then never
+# updated again. The obvious fix was to put `mas upgrade` in the weekly
+# LaunchAgent, and that is WRONG: mas 7.0.0 spawns /usr/bin/sudo internally for
+# update operations (verified — `/usr/bin/sudo` and "Requires root privileges to
+# install apps" are both embedded in the installed Mach-O). Running it
+# unattended while rebuild.sh holds a user-global sudo timestamp open would let
+# it silently consume that credential, which is exactly why cask upgrades were
+# removed from that agent. One app upgrading without a prompt does not prove
+# otherwise — the capability is what matters, not a single observation.
+#
+# Here the situation is different in the way that counts: a human ran this,
+# saw the plan, and authenticated deliberately. Same treatment as casks.
+declared_outdated_mas() {
+  # Indirected so the "mas missing" branch is reachable in tests; `mas` lives in
+  # the same dir as `brew`, so it cannot be hidden via PATH without also
+  # breaking brew.
+  local mas_bin="${REBUILD_MAS_BIN:-mas}"
+  if ! command -v "$mas_bin" &>/dev/null; then
+    return 2   # distinct from "none outdated"; caller reports it
+  fi
+  ensure_declared_lib
+
+  # Registered on the global so the shared EXIT trap removes it even if the run
+  # is interrupted mid-function.
+  MAS_TMP=$(mktemp -d -t rebuild-mas.XXXXXX) || return 1
+
+  if ! "$mas_bin" outdated 2>/dev/null | awk '{print $1}' >"$MAS_TMP/outdated"; then
+    return 1
+  fi
+  if ! declared_mas_ids "$FLAKE_REF" >"$MAS_TMP/declared"; then
+    return 1
+  fi
+
+  # Status captured explicitly: ending on `rm` would have returned the CLEANUP's
+  # exit code, so a failed intersection would have looked like success.
+  local out rc=0
+  out=$(intersect_lines "$MAS_TMP/outdated" "$MAS_TMP/declared") || rc=1
+  rm -rf "$MAS_TMP"; MAS_TMP=""
+  if [[ $rc -ne 0 ]]; then return 1; fi
+  if [[ -n "$out" ]]; then printf '%s\n' "$out"; fi
+  return 0
+}
+
 # ── Step 4b: Homebrew plan ──
 # A function, not an inline block, so `--plan-only` can run it without building
 # or activating — which also makes its failure paths testable. It needs no root
@@ -152,15 +221,7 @@ homebrew_plan() {
   info "Refreshing Homebrew metadata..."
   brew update --quiet &>/dev/null || warn "brew update failed (preview may be stale)"
 
-  # Checked explicitly so a missing helper reports itself rather than dying on
-  # an opaque "source: no such file" from `set -e`.
-  DECLARED_LIB="$DOTFILES_DIR/scripts/lib/declared-brew.sh"
-  if [[ ! -r "$DECLARED_LIB" ]]; then
-    err "Helper not found at $DECLARED_LIB"
-    exit 1
-  fi
-  # shellcheck source=lib/declared-brew.sh
-  source "$DECLARED_LIB"
+  ensure_declared_lib
 
   # PLAN_TMP is cleaned by the shared EXIT trap, not an inline rm, so an
   # interrupt between here and the end of this block cannot leak it.
@@ -232,6 +293,26 @@ homebrew_plan() {
       echo "    (upgrade by hand with 'brew upgrade <name>', or declare them in a profile)"
     fi
   fi
+
+  # Mac App Store, shown in the same breath as Homebrew so the plan covers
+  # everything this run will change before you authenticate.
+  # `if mas_ids=$(...)`, NOT `mas_ids=$(...); rc=$?` — under `set -e` a failing
+  # command substitution in a bare assignment aborts the script, so a missing
+  # `mas` silently killed the whole run instead of warning.
+  local mas_ids rc
+  if mas_ids=$(declared_outdated_mas); then rc=0; else rc=$?; fi
+  case $rc in
+    0)
+      if [[ -n "$mas_ids" ]]; then
+        warn "Will also UPGRADE $(wc -w <<<"$mas_ids" | tr -d ' ') declared App Store app(s):"
+        echo "    mas: $(tr '\n' ' ' <<<"$mas_ids" | sed 's/ $//')"
+      else
+        ok "No declared App Store apps need upgrading"
+      fi
+      ;;
+    2) warn "mas not found — App Store apps not checked" ;;
+    *) warn "Could not determine App Store state — apps not checked" ;;
+  esac
   echo ""
 }
 
@@ -502,6 +583,48 @@ case "$OS" in
     ;;
 esac
 echo ""
+
+# ── Step 6b: Upgrade declared Mac App Store apps ──
+# AFTER activation, deliberately: postActivation's `mas_install` installs any
+# app that is MISSING, so running this second means a freshly-declared app is
+# installed by activation and then, if the App Store already has a newer
+# version, upgraded here in the same run.
+#
+# Recomputed rather than reusing the plan's list, because activation may have
+# just installed apps that change the answer.
+#
+# See declared_outdated_mas() for why this is here and not in the weekly agent:
+# mas invokes /usr/bin/sudo internally, which is acceptable with a human present
+# who authenticated for this run, and not acceptable unattended.
+if [[ "$OS" == "Darwin" ]]; then
+  mas_rc=0
+  mas_to_upgrade=$(declared_outdated_mas) || mas_rc=$?
+  case $mas_rc in
+    0)
+      if [[ -n "$mas_to_upgrade" ]]; then
+        echo -e "${BOLD}━━━ App Store ━━━${NC}"
+        echo ""
+        mas_failed=()
+        while IFS= read -r app_id; do
+          [[ -z "$app_id" ]] && continue
+          info "Upgrading App Store app $app_id..."
+          if "${REBUILD_MAS_BIN:-mas}" upgrade "$app_id"; then
+            ok "$app_id upgraded"
+          else
+            warn "$app_id failed — update it manually in the App Store"
+            mas_failed+=("$app_id")
+          fi
+        done <<<"$mas_to_upgrade"
+        if [[ ${#mas_failed[@]} -gt 0 ]]; then
+          warn "App Store apps not upgraded: ${mas_failed[*]}"
+        fi
+        echo ""
+      fi
+      ;;
+    2) warn "mas not found — declared App Store apps were not upgraded" ;;
+    *) warn "Could not determine App Store state — apps were not upgraded" ;;
+  esac
+fi
 
 # ── Step 7: Clean up ──
 rm -f result
