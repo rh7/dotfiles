@@ -128,6 +128,9 @@
         hostname = "rouven-m5-pro";
         username = "rouven";
         extraModules = [ ./configurations/macos/macbook.nix ];
+        # Staged rollout — validate the weekly updater here for a few weeks
+        # before promoting it to modules/common.nix for the whole fleet.
+        extraHomeModules = [ ./modules/home/profiles/weekly-update.nix ];
       };
 
       "rouven-air-m2" = mkMac {
