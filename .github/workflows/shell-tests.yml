@@ -34,15 +34,37 @@ jobs:
       - name: Syntax-check every shell script
         run: |
           set -euo pipefail
-          fail=0
+          # Discover by SHEBANG, not by suffix, and from the repo root rather than
+          # scripts/. A `*.sh` filter under scripts/ silently skipped two shipped
+          # entrypoints — `scripts/device` (bash, no extension) and the root
+          # `bootstrap.sh` — so the gate could pass with a broken one. A syntax
+          # gate that misses files is worse than none: it reads as coverage.
+          files=()
           while IFS= read -r -d '' f; do
+            case "$f" in
+              *.sh) files+=("$f"); continue ;;
+            esac
+            IFS= read -r first < "$f" 2>/dev/null || continue
+            case "$first" in
+              '#!'*bash*|'#!'*/sh|'#!'*env?sh) files+=("$f") ;;
+            esac
+          done < <(find . -path ./.git -prune -o -type f -print0)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no shell scripts discovered — this gate would be silently vacuous"
+            exit 1
+          fi
+          echo "discovered ${#files[@]} shell scripts"
+
+          fail=0
+          for f in "${files[@]}"; do
             if bash -n "$f"; then
               echo "ok   $f"
             else
               echo "::error file=$f::bash -n failed"
               fail=1
             fi
-          done < <(find scripts -name '*.sh' -type f -print0)
+          done
           [ "$fail" -eq 0 ] || { echo "::error::one or more scripts failed bash -n"; exit 1; }
 
       - name: Run scripts/tests
