@@ -33,6 +33,17 @@
 # here, and do NOT promote this to launchd.daemons — both reintroduce
 # unattended privileged installs.
 #
+# MAC APP STORE UPDATES BELONG TO rebuild.sh FOR THE SAME REASON. `mas_install`
+# only installs apps that are MISSING, so declared App Store apps never
+# upgraded — a real gap, and the obvious fix was `mas upgrade` in this agent.
+# That fix is wrong: mas 7.0.0 spawns /usr/bin/sudo internally for update
+# operations (both `/usr/bin/sudo` and "Requires root privileges to install
+# apps" are embedded in the installed binary). Unattended, overlapping a
+# rebuild, it could consume the global sudo timestamp with nobody watching.
+# One app observed upgrading without a prompt does not disprove the capability.
+# So the upgrade step lives in scripts/rebuild.sh, after activation, where a
+# human authenticated deliberately. Do NOT move it here.
+#
 # ACCEPTED RISK (not a fix): this agent runs the script from the mutable
 # ~/dotfiles checkout, per the same convention fleet-audit.nix documents, so
 # its notion of "declared" comes from the checkout rather than the activated
