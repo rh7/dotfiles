@@ -157,13 +157,15 @@
         ];
       };
 
-      # ── Mac Studio (workstation + AI inference + config service) ──
+      # ── Mac Studio (fleet member — workloads owned by mac-studio-services) ──
+      # Slimmed from server-mac + ai-inference on 2026-08-23: nix keeps the
+      # toolchain/secrets/audit layer; Homebrew and apps are imperative, owned
+      # by mac-studio-services. See modules/roles/fleet-member-mac.nix.
       "rouvens-mac-studio" = mkMac {
         hostname = "rouvens-mac-studio";
-        role = ./modules/roles/server-mac.nix;
+        role = ./modules/roles/fleet-member-mac.nix;
         extraModules = [
           ./configurations/macos/mac-studio.nix
-          ./modules/roles/ai-inference.nix
         ];
         extraHomeModules = [
           ./modules/home/profiles/fleet-audit.nix
