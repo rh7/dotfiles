@@ -120,11 +120,21 @@ The audit collects:
 | **SSH keys** | Key names (not the keys themselves) |
 | **Fonts** | Installed font families |
 
-> **Nix + npm global CLIs:** Node itself is provided by Nix/Home Manager, but
-> fast-moving npm CLIs such as Codex or Claude Code are intentionally mutable.
-> Keep npm's global prefix pointed at `~/.npm-global`, not `/nix/store`; the
-> audit's `npm_config.prefix_in_nix_store` and `global_root_in_nix_store` fields
-> should stay `false`.
+> **Nix + mutable CLIs:** Node itself is provided by Nix/Home Manager. Mutable
+> npm CLIs such as Codex use `~/.npm-global`; native user installers such as
+> Claude Code use `~/.local/bin`. The development profile keeps both directories
+> on `PATH`. Keep npm's prefix outside `/nix/store`; the audit's
+> `npm_config.prefix_in_nix_store` and `global_root_in_nix_store` fields should
+> stay `false`.
+
+### Claude Code command is missing
+
+Claude Code's native installer creates `~/.local/bin/claude`. If that executable
+works by absolute path but `claude` is not found, verify that the development
+profile still includes `~/.local/bin` in `home.sessionPath`, rebuild, and start a
+fresh application or login shell. Long-running applications can inherit Home
+Manager's session marker and retain the previous `PATH` in nested shells until
+the application is restarted. The command is `claude`.
 
 ### Step 3: Review gaps
 
