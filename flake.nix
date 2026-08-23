@@ -166,7 +166,6 @@
           ./modules/roles/ai-inference.nix
         ];
         extraHomeModules = [
-          ./modules/home/profiles/config-service.nix
           ./modules/home/profiles/fleet-audit.nix
         ];
       };
