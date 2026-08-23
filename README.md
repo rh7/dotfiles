@@ -128,9 +128,11 @@ mackup/
 | New machine | Add entry in `flake.nix` with hostname, role, and extras |
 | PWA / web app (all Macs) | Add to [`pwas.txt`](pwas.txt), then `scripts/pwa-apps.sh build --pin` (see [Web Apps](#web-apps-pwas)) |
 
-Nix provides the shared Node runtime via Home Manager. For mutable npm-installed
-CLIs that need rapid updates, keep the global npm prefix user-owned
-(`~/.npm-global`) rather than under `/nix/store`.
+Nix provides the shared Node runtime via Home Manager. Mutable npm-installed
+CLIs use the user-owned `~/.npm-global` prefix rather than `/nix/store`. Native
+user installers, including Claude Code, place commands in `~/.local/bin`.
+The development profile adds both directories to `PATH`; keep both entries when
+changing shell or Home Manager configuration.
 
 ## Web Apps (PWAs)
 
