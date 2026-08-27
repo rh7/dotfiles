@@ -73,10 +73,11 @@ package list — and say so.
 ## Daily Usage
 
 ```bash
-./scripts/rebuild.sh   # safe rebuild: pull → audit drift → build → preview diff → confirm → switch
-nrs                    # raw alias: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
-nup                    # update flake inputs
-dots                   # open dotfiles in Zed
+./scripts/rebuild.sh              # safe rebuild: pull → audit drift → build → preview → one auth → switch
+./scripts/rebuild.sh --plan-only  # what's pending? no build, no activation, no root
+nrs                               # raw alias: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
+nup                               # update flake inputs
+dots                              # open dotfiles in Zed
 ```
 
 **Prefer `rebuild.sh`** — it pulls latest, runs the drift audit (advisory; only
@@ -90,6 +91,14 @@ retained; override the directory with `REBUILD_LOG_DIR`). Useful when
 `brew bundle` or activation fails deep in the output — `less -R <log>` or
 `grep -i fail <log>` to find what broke. The path is printed at the end of
 every run.
+
+A rebuild asks for **one** Touch ID, after showing what it will upgrade. A
+weekly LaunchAgent keeps declared Homebrew formulae current on its own. Neither
+covers macOS system updates or `flake.lock` — those stay manual, on purpose.
+See **[Software Updates](docs/software-updates.md)** for the full model, the
+sudo tradeoff it rests on, and the app-naming traps that have bitten this repo
+(there are two unrelated apps called Session, and two different TripMode
+builds).
 
 ## Structure
 
@@ -165,9 +174,11 @@ mackup/
 | New machine | Add entry in `flake.nix` with hostname, role, and extras |
 | PWA / web app (all Macs) | Add to [`pwas.txt`](pwas.txt), then `scripts/pwa-apps.sh build --pin` (see [Web Apps](#web-apps-pwas)) |
 
-Nix provides the shared Node runtime via Home Manager. For mutable npm-installed
-CLIs that need rapid updates, keep the global npm prefix user-owned
-(`~/.npm-global`) rather than under `/nix/store`.
+Nix provides the shared Node runtime via Home Manager. Mutable npm-installed
+CLIs use the user-owned `~/.npm-global` prefix rather than `/nix/store`. Native
+user installers, including Claude Code, place commands in `~/.local/bin`.
+The development profile adds both directories to `PATH`; keep both entries when
+changing shell or Home Manager configuration.
 
 ## Web Apps (PWAs)
 
@@ -244,6 +255,13 @@ The audit distinguishes two kinds of drift:
 
 `rebuild.sh` only prompts when risky drift is detected; benign drift proceeds
 silently.
+
+One drift entry is **expected and permanent**: the `tripmode` cask shows as
+installed-but-not-declared on `rouven-m5-pro`. Declaring it would hang
+activation on every other Mac — see
+[Software Updates → Traps](docs/software-updates.md#traps). Homebrew formulae
+installed as *dependencies* (e.g. `bash` for `direnv`) are not reported as
+drift; they are not yours to declare.
 
 The `--snapshot` / `--diff` pair captures things the audit can't enumerate up
 front (mouse speed, custom keyboard shortcuts, hidden defaults). Useful when
