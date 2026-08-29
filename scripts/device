@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/device setup              # first-time: rebuild + secrets + register
-#   ./scripts/device update             # pull + rebuild (daily use, replaces nrs)
+#   ./scripts/device update             # pull + rebuild (daily use; same guard as nrs)
 #   ./scripts/device update --full      # pull + flake update + rebuild
 #   ./scripts/device status             # show device info + config service status
 #   ./scripts/device register           # register/heartbeat with config service
@@ -44,21 +44,30 @@ find_config_service() {
 }
 
 # ── Rebuild system ──────────────────────────────────────────────────────
+# Delegates to rebuild.sh rather than calling darwin-rebuild directly. This is
+# the documented daily path ("replaces nrs"), so calling the raw command here
+# meant the daily path was the one WITHOUT the drift audit and without the
+# single-authentication window — every root-requiring cask re-prompted from
+# inside `brew bundle`. See modules/darwin/sudo-rebuild.nix.
+#
+# Standalone home-manager keeps its own branch: rebuild.sh covers darwin and
+# NixOS, not the HM-only case.
 do_rebuild() {
   info "Rebuilding for $HOSTNAME..."
-  case "$OS" in
-    Darwin)
-      sudo darwin-rebuild switch --flake "$DOTFILES_DIR#$HOSTNAME"
-      ;;
-    Linux)
-      if command -v nixos-rebuild &>/dev/null; then
-        sudo nixos-rebuild switch --flake "$DOTFILES_DIR#$HOSTNAME"
-      else
-        home-manager switch --flake "$DOTFILES_DIR#$(whoami)@$HOSTNAME"
-      fi
-      ;;
-  esac
-  ok "System rebuilt"
+  if [[ "$OS" == "Linux" ]] && ! command -v nixos-rebuild &>/dev/null; then
+    home-manager switch --flake "$DOTFILES_DIR#$(whoami)@$HOSTNAME"
+    ok "System rebuilt"
+    return
+  fi
+  # Interactive on purpose — the plan is the point. rebuild.sh exits non-zero
+  # on a failed activation, and `set -e` here turns that into a visible abort
+  # rather than an "$HOSTNAME updated" that is not true.
+  #
+  # No "System rebuilt" line after this: rebuild.sh reports its own outcome, and
+  # DECLINING the confirmation exits 0. Announcing success here would claim a
+  # switch that the user just cancelled — the same lie this whole change set is
+  # about removing.
+  bash "$DOTFILES_DIR/scripts/rebuild.sh" "$@"
 }
 
 # ── Register with config service ────────────────────────────────────────

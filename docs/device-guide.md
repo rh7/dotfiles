@@ -60,7 +60,7 @@ That's it. The setup script handles everything:
 
 ```bash
 nrs                    # should rebuild without errors
-type nrs               # should show: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
+type nrs               # should show: ~/dotfiles/scripts/rebuild.sh
 ./scripts/device status # should show device info + fleet overview
 ```
 
@@ -333,13 +333,13 @@ A: No. The current config sets `cleanup = "none"` in `modules/darwin/homebrew.ni
 A: Workaround for a Homebrew change (2026-06): `brew bundle install --cleanup` now refuses to run without `--force` / `--force-cleanup` / `$HOMEBREW_ASK`. nix-darwin's activate script hardcodes the `--cleanup` flag and runs brew under `sudo --preserve-env=PATH ... env brew bundle`, which strips any env var we'd set. The upstream nix-darwin fix bumps the required nixpkgs from 26.05 → 26.11 (newer nix-darwin enforces version matching), so disabling cleanup is the smaller change. Revisit when ready for a combined `nixpkgs` + `nix-darwin` input bump.
 
 **Q: What about macOS settings (dock, finder, etc.)?**
-A: These *will* be overwritten to match the dotfiles config. `./scripts/rebuild.sh` mitigates this by running `audit-config-drift.sh` as a pre-flight step and prompting when risky drift is detected — so you get a chance to fold manual changes into the flake before they're overwritten. Direct `nrs`/`darwin-rebuild switch` skips that gate. You can always restore with `defaults import`.
+A: These *will* be overwritten to match the dotfiles config. `./scripts/rebuild.sh` mitigates this by running `audit-config-drift.sh` as a pre-flight step and prompting when risky drift is detected — so you get a chance to fold manual changes into the flake before they're overwritten. `nrs` runs that gate for you; `nrs-raw` and a direct `darwin-rebuild switch` skip it. You can always restore with `defaults import`.
 
 **Q: Can I run the audit without the config service?**
 A: Yes. Use `./scripts/device audit --local` to just print the JSON, or `--save` to write it to a file.
 
 **Q: What if hostname doesn't match the flake?**
-A: `nrs` uses `$(hostname)` to pick the flake config. If your hostname is `Rs-MacBook-Air-M5` but the flake expects `m5-air`, the rebuild will fail. Either rename the host (`sudo scutil --set HostName m5-air` on macOS) or add the actual hostname to `flake.nix`.
+A: `nrs` (and `darwin-rebuild` under it) uses `$(hostname)` to pick the flake config. If your hostname is `Rs-MacBook-Air-M5` but the flake expects `m5-air`, the rebuild will fail. Either rename the host (`sudo scutil --set HostName m5-air` on macOS) or add the actual hostname to `flake.nix`.
 
 **Q: How do I add a new machine to the flake?**
 A: Add an entry in `flake.nix` under `darwinConfigurations` (Mac) or `nixosConfigurations` (Linux). Use an existing entry as template — pick a role and any extra modules. Then commit, push, and run `./scripts/device setup` on the new machine.
