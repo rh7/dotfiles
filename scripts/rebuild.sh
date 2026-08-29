@@ -615,53 +615,89 @@ run_darwin_rebuild() {
 
   if [[ $rc -eq 0 ]]; then
     ok "System updated"
-  else
-    # Heuristics: real failures we don't want to hide.
-    # Note: "Installing X has failed!" is a brew-bundle output line, NOT MAS —
-    # it fires for cask install failures (e.g. version-mismatch on adopt).
-    local has_brew_fail=false has_mas_fail=false has_nix_fail=false
-    grep -qiE 'brew bundle failed|brewfile dependency failed|installing .* has failed' "$log" && has_brew_fail=true
-    grep -qiE 'failed to install .* from app store' "$log" && has_mas_fail=true
-    grep -qiE 'error: builder for|error: build of' "$log" && has_nix_fail=true
+    rm -f "$log"
+    return 0
+  fi
 
-    warn "darwin-rebuild exited with code $rc"
-    if $has_mas_fail; then
-      err "mas / App Store install failed — check output above for the app name"
-      err "Workaround: install the app manually from the App Store, then re-run"
-    fi
-    if $has_brew_fail; then
-      err "brew bundle had failures — not all Homebrew packages installed"
-    fi
-    if $has_nix_fail; then
-      err "Nix build error — check output above"
-    fi
-    if ! $has_brew_fail && ! $has_mas_fail && ! $has_nix_fail; then
-      warn "No known failure pattern detected — likely sops secrets on first build (see #27)"
-      warn "Check the output above to be sure"
-    fi
+  # Heuristics: real failures we don't want to hide.
+  # Note: "Installing X has failed!" is a brew-bundle output line, NOT MAS —
+  # it fires for cask install failures (e.g. version-mismatch on adopt).
+  local has_brew_fail=false has_mas_fail=false has_nix_fail=false
+  local has_xcode_fail=false has_secrets_fail=false
+  grep -qiE 'brew bundle failed|brewfile dependency failed|installing .* has failed' "$log" && has_brew_fail=true
+  grep -qiE 'failed to install .* from app store' "$log" && has_mas_fail=true
+  grep -qiE 'error: builder for|error: build of' "$log" && has_nix_fail=true
+  grep -qiE 'not agreed to the xcode license' "$log" && has_xcode_fail=true
+  grep -qiE 'sops|age key|no key could decrypt' "$log" && has_secrets_fail=true
+
+  warn "darwin-rebuild exited with code $rc"
+  # Xcode first: it gates Homebrew entirely, so it explains a brew failure
+  # rather than being a second, independent problem.
+  if $has_xcode_fail; then
+    err "Xcode's license has not been accepted, so Homebrew refused to run."
+    err "NO cask was processed this run. Accept it once, then re-run:"
+    err "    sudo xcodebuild -license accept"
+  fi
+  if $has_mas_fail; then
+    err "mas / App Store install failed — check output above for the app name"
+    err "Workaround: install the app manually from the App Store, then re-run"
+  fi
+  if $has_brew_fail && ! $has_xcode_fail; then
+    err "brew bundle had failures — not all Homebrew packages installed"
+  fi
+  if $has_nix_fail; then
+    err "Nix build error — check output above"
+  fi
+  if $has_secrets_fail && ! $has_xcode_fail; then
+    err "Possible sops/secrets failure on first build (see #27)"
+  fi
+  # Nothing matched. Do NOT guess a cause — the switch already printed one.
+  # Quote it back instead, so the reader sees evidence rather than a hunch.
+  if ! $has_brew_fail && ! $has_mas_fail && ! $has_nix_fail \
+     && ! $has_xcode_fail && ! $has_secrets_fail; then
+    err "Unrecognised failure. Error lines from the switch:"
+    grep -iE 'error|fatal|failed' "$log" | tail -5 | sed 's/^/      /' || true
+    err "Full output: $LOG_FILE"
   fi
   rm -f "$log"
+  return "$rc"
 }
 
 info "Activating configuration..."
+# Activation failure must reach the exit status. Previously run_darwin_rebuild
+# swallowed it (its last statement was `rm -f`, always 0), so a switch that died
+# mid-activation still printed "Done." and exited 0 — the script reporting
+# success for a system that was never fully switched.
+ACTIVATION_RC=0
 case "$OS" in
   Darwin)
     if command -v darwin-rebuild &>/dev/null; then
-      run_darwin_rebuild sudo darwin-rebuild switch --flake "$FLAKE_REF"
+      run_darwin_rebuild sudo darwin-rebuild switch --flake "$FLAKE_REF" || ACTIVATION_RC=$?
     elif [[ -n "${DARWIN_REBUILD:-}" ]]; then
-      run_darwin_rebuild sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF"
+      run_darwin_rebuild sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF" || ACTIVATION_RC=$?
     else
       nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system"
-      run_darwin_rebuild sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}"
+      run_darwin_rebuild sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}" || ACTIVATION_RC=$?
     fi
     ;;
   Linux)
     sudo nixos-rebuild switch --flake "$FLAKE_REF" \
       && ok "System updated" \
-      || warn "nixos-rebuild exited non-zero — check output above"
+      || { ACTIVATION_RC=$?; warn "nixos-rebuild exited non-zero — check output above"; }
     ;;
 esac
 echo ""
+
+# Stop here on a failed activation: do not layer App Store upgrades on top of a
+# half-switched system, and do not end with a success banner. ./result is kept
+# deliberately for inspection, matching the authentication-failure path above.
+if [[ $ACTIVATION_RC -ne 0 ]]; then
+  err "Activation FAILED (exit $ACTIVATION_RC) — the system was NOT fully switched."
+  err "Skipping App Store upgrades. Build result kept in ./result for inspection."
+  echo "Log: $LOG_FILE"
+  echo ""
+  exit "$ACTIVATION_RC"
+fi
 
 # ── Step 6b: Upgrade declared Mac App Store apps ──
 # AFTER activation, deliberately: postActivation's `mas_install` installs any
