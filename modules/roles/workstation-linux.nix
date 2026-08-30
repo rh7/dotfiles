@@ -6,6 +6,7 @@
   imports = [
     ../nixos/desktop.nix
     ../nixos/profiles/dev-apps.nix
+    ../nixos/profiles/buzz.nix
     ../nixos/profiles/security.nix
     ../nixos/profiles/communication.nix
     ../nixos/profiles/productivity.nix
