@@ -46,6 +46,10 @@ in {
 
       # Quick access
       dots = "cd ~/dotfiles && zed .";
+    } // lib.optionalAttrs (!isDarwin) {
+      # macOS muscle memory on Wayland (wl-clipboard, see modules/nixos/desktop.nix)
+      pbcopy  = "wl-copy";
+      pbpaste = "wl-paste";
     };
 
     initContent = ''
