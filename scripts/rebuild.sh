@@ -420,7 +420,13 @@ fi
 
 # Catch manual changes (dock pins, brew installs, MAS apps, defaults)
 # that 'switch' would silently overwrite. Advisory — user decides.
-if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
+#
+# audit-config-drift.sh reads dock, casks, MAS and `defaults` — all macOS-only,
+# and it bails with "macOS only." (exit 2) anywhere else. Skipping it up front
+# keeps Linux rebuilds from printing an error and a warning they can do nothing
+# about, on every single run.
+# >>> BEGIN DRIFT AUDIT >>>
+if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
   info "Auditing local state for manual drift..."
   echo ""
   AUDIT_HOST="${FLAKE_REF##*#}"
@@ -430,10 +436,21 @@ if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
     | tee "$audit_log" || audit_rc=${PIPESTATUS[0]}
 
   # Parse risky/benign counts from audit's machine-readable summary line.
-  risky=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*risky=([0-9]+).*/\1/p')
-  benign=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*benign=([0-9]+).*/\1/p')
-  informational=$(grep -E "^DRIFT_RESULT:" "$audit_log" | sed -nE 's/.*informational=([0-9]+).*/\1/p')
+  #
+  # The summary is ABSENT whenever the audit errors out (exit 2) rather than
+  # completing — a bad flake ref, a nix eval failure, the macOS-only bail. The
+  # `*)` case below exists precisely to keep going in that situation, but it
+  # never got the chance: `var=$(grep ... | sed ...)` is FATAL under
+  # `set -e` + `pipefail`, because a no-match grep exits 1 and errexit aborts
+  # the script on a failed assignment. rebuild.sh died right here, exit 1, with
+  # no message after the audit's own output — no build, no diff, no activation.
+  # Read the line once and tolerate its absence, so a failed audit stays
+  # advisory the way the case statement always intended.
+  drift_summary=$(grep -E "^DRIFT_RESULT:" "$audit_log" || true)
   rm -f "$audit_log"
+  risky=$(sed -nE 's/.*risky=([0-9]+).*/\1/p' <<<"$drift_summary")
+  benign=$(sed -nE 's/.*benign=([0-9]+).*/\1/p' <<<"$drift_summary")
+  informational=$(sed -nE 's/.*informational=([0-9]+).*/\1/p' <<<"$drift_summary")
   risky=${risky:-0}
   benign=${benign:-0}
   informational=${informational:-0}
@@ -461,6 +478,7 @@ if [[ -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; then
   esac
   echo ""
 fi
+# <<< END DRIFT AUDIT <<<
 
 # ── Step 3: Build (no sudo needed) ──
 info "Building configuration (no root required)..."
