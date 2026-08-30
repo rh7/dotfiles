@@ -16,6 +16,6 @@
 
   homebrew.brews = [
     "ollama"           # LLM CLI / inference
-    "block-goose-cli"  # Goose agent CLI (pairs with the block-goose cask)
+    # "block-goose-cli"  # → goose-cli in modules/common.nix (all machines)
   ];
 }

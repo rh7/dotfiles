@@ -20,6 +20,10 @@
     tree
     watch
 
+    # AI agents
+    opencode     # opencode.ai terminal coding agent
+    goose-cli    # Block's Goose agent CLI
+
     # Dev
     gnupg
     nixpkgs-fmt  # Nix formatter

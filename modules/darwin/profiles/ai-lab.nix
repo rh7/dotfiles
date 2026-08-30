@@ -11,5 +11,6 @@
     # enchanted — Mac App Store only
   ];
 
-  # Note: Goose, MORagents, OpenCode, Hyprnote — not in Homebrew, manual install
+  # Note: Goose and OpenCode CLIs come from nixpkgs — see modules/common.nix
+  # Note: MORagents, Hyprnote — not in Homebrew, manual install
 }
