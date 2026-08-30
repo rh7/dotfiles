@@ -23,7 +23,7 @@ let
   };
 
   # Pull the bundled .desktop entry and icons back out for desktop integration.
-  contents = pkgs.appimageTools.extractType2 { inherit pname version src; };
+  contents = pkgs.appimageTools.extract { inherit pname version src; };
 
   buzz = pkgs.appimageTools.wrapType2 {
     inherit pname version src;
