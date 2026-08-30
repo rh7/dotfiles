@@ -25,6 +25,7 @@
   environment.systemPackages = with pkgs; [
     firefox
     google-chrome
+    brave
     gnome-tweaks
     wl-clipboard    # wl-copy / wl-paste — CLI clipboard on Wayland
     xclip           # X11 fallback for XWayland apps
