@@ -13,6 +13,7 @@
 
   # Personal-specific apps (not in shared profiles)
   homebrew.casks = [
+    "home-assistant"
     "signal"
     "discord"
     "whatsapp"

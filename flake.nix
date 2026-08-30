@@ -196,6 +196,9 @@
         system = "x86_64-linux";
         username = "rouven";
         extraModules = [ ./configurations/nixos/thinkpad.nix ];
+        # Not in workstation-linux.nix: nixos-vm has no use for a Home Assistant
+        # launcher, so this stays host-scoped rather than role-wide.
+        extraHomeModules = [ ./modules/home/profiles/home-assistant.nix ];
       };
     };
 
