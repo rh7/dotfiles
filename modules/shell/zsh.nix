@@ -33,16 +33,23 @@ in {
       gb  = "git branch";
       glog = "git log --oneline --graph --decorate -20";
 
-      # Nix (uses hostname to pick the right flake config)
-      nrs = if isDarwin
+      # Nix — guarded by default (build → drift audit → nvd diff → confirm →
+      # switch). The guard is not a nicety: it holds ONE sudo authentication
+      # open for the whole run, so `brew bundle`'s root-requiring casks reuse
+      # it instead of re-prompting per cask (see modules/darwin/sudo-rebuild.nix),
+      # and it pulls first so a host cannot silently drift weeks behind main.
+      #
+      # This used to be raw darwin-rebuild, with the guard parked on the
+      # longer-to-type `nrsg`. That put the unguarded path in muscle memory and
+      # the safe one behind a deliberate choice — exactly backwards. The raw
+      # command is still here as `nrs-raw`, for when rebuild.sh is itself the
+      # thing that is broken.
+      nrs = "~/dotfiles/scripts/rebuild.sh";
+      nrsg = "~/dotfiles/scripts/rebuild.sh";   # kept: prior name, same thing
+      "nrs-raw" = if isDarwin
         then "sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)"
         else "sudo nixos-rebuild switch --flake ~/dotfiles";
       nup = "nix flake update ~/dotfiles";
-
-      # Guarded rebuild (build → drift audit → nvd diff → confirm → switch).
-      # Use instead of `nrs` when you want to review/approve changes first —
-      # `nrs` is raw darwin-rebuild and skips the drift guard entirely.
-      nrsg = "~/dotfiles/scripts/rebuild.sh";
 
       # Quick access
       dots = "cd ~/dotfiles && zed .";

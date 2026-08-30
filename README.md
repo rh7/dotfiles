@@ -73,17 +73,22 @@ package list — and say so.
 ## Daily Usage
 
 ```bash
-./scripts/rebuild.sh              # safe rebuild: pull → audit drift → build → preview → one auth → switch
+nrs                               # rebuild: pull → audit drift → build → preview diff → confirm → switch
+nrs-raw                           # escape hatch: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
 ./scripts/rebuild.sh --plan-only  # what's pending? no build, no activation, no root
-nrs                               # raw alias: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
 nup                               # update flake inputs
 dots                              # open dotfiles in Zed
 ```
 
-**Prefer `rebuild.sh`** — it pulls latest, runs the drift audit (advisory; only
-prompts when risky `+` drift is detected), shows an `nvd` diff of the package
-closure, and asks for confirmation before activation. `nrs` skips all of that
-and switches directly.
+`nrs` is `./scripts/rebuild.sh` (`nrsg` still works as an older name for it).
+It pulls latest, runs the drift audit (advisory; only prompts when risky `+`
+drift is detected), shows an `nvd` diff of the package closure, and asks for
+confirmation before activation. It also holds a single sudo authentication open
+for the whole run, so `brew bundle`'s root-requiring casks reuse it rather than
+re-prompting once per cask — see `modules/darwin/sudo-rebuild.nix`.
+
+**`nrs-raw` skips all of that** and switches directly. Reach for it only when
+`rebuild.sh` is itself the thing that is broken.
 
 Every `rebuild.sh` run is mirrored to a logfile at
 `~/.local/state/dotfiles/rebuild/<host>-<timestamp>.log` (last 20 per host
