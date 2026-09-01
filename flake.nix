@@ -101,7 +101,7 @@
       };
 
     # ── Helper: Linux (Home Manager standalone — for OrbStack/servers) ──────
-    mkLinux = { username ? "rouvenheck", system ? "aarch64-linux" }:
+    mkLinux = { username ? "rouvenheck", system ? "aarch64-linux", extraModules ? [ ] }:
       home-manager.lib.homeManagerConfiguration {
         pkgs = nixpkgs.legacyPackages.${system};
         extraSpecialArgs = { inherit username; };
@@ -112,7 +112,7 @@
             home.username = username;
             home.homeDirectory = "/home/${username}";
           }
-        ];
+        ] ++ extraModules;
       };
 
   in {
@@ -207,6 +207,8 @@
       "linux" = mkLinux { username = "rouvenheck"; };           # default (OrbStack)
       "linux-rouven" = mkLinux { username = "rouven"; };        # alternate username
       "linux-x86" = mkLinux { username = "rouvenheck"; system = "x86_64-linux"; };
+      # Omarchy 4 guest (Arch Linux ARM in UTM) — CLI only; Omarchy owns the desktop.
+      "omarchy" = mkLinux { extraModules = [ ./configurations/linux/omarchy.nix ]; };
     };
   };
 }

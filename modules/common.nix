@@ -1,5 +1,8 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
+let
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+in
 {
   # ── CLI tools available on every machine ─────────────────────────────────
   home.packages = with pkgs; [
@@ -82,13 +85,19 @@
   #   nix-direnv.enable = true;
   # };
 
-  # ── Desktop shortcut — double-click to rebuild ───────────────────────────
-  home.file."Desktop/Update.command" = {
-    text = ''
-      #!/bin/bash
-      ~/dotfiles/scripts/rebuild.sh
-    '';
-    executable = true;
+  # ── Desktop shortcut — double-click to rebuild (macOS only) ─────────────
+  # rebuild.sh drives darwin-rebuild, so the shortcut is meaningless on a
+  # Linux host — it used to land on OrbStack and Omarchy as a dud that fails
+  # the moment you double-click it. Guarded the same way zsh.nix guards
+  # .mackup.cfg.
+  home.file = lib.mkIf isDarwin {
+    "Desktop/Update.command" = {
+      text = ''
+        #!/bin/bash
+        ~/dotfiles/scripts/rebuild.sh
+      '';
+      executable = true;
+    };
   };
 
   # ── Shell — import from shell module ─────────────────────────────────────
