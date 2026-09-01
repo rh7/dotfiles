@@ -5,6 +5,8 @@ let
   localBin = "${config.home.homeDirectory}/.local/bin";
 in
 {
+  imports = [ ./omp-coordinator.nix ];
+
   # ── Dev toolchains (shared across all developer machines) ─────────────────
   home.packages = with pkgs; [
     # Node

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config="${OMP_COORDINATOR_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/omp/coordinator-lean.yml}"
+root="${OMP_COORDINATOR_ROOT:-$HOME/repo-management}"
+
+# OMP overlays replace arrays but retain every unmentioned global setting. Append
+# ours so it wins over any caller-supplied overlay without relocating auth/state.
+export PI_CONFIG_FILES="${PI_CONFIG_FILES:+$PI_CONFIG_FILES:}$config"
+
+exec omp \
+  --cwd "$root" \
+  --model coordinator \
+  "$@"
