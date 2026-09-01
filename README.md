@@ -80,6 +80,47 @@ nup                               # update flake inputs
 dots                              # open dotfiles in Zed
 ```
 
+### Lean OMP coordinator
+
+`omp-coordinator` starts the coordinator role in `~/repo-management` with the
+normal OMP profile, auth, model roles, Mnemopi backend, tools, rules, and skills.
+Its one process-only overlay replaces `workspace.additionalDirectories` with an
+empty list; it does not edit `~/.omp/agent`, select an isolated OMP profile, or
+disable skill discovery. Home Manager installs the tracked launcher and overlay.
+
+```bash
+omp-coordinator                                  # repo-management only
+omp-coordinator --add-dir "$HOME/server-platform" # add the active sibling at launch
+
+# Or add it after launch, before reading or writing that repository:
+/add-dir ~/server-platform
+```
+
+If repo-management is cloned elsewhere, set `OMP_COORDINATOR_ROOT` to its
+absolute path. All other OMP arguments pass through unchanged.
+
+Startup A/B on 2026-09-01 used OMP 18.0.11,
+`openai-codex/gpt-5.6-sol:high`, and its 272,000-token window:
+
+| Launch | First-turn input | Window |
+|--------|-----------------:|-------:|
+| Normal coordinator with seven global sibling roots | 72,450 | 26.64% |
+| Lean coordinator, fresh `--no-session` process | 38,682 | 14.22% |
+
+A separate fresh process with `--add-dir "$HOME/server-platform"` read that
+sibling's Linux-server scope boundary before any tool call.
+
+The lean probe resolved `workspace.additionalDirectories` to `[]`, retained the
+`Portfolio agent guide` repo-management instructions and Mnemopi, and used this
+worktree-local invocation (no install or live config mutation):
+
+```bash
+OMP_COORDINATOR_CONFIG="$PWD/modules/home/profiles/omp-coordinator.yml" \
+OMP_COORDINATOR_ROOT="$HOME/repo-management" \
+./scripts/omp-coordinator -p --no-session --mode json --max-time 3m \
+  'Do not use tools. From startup instructions only, output exactly: REPO_HEADING=<the H1 heading of the current repository instructions>; ROOTS=<comma-separated additional workspace roots, or none>.'
+```
+
 `nrs` is `./scripts/rebuild.sh` (`nrsg` still works as an older name for it).
 It pulls latest, runs the drift audit (advisory; only prompts when risky `+`
 drift is detected), shows an `nvd` diff of the package closure, and asks for
