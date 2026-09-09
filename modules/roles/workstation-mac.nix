@@ -17,8 +17,6 @@
 
   homebrew.casks = [
     "home-assistant"
-    "istat-menus"
-    "stremio"
   ];
 
   # Mac App Store apps — mas_install helper defined in modules/darwin/mas.nix.
