@@ -4,7 +4,6 @@
   # ── Communication apps ───────────────────────────────────────────────────
   homebrew.casks = [
     "telegram"
-    "franz"
     "signal"
     "discord"
     "element"

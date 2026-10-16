@@ -103,7 +103,6 @@ in {
       git
       zsh
       telegram_macos
-      franz
       spotify
       wezterm
       starship

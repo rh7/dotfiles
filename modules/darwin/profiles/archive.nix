@@ -27,6 +27,9 @@
   #   "anaconda"         # Python — using uv instead
   #
   # Communication:
+  #   "franz"            # multi-messenger. Removed 2026-10-16 — usage audit
+  #                      # showed no launch and no prefs activity in ~200 days.
+  #                      # Its mackup sync entry was dropped from zsh.nix too.
   #   "session"          # onion-routing messenger (com.loki-project.messenger-desktop).
   #                      # Removed 2026-08-22 — not used. Do NOT confuse with
   #                      # "Session Pomodoro Focus Timer" (MAS 1521432881,
@@ -70,4 +73,10 @@
   # Dev tools:
   #   "mongodb-compass"  # barely used
   #   "langgraph-studio" # in ai-lab.nix if needed
+  #
+  # Mac App Store (these are `mas_install ID "Name"` lines, not casks):
+  #   mas_install 539883307 "LINE"   # messenger. Removed 2026-10-16 — usage
+  #                                  # audit showed last launch ~126 days ago.
+  #                                  # Was never declared; it predated the
+  #                                  # flake and showed up only as audit drift.
 }
