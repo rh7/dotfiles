@@ -40,6 +40,7 @@
           # app firewall OFF the Mac Studio config-service host (#93).
           ./modules/darwin/homebrew.nix
           ./modules/darwin/mas.nix
+          ./modules/darwin/xcode-license.nix
           role
           home-manager.darwinModules.home-manager
           {
