@@ -9,13 +9,23 @@
   # had to be remembered, per machine, and again after every Xcode upgrade.
   #
   # This is a `preActivation` script, deliberately. nix-darwin runs
-  # activationScripts in a fixed order:
+  # activationScripts in a fixed order (modules/system/activation-scripts.nix):
   #
-  #   preActivation → … → mas → homebrew → postActivation
+  #   preActivation → … → homebrew → postActivation
   #
   # so preActivation is the only hook that lands BEFORE the Homebrew bundle
-  # and can therefore unblock the same run. postActivation (where the rest of
-  # this repo's shellouts live) would only help the run after next.
+  # and can therefore unblock the same run. postActivation — where the rest of
+  # this repo's shellouts live, INCLUDING every `mas_install` — runs after it,
+  # and would only help the run after next.
+  #
+  # That ordering leaves one gap, on purpose. The very first activation to
+  # install Xcode does so from postActivation's `mas_install`, i.e. after
+  # Homebrew has already run and after this hook has already decided there was
+  # nothing to accept. rebuild.sh step 6b does not cover it either: a
+  # just-installed app is current, so it is never in `declared_outdated_mas`.
+  # So a brand-new host still gets one Homebrew-less switch, and self-heals on
+  # the next rebuild. Closing that would mean moving the Xcode install itself
+  # ahead of Homebrew, which is a much bigger change than the bug deserves.
   #
   # Activation already runs as root, so no extra sudo and no extra prompt.
   #
@@ -41,7 +51,12 @@
       # Never abort activation over this: a failure here degrades to the same
       # broken-Homebrew state we had before, and rebuild.sh already detects
       # that and prints the manual command.
-      if /usr/bin/xcodebuild -license accept >/dev/null 2>&1; then
+      # `</dev/null` is load-bearing: output is discarded, so if any future
+      # Xcode ever asks for a typed confirmation here (bare `-license` does
+      # already), activation would otherwise hang forever on an invisible
+      # prompt with no timeout anywhere in the chain. Closing stdin makes that
+      # fail fast into the WARN branch below, which is the intended fallback.
+      if /usr/bin/xcodebuild -license accept </dev/null >/dev/null 2>&1; then
         echo "[OK]   Xcode license accepted."
       else
         echo "[WARN] Could not accept the Xcode license — Homebrew will be skipped."
