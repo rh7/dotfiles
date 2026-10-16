@@ -635,7 +635,12 @@ run_darwin_rebuild() {
   # rather than being a second, independent problem.
   if $has_xcode_fail; then
     err "Xcode's license has not been accepted, so Homebrew refused to run."
-    err "NO cask was processed this run. Accept it once, then re-run:"
+    err "NO cask was processed this run."
+    # Activation accepts the license automatically before the Homebrew phase
+    # (modules/darwin/xcode-license.nix). Reaching this branch means that
+    # auto-accept did not take, so the manual command is a real escalation now
+    # rather than the routine first-run step it used to be.
+    err "Activation's auto-accept did not take. Run by hand, then re-run:"
     err "    sudo xcodebuild -license accept"
   fi
   if $has_mas_fail; then
@@ -745,6 +750,41 @@ elif [[ "$OS" == "Darwin" ]]; then
         done <<<"$mas_to_upgrade"
         if [[ ${#mas_failed[@]} -gt 0 ]]; then
           warn "App Store apps not upgraded: ${mas_failed[*]}"
+        fi
+
+        # An Xcode upgrade revokes the license agreement, and Homebrew refuses
+        # to run at all while it is unaccepted. Activation already accepts it
+        # up front (modules/darwin/xcode-license.nix, a preActivation hook),
+        # but that ran BEFORE this step — so an Xcode upgraded here would
+        # silently break the NEXT rebuild's entire Homebrew phase. Re-check and
+        # re-accept now, while the run's sudo timestamp is still warm, so the
+        # breakage never reaches the next run.
+        #
+        # Probe is Homebrew's own test, matched on OUTPUT and captured rather
+        # than piped: `xcrun clang` exits 1 either way (no input files), and
+        # under `set -o pipefail` a `| grep -q` would inherit that and never
+        # fire. Same reasoning as modules/darwin/xcode-license.nix.
+        xcode_probe=$(/usr/bin/xcrun clang 2>&1 || true)
+        if [[ "$xcode_probe" == *license* ]]; then
+          info "Xcode was upgraded — re-accepting its license for Homebrew..."
+          # `sudo -n` and a kept stderr, both deliberately. This is the very
+          # last thing rebuild.sh does, and the keep-alive subshell exits for
+          # good the first time `sudo -n -v` fails — e.g. a cask postinstall
+          # ran `sudo -k` earlier in the run. A plain `sudo … >/dev/null 2>&1`
+          # would then block on a password prompt that has been redirected to
+          # nowhere: a silent hang at the end of a long rebuild. Non-interactive
+          # turns that into an immediate, visible failure, and keeping stderr
+          # means the WARN below says what actually went wrong.
+          # `</dev/null` guards the same way against xcodebuild itself asking.
+          if xcode_err=$(sudo -n /usr/bin/xcodebuild -license accept </dev/null 2>&1); then
+            ok "Xcode license accepted"
+          else
+            warn "Could not accept the Xcode license — the next rebuild will skip Homebrew."
+            if [[ -n "$xcode_err" ]]; then
+              warn "  ${xcode_err%%$'\n'*}"
+            fi
+            warn "Run once by hand: sudo xcodebuild -license accept"
+          fi
         fi
         echo ""
       fi
