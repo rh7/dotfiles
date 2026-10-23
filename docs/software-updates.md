@@ -7,7 +7,7 @@ cover, and the traps that are easy to re-introduce.
 
 | Mechanism | Covers | Runs |
 |---|---|---|
-| `rebuild.sh` | Nix closure, declared Homebrew formulae + casks, declared App Store apps | When you run it |
+| `rebuild.sh` | Nix closure, declared Homebrew formulae + casks, declared App Store apps (upgrades: critical list by default, see below) | When you run it |
 | Weekly LaunchAgent (`com.rh7.weekly-update`) | Declared Homebrew **formulae** only | Mondays 10:00 |
 | Nothing | **macOS system updates**, **`flake.lock`**, undeclared packages | — |
 
@@ -18,7 +18,9 @@ never touched by design.
 ## Commands
 
 ```bash
-./scripts/rebuild.sh                       # build → plan → one auth → activate
+./scripts/rebuild.sh                       # build → plan → one auth → activate → upgrade critical
+./scripts/rebuild.sh --upgrade=all         # ...and upgrade everything declared and outdated
+./scripts/rebuild.sh --no-upgrade          # install/switch only; upgrade nothing
 ./scripts/rebuild.sh --plan-only           # what would change; no build, no root
 ./scripts/rebuild.sh --build-only          # validate the config compiles
 ./scripts/rebuild.sh --yes                 # skip the confirm prompt
@@ -30,6 +32,34 @@ nup                                        # update flake inputs (own PR + revie
 `--plan-only` is the fast "what's pending?" check. It needs no root and upgrades
 nothing, but it is **not read-only** — it runs `brew update`, which touches the
 network and Homebrew's local metadata.
+
+## Which upgrades a rebuild performs
+
+Activation itself never upgrades (`homebrew.onActivation.upgrade = false`); it
+only installs what is missing. `rebuild.sh` then upgrades the declared,
+outdated packages that `--upgrade` selects, as the user, after the switch:
+
+| Mode | Upgrades |
+|---|---|
+| `--upgrade=critical` (default) | Only `dotfiles.homebrew.criticalUpgrades` — browsers, password/encryption, VPN, messengers. Edit the list in `modules/darwin/homebrew.nix`; profiles can append. App Store ids count if listed. |
+| `--upgrade=all` | Everything declared and outdated, App Store apps included |
+| `--upgrade=none` / `--no-upgrade` | Nothing |
+
+The plan lists what each mode **defers**, so an app that stays old is explained
+on screen. Homebrew has no concept of a security update; the critical list is a
+curated stand-in.
+
+Why not leave upgrades in activation:
+
+- **A runtime flag cannot reach it.** `onActivation.upgrade` is baked into the
+  activation script, and brew runs there under `sudo --preserve-env=PATH`, which
+  strips `HOMEBREW_BUNDLE_NO_UPGRADE` or anything else a flag could set.
+- **One bad download failed the whole switch.** On a flaky network 20 cask
+  downloads failed, `brew bundle` exited 1, and activation reported failure and
+  skipped the App Store step. Now a failed upgrade costs that package only, and
+  the run names what is still outdated.
+
+A plain `darwin-rebuild switch` therefore upgrades nothing.
 
 ## One authentication per rebuild
 
