@@ -5,6 +5,8 @@
 #   rebuild.sh              # interactive: build → diff → confirm → switch
 #   rebuild.sh --yes        # auto-confirm (still needs you to authenticate)
 #   rebuild.sh --build-only # just build, don't switch
+#   rebuild.sh --upgrade=all  # upgrade every declared outdated package
+#   rebuild.sh --no-upgrade   # install/switch only, upgrade nothing
 #
 # This script avoids blind sudo by showing exactly what will change
 # before asking for root confirmation.
@@ -17,6 +19,11 @@ AUTO_CONFIRM=false
 BUILD_ONLY=false
 PLAN_ONLY=false
 FORCE_MAS=false
+# Which declared outdated packages this run upgrades (see homebrew_plan):
+#   critical — only dotfiles.homebrew.criticalUpgrades (modules/darwin/homebrew.nix)
+#   all      — everything declared and outdated
+#   none     — nothing; activation still installs missing packages
+UPGRADE_MODE=critical
 FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
 
 # ── Colors ──
@@ -88,15 +95,24 @@ while [[ $# -gt 0 ]]; do
     --build-only)    BUILD_ONLY=true; shift ;;
     --plan-only)     PLAN_ONLY=true; shift ;;
     --upgrade-mas)   FORCE_MAS=true; shift ;;
+    --upgrade=*)     UPGRADE_MODE="${1#--upgrade=}"; shift ;;
+    --upgrade)       UPGRADE_MODE="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
+    --no-upgrade)    UPGRADE_MODE=none; shift ;;
     --flake)         FLAKE_REF="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: rebuild.sh [--yes] [--build-only|--plan-only] [--flake REF]"
+      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--flake REF]"
       echo ""
       echo "  --yes, -y      Auto-confirm (skip interactive approval). Skips"
       echo "                 App Store upgrades unless --upgrade-mas is given,"
       echo "                 since those must not run unattended."
       echo "  --upgrade-mas  Upgrade declared App Store apps even with --yes."
       echo "                 Only pass this when you are at the machine."
+      echo "  --upgrade=MODE Which declared outdated packages to upgrade:"
+      echo "                   critical  (default) only the curated list in"
+      echo "                             modules/darwin/homebrew.nix"
+      echo "                   all       everything declared and outdated"
+      echo "                   none      nothing (same as --no-upgrade)"
+      echo "  --no-upgrade   Install missing packages and switch; upgrade nothing."
       echo "  --build-only   Build only, don't activate"
       echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
       echo "                 activation, no upgrades, no root. Does refresh brew"
@@ -111,6 +127,11 @@ while [[ $# -gt 0 ]]; do
     *) err "Unknown argument: $1"; exit 1 ;;
   esac
 done
+
+case "$UPGRADE_MODE" in
+  critical|all|none) ;;
+  *) err "--upgrade must be critical, all or none (got '${UPGRADE_MODE}')"; exit 1 ;;
+esac
 
 # Rejected rather than silently resolved: --plan-only short-circuits before the
 # build, so passing both would quietly ignore --build-only.
@@ -213,10 +234,11 @@ declared_outdated_mas() {
 # and upgrades nothing, but it is NOT read-only: `brew update` below mutates
 # Homebrew's local repo/metadata and hits the network.
 #
-# `homebrew.onActivation.upgrade = true` upgrades outdated packages during
-# activation. That is the bulk of a long rebuild and the part that used to
-# happen invisibly behind context-free Touch ID prompts, so surface it BEFORE
-# asking for authentication.
+# Upgrading outdated packages is the bulk of a long rebuild and the part that
+# used to happen invisibly behind context-free Touch ID prompts, so surface it
+# BEFORE asking for authentication. Activation no longer upgrades anything
+# (homebrew.onActivation.upgrade = false); this plan SELECTS the upgrades, per
+# --upgrade, and Step 6a performs exactly that selection after the switch.
 #
 # CRUCIALLY: `brew bundle` only touches what the Brewfile DECLARES, while
 # `brew outdated` lists everything installed. Reporting raw `brew outdated`
@@ -228,6 +250,57 @@ declared_outdated_mas() {
 # `brew update` refreshes metadata and needs no root. Activation would run it
 # anyway (autoUpdate = true), so doing it here costs nothing and makes the
 # preview accurate rather than stale.
+# ── Upgrade selection (--upgrade=critical|all|none) ──
+# The critical list is loaded once and kept in a global (not a subshell
+# capture) so both the plan and the post-activation App Store step see the same
+# answer. A failed evaluation is NOT an empty list: CRITICAL_KNOWN=false makes
+# critical mode select nothing, and says so, rather than silently upgrading
+# nothing while claiming the list was empty — or, worse, falling back to all.
+CRITICAL_NAMES=""
+CRITICAL_KNOWN=false
+CRITICAL_LOADED=false
+load_critical_names() {
+  if $CRITICAL_LOADED; then
+    if $CRITICAL_KNOWN; then return 0; fi
+    return 1
+  fi
+  CRITICAL_LOADED=true
+  ensure_declared_lib
+  local names
+  if names=$(critical_upgrade_names "$FLAKE_REF"); then
+    CRITICAL_NAMES="$names"
+    CRITICAL_KNOWN=true
+  else
+    warn "Could not evaluate dotfiles.homebrew.criticalUpgrades for $FLAKE_REF"
+    warn "  critical mode will upgrade NOTHING this run (pass --upgrade=all to override)"
+  fi
+  $CRITICAL_KNOWN
+}
+
+# select_by_mode — names on stdin (one per line), prints those this run's
+# UPGRADE_MODE upgrades. awk rather than `grep -Fx || true`, which would mask a
+# real grep error as "nothing matched".
+select_by_mode() {
+  case "$UPGRADE_MODE" in
+    all)  awk 'NF' ;;
+    none) cat >/dev/null ;;
+    critical)
+      if load_critical_names; then
+        awk 'NR==FNR { if (NF) c[$0]=1; next } NF && ($0 in c)' \
+          <(printf '%s\n' "$CRITICAL_NAMES") -
+      else
+        cat >/dev/null
+      fi
+      ;;
+  esac
+}
+
+# What the plan promised and the post-activation step performs. Set ONLY by
+# homebrew_plan, from a fully known plan; empty otherwise, so an unknown plan
+# upgrades nothing rather than guessing.
+BREW_UPGRADE_FORMULAE=""
+BREW_UPGRADE_CASKS=""
+
 homebrew_plan() {
   if [[ "$OS" != "Darwin" ]] || ! command -v brew &>/dev/null; then
     return 0
@@ -300,10 +373,22 @@ homebrew_plan() {
     if [[ -s "$PLAN_TMP/outdated_casks" ]]; then
       echo "    outdated casks:    $(tr '\n' ' ' <"$PLAN_TMP/outdated_casks")"
     fi
-    echo "    (some of these may or may not be upgraded by activation)"
+    echo "    (no Homebrew upgrades will run — the selection cannot be trusted)"
   else
-    will_formulae=$(intersect_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" | tr '\n' ' ' | sed 's/ $//')
-    will_casks=$(intersect_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
+    intersect_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" >"$PLAN_TMP/will_formulae"
+    intersect_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" >"$PLAN_TMP/will_casks"
+    # Declared + outdated, then narrowed by --upgrade. What is not selected is
+    # DEFERRED and listed, so "why is X still old?" always has an answer.
+    # Critical names are loaded up front, NOT lazily inside select_by_mode:
+    # its stdout is redirected into the selection file, so a warning printed
+    # from there would land in the file as a "package name".
+    if [[ "$UPGRADE_MODE" == critical ]]; then load_critical_names || true; fi
+    select_by_mode <"$PLAN_TMP/will_formulae" >"$PLAN_TMP/sel_formulae"
+    select_by_mode <"$PLAN_TMP/will_casks" >"$PLAN_TMP/sel_casks"
+    BREW_UPGRADE_FORMULAE=$(tr '\n' ' ' <"$PLAN_TMP/sel_formulae" | sed 's/ $//')
+    BREW_UPGRADE_CASKS=$(tr '\n' ' ' <"$PLAN_TMP/sel_casks" | sed 's/ $//')
+    defer_formulae=$(subtract_lines "$PLAN_TMP/will_formulae" "$PLAN_TMP/sel_formulae" | tr '\n' ' ' | sed 's/ $//')
+    defer_casks=$(subtract_lines "$PLAN_TMP/will_casks" "$PLAN_TMP/sel_casks" | tr '\n' ' ' | sed 's/ $//')
     # Undeclared formulae are narrowed to the requested set — a dependency is
     # not drift. On failure to determine that set, report UNFILTERED rather than
     # intersecting against an empty file: intersecting would silently produce
@@ -318,17 +403,26 @@ homebrew_plan() {
     fi
     skip_casks=$(subtract_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" | tr '\n' ' ' | sed 's/ $//')
 
-    n_will=$(wc -w <<<"$will_formulae $will_casks" | tr -d ' ')
+    n_sel=$(wc -w <<<"$BREW_UPGRADE_FORMULAE $BREW_UPGRADE_CASKS" | tr -d ' ')
+    n_defer=$(wc -w <<<"$defer_formulae $defer_casks" | tr -d ' ')
     n_skip=$(wc -w <<<"$skip_formulae $skip_casks" | tr -d ' ')
 
-    if [[ "$n_will" -eq 0 ]]; then
+    if [[ "$n_sel" -eq 0 && "$n_defer" -eq 0 ]]; then
       ok "No declared Homebrew packages need upgrading"
-    else
-      warn "Activation will UPGRADE $n_will declared package(s):"
+    fi
+    if [[ "$n_sel" -gt 0 ]]; then
+      warn "Will UPGRADE $n_sel declared package(s) after activation (--upgrade=$UPGRADE_MODE):"
       # if/fi, not `[[ ]] && echo` — under `set -e` a false test would abort here.
-      if [[ -n "$will_formulae" ]]; then echo "    formulae: $will_formulae"; fi
-      if [[ -n "$will_casks" ]]; then echo "    casks:    $will_casks"; fi
+      if [[ -n "$BREW_UPGRADE_FORMULAE" ]]; then echo "    formulae: $BREW_UPGRADE_FORMULAE"; fi
+      if [[ -n "$BREW_UPGRADE_CASKS" ]]; then echo "    casks:    $BREW_UPGRADE_CASKS"; fi
       echo "    (Homebrew may also upgrade undeclared dependencies of these.)"
+    fi
+    if [[ "$n_defer" -gt 0 ]]; then
+      if [[ "$n_sel" -gt 0 ]]; then echo ""; fi
+      info "$n_defer declared outdated package(s) DEFERRED by --upgrade=$UPGRADE_MODE:"
+      if [[ -n "$defer_formulae" ]]; then echo "    formulae: $defer_formulae"; fi
+      if [[ -n "$defer_casks" ]]; then echo "    casks:    $defer_casks"; fi
+      echo "    (run 'rebuild.sh --upgrade=all' to include them)"
     fi
 
     # Not a warning: undeclared packages are yours to manage by hand, and
@@ -350,22 +444,31 @@ homebrew_plan() {
   # script (a missing `mas` silently killed the whole run), and command
   # substitution would put the function in a subshell where its temp-dir
   # bookkeeping cannot reach the EXIT trap.
-  local mas_ids rc
+  local mas_ids mas_sel mas_defer rc
   if declared_outdated_mas; then rc=0; else rc=$?; fi
   mas_ids="$MAS_OUTDATED"
   case $rc in
     0)
       if [[ -n "$mas_ids" ]]; then
+        if [[ "$UPGRADE_MODE" == critical ]]; then load_critical_names || true; fi
+        mas_sel=$(select_by_mode <<<"$mas_ids")
+        mas_defer=$(subtract_lines <(printf '%s\n' "$mas_ids") <(printf '%s\n' "$mas_sel") | awk 'NF')
         # Describe what will ACTUALLY happen. The gate below skips App Store
         # upgrades under --yes without --upgrade-mas, so promising an upgrade
         # here would be the same class of lie as the original Homebrew preview.
-        if $AUTO_CONFIRM && ! $FORCE_MAS; then
-          info "$(wc -w <<<"$mas_ids" | tr -d ' ') declared App Store app(s) outdated — will be SKIPPED:"
-          echo "    mas: $(tr '\n' ' ' <<<"$mas_ids" | sed 's/ $//')"
-          echo "    (--yes without --upgrade-mas; run interactively to upgrade)"
-        else
-          warn "Will also UPGRADE $(wc -w <<<"$mas_ids" | tr -d ' ') declared App Store app(s):"
-          echo "    mas: $(tr '\n' ' ' <<<"$mas_ids" | sed 's/ $//')"
+        if [[ -n "$mas_sel" ]]; then
+          if $AUTO_CONFIRM && ! $FORCE_MAS; then
+            info "$(wc -w <<<"$mas_sel" | tr -d ' ') declared App Store app(s) outdated — will be SKIPPED:"
+            echo "    mas: $(tr '\n' ' ' <<<"$mas_sel" | sed 's/ $//')"
+            echo "    (--yes without --upgrade-mas; run interactively to upgrade)"
+          else
+            warn "Will also UPGRADE $(wc -w <<<"$mas_sel" | tr -d ' ') declared App Store app(s):"
+            echo "    mas: $(tr '\n' ' ' <<<"$mas_sel" | sed 's/ $//')"
+          fi
+        fi
+        if [[ -n "$mas_defer" ]]; then
+          info "$(wc -w <<<"$mas_defer" | tr -d ' ') declared App Store app(s) DEFERRED by --upgrade=$UPGRADE_MODE:"
+          echo "    mas: $(tr '\n' ' ' <<<"$mas_defer" | sed 's/ $//')"
         fi
       else
         ok "No declared App Store apps need upgrading"
@@ -624,7 +727,7 @@ run_darwin_rebuild() {
   # it fires for cask install failures (e.g. version-mismatch on adopt).
   local has_brew_fail=false has_mas_fail=false has_nix_fail=false
   local has_xcode_fail=false has_secrets_fail=false
-  grep -qiE 'brew bundle failed|brewfile dependency failed|installing .* has failed' "$log" && has_brew_fail=true
+  grep -qiE 'brew bundle`? failed|brewfile dependenc(y|ies) failed|(installing|upgrading) .* has failed' "$log" && has_brew_fail=true
   grep -qiE 'failed to install .* from app store' "$log" && has_mas_fail=true
   grep -qiE 'error: builder for|error: build of' "$log" && has_nix_fail=true
   grep -qiE 'not agreed to the xcode license' "$log" && has_xcode_fail=true
@@ -704,6 +807,55 @@ if [[ $ACTIVATION_RC -ne 0 ]]; then
   exit "$ACTIVATION_RC"
 fi
 
+# ── Step 6a: Upgrade the Homebrew packages the plan selected ──
+# Activation only installs (homebrew.onActivation.upgrade = false — see
+# modules/darwin/homebrew.nix for why it cannot select upgrades itself), so the
+# upgrades --upgrade picked happen here, as the user, after a successful switch.
+# Being outside activation also means a failed download — routine on a flaky
+# network — costs that one package instead of failing the whole switch.
+#
+# Exactly the list the plan showed before you authenticated, not recomputed:
+# the run does what it promised. Casks whose installer needs root reuse this
+# run's sudo timestamp (timestamp_type=global, modules/darwin/sudo-rebuild.nix).
+# HOMEBREW_NO_AUTO_UPDATE: the plan and activation both just ran `brew update`.
+if [[ "$OS" == "Darwin" && -n "$BREW_UPGRADE_FORMULAE$BREW_UPGRADE_CASKS" ]]; then
+  echo -e "${BOLD}━━━ Homebrew upgrades (--upgrade=$UPGRADE_MODE) ━━━${NC}"
+  echo ""
+  brew_upgrade_failed=false
+  # Unquoted on purpose: space-separated package names.
+  # shellcheck disable=SC2086
+  if [[ -n "$BREW_UPGRADE_FORMULAE" ]]; then
+    HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade --formula $BREW_UPGRADE_FORMULAE || brew_upgrade_failed=true
+  fi
+  # shellcheck disable=SC2086
+  if [[ -n "$BREW_UPGRADE_CASKS" ]]; then
+    HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade --cask $BREW_UPGRADE_CASKS || brew_upgrade_failed=true
+  fi
+  echo ""
+  if $brew_upgrade_failed; then
+    # Name what is STILL outdated rather than echoing brew's exit status, so
+    # the summary is a re-runnable list instead of "something failed".
+    still_outdated=""
+    # shellcheck disable=SC2086
+    if [[ -n "$BREW_UPGRADE_FORMULAE" ]]; then
+      still_outdated+=" $(brew outdated --formula --quiet $BREW_UPGRADE_FORMULAE 2>/dev/null | tr '\n' ' ' || true)"
+    fi
+    # shellcheck disable=SC2086
+    if [[ -n "$BREW_UPGRADE_CASKS" ]]; then
+      still_outdated+=" $(brew outdated --cask --quiet $BREW_UPGRADE_CASKS 2>/dev/null | tr '\n' ' ' || true)"
+    fi
+    still_outdated=$(xargs <<<"$still_outdated")
+    warn "Some Homebrew upgrades failed (the system switch itself succeeded)."
+    if [[ -n "$still_outdated" ]]; then
+      warn "  still outdated: $still_outdated"
+    fi
+    warn "  Re-run to retry; downloads already completed are cached."
+  else
+    ok "Homebrew upgrades complete"
+  fi
+  echo ""
+fi
+
 # ── Step 6b: Upgrade declared Mac App Store apps ──
 # AFTER activation, deliberately: postActivation's `mas_install` installs any
 # app that is MISSING, so running this second means a freshly-declared app is
@@ -722,7 +874,9 @@ fi
 # privileged App Store upgrades. Skipped by default there, with `--upgrade-mas`
 # as an explicit "I am at the machine" override. Without this the safety
 # argument would be a comment rather than a property of the script.
-if $AUTO_CONFIRM && ! $FORCE_MAS; then
+if [[ "$UPGRADE_MODE" == none ]]; then
+  :  # --no-upgrade: the plan already listed outdated App Store apps as deferred
+elif $AUTO_CONFIRM && ! $FORCE_MAS; then
   if [[ "$OS" == "Darwin" ]]; then
     info "Skipping App Store upgrades (--yes without --upgrade-mas)."
     info "  mas can invoke sudo; run interactively, or pass --upgrade-mas."
@@ -731,7 +885,12 @@ if $AUTO_CONFIRM && ! $FORCE_MAS; then
 elif [[ "$OS" == "Darwin" ]]; then
   mas_rc=0
   declared_outdated_mas || mas_rc=$?
-  mas_to_upgrade="$MAS_OUTDATED"
+  # Same --upgrade selection the plan applied. Loaded here explicitly, not
+  # lazily inside the $(...) below: the plan may never have loaded it (e.g. no
+  # outdated apps then), and a load failure's warning would otherwise be
+  # captured as an app id and handed to `mas upgrade`.
+  if [[ "$UPGRADE_MODE" == critical ]]; then load_critical_names || true; fi
+  mas_to_upgrade=$(select_by_mode <<<"$MAS_OUTDATED")
   case $mas_rc in
     0)
       if [[ -n "$mas_to_upgrade" ]]; then

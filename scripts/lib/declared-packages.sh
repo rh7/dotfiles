@@ -64,6 +64,30 @@ declared_brew_names() {
     <<<"$raw" 2>/dev/null || return 1
 }
 
+# critical_upgrade_names <flake_ref>
+#
+# Prints dotfiles.homebrew.criticalUpgrades (modules/darwin/homebrew.nix), one
+# name per line: the packages rebuild.sh upgrades on a default
+# `--upgrade=critical` run. Callers intersect this with the DECLARED outdated
+# set, so a name the host does not declare selects nothing. Same contract as
+# above: nonzero on failure, empty output with status 0 means an empty list.
+critical_upgrade_names() {
+  local flake_ref="$1"
+  local dir="${flake_ref%#*}" host="${flake_ref##*#}"
+  local raw
+
+  raw=$(nix eval --json \
+    "${dir}#darwinConfigurations.\"${host}\".config.dotfiles.homebrew.criticalUpgrades" \
+    2>/dev/null) || return 1
+
+  jq -e 'if type=="array" then true
+         else error("criticalUpgrades was \(type), expected array") end' \
+    >/dev/null <<<"$raw" 2>/dev/null || return 1
+
+  jq -r '.[] | (strings // error("criticalUpgrades entry is not a string"))' \
+    <<<"$raw" 2>/dev/null || return 1
+}
+
 # declared_mas_ids <flake_ref>
 #
 # Prints one Mac App Store app ID per line. Returns nonzero if evaluation or

@@ -98,6 +98,17 @@ grep -q "not all Homebrew packages installed" <<<"$OUT" \
   && bad "Xcode suppresses the redundant brew line" "got: $OUT" \
   || good "Xcode suppresses the redundant brew line"
 
+# The wording brew actually prints. "`brew bundle` failed!" has backticks and
+# upgrade failures say "Upgrading X has failed!", so the original patterns
+# missed both and a plain download failure was reported as "Unrecognised".
+run_case 1 "Upgrading firefox has failed!" "\`brew bundle\` failed! 20 Brewfile dependencies failed to install"
+grep -q "brew bundle had failures" <<<"$OUT" \
+  && good "real brew-bundle wording is recognised" \
+  || bad "real brew-bundle wording is recognised" "got: $OUT"
+grep -q "Unrecognised failure" <<<"$OUT" \
+  && bad "real brew-bundle wording is not 'unrecognised'" "got: $OUT" \
+  || good "real brew-bundle wording is not 'unrecognised'"
+
 echo ""
 printf 'passed: %d   failed: %d\n\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

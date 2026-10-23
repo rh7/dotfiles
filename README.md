@@ -138,7 +138,9 @@ retained; override the directory with `REBUILD_LOG_DIR`). Useful when
 `grep -i fail <log>` to find what broke. The path is printed at the end of
 every run.
 
-A rebuild asks for **one** Touch ID, after showing what it will upgrade. A
+A rebuild asks for **one** Touch ID, after showing what it will upgrade — by
+default only a curated critical list (browsers, passwords, VPN, messengers);
+`--upgrade=all` for everything, `--no-upgrade` for nothing. A
 weekly LaunchAgent keeps declared Homebrew formulae current on its own. Neither
 covers macOS system updates or `flake.lock` — those stay manual, on purpose.
 See **[Software Updates](docs/software-updates.md)** for the full model, the
