@@ -260,7 +260,10 @@ CRITICAL_NAMES=""
 CRITICAL_KNOWN=false
 CRITICAL_LOADED=false
 load_critical_names() {
-  if $CRITICAL_LOADED; then $CRITICAL_KNOWN; return; fi
+  if $CRITICAL_LOADED; then
+    if $CRITICAL_KNOWN; then return 0; fi
+    return 1
+  fi
   CRITICAL_LOADED=true
   ensure_declared_lib
   local names
@@ -882,7 +885,11 @@ elif $AUTO_CONFIRM && ! $FORCE_MAS; then
 elif [[ "$OS" == "Darwin" ]]; then
   mas_rc=0
   declared_outdated_mas || mas_rc=$?
-  # Same --upgrade selection the plan applied (critical list loaded there).
+  # Same --upgrade selection the plan applied. Loaded here explicitly, not
+  # lazily inside the $(...) below: the plan may never have loaded it (e.g. no
+  # outdated apps then), and a load failure's warning would otherwise be
+  # captured as an app id and handed to `mas upgrade`.
+  if [[ "$UPGRADE_MODE" == critical ]]; then load_critical_names || true; fi
   mas_to_upgrade=$(select_by_mode <<<"$MAS_OUTDATED")
   case $mas_rc in
     0)
