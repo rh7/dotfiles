@@ -8,10 +8,11 @@
 # setup.sh runs `--install` right AFTER activation; without a guard that call
 # boots the declared agent out and overwrites its plist with the imperative one,
 # so the host silently runs an unmanaged schedule until the next rebuild.
-# These tests pin: a declared, deployed and loaded agent is left untouched; a
-# declared agent that is missing on disk or not loaded falls back to the
-# imperative LaunchAgent (the device must keep auditing); and a host without a
-# home-manager agent still gets the imperative LaunchAgent.
+# These tests pin: a declared, deployed agent is not overwritten and the DECLARED
+# plist is what gets (re)bootstrapped; a declared agent that is missing on disk
+# or that launchd refuses falls back to the imperative LaunchAgent (the device
+# must keep auditing); and a host without a home-manager agent still gets the
+# imperative LaunchAgent.
 #
 # The script runs for real in a sandbox HOME; `uname` and `launchctl` are stubbed
 # on PATH so the Darwin branch is exercised on any OS without touching launchd.
@@ -28,9 +29,10 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; printf '      %s\n' "$2"; fail
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Stub bin: uname reports Darwin; launchctl records calls and succeeds, except
-# that with LAUNCHCTL_UNLOADED=1 `print` fails until something is bootstrapped
-# (models a declared agent whose launchd job is not loaded).
+# Stub bin: uname reports Darwin; launchctl records every call (and, for
+# bootstrap, the CONTENT of the plist it was handed) and succeeds — except with
+# LAUNCHCTL_FAIL_FIRST_BOOTSTRAP=1, where the first bootstrap fails (models a
+# declared plist that launchd refuses to load).
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/uname" <<'EOF'
 #!/usr/bin/env bash
@@ -38,12 +40,15 @@ echo Darwin
 EOF
 cat > "$TMP/bin/launchctl" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = "print" ] && [ "${LAUNCHCTL_UNLOADED:-0}" = 1 ] \
-  && ! grep -q '^bootstrap ' "$LAUNCHCTL_LOG"; then
-  echo "$*" >> "$LAUNCHCTL_LOG"
-  exit 113
-fi
 echo "$*" >> "$LAUNCHCTL_LOG"
+if [ "$1" = "bootstrap" ]; then
+  if [ "${LAUNCHCTL_FAIL_FIRST_BOOTSTRAP:-0}" = 1 ] \
+    && [ "$(grep -c '^bootstrap ' "$LAUNCHCTL_LOG")" -eq 1 ]; then
+    echo "Bootstrap failed: 5: Input/output error" >&2
+    exit 5
+  fi
+  echo "loaded-content $(head -c 64 "$3")" >> "$LAUNCHCTL_LOG"
+fi
 exit 0
 EOF
 chmod +x "$TMP/bin/uname" "$TMP/bin/launchctl"
@@ -78,8 +83,11 @@ assert_imperative() {
 }
 
 echo ""
-echo "collector-runner --install — declared, deployed and loaded"
+echo "collector-runner --install — declared and deployed"
 
+# The label may already be loaded from a STALE imperative registration (a
+# partially failed activation); "is it loaded?" can't tell. The declared plist
+# itself must be what ends up bootstrapped.
 H1="$TMP/declared"
 make_home "$H1" deploy
 run_install "$H1"
@@ -87,24 +95,27 @@ run_install "$H1"
 [[ "$(cat "$H1/Library/LaunchAgents/$LABEL.plist")" == "declared-by-home-manager" ]] \
   && good "declared plist is not overwritten" \
   || bad "declared plist is not overwritten" "plist now: $(cat "$H1/Library/LaunchAgents/$LABEL.plist")"
-! grep -qE '^(bootout|bootstrap|unload) ' "$H1/launchctl.log" \
-  && good "declared agent is neither booted out nor re-bootstrapped" \
-  || bad "declared agent is neither booted out nor re-bootstrapped" "calls: $(cat "$H1/launchctl.log")"
+grep -q "^loaded-content declared-by-home-manager" "$H1/launchctl.log" \
+  && good "the declared plist is (re)bootstrapped, replacing any stale job" \
+  || bad "the declared plist is (re)bootstrapped, replacing any stale job" "calls: $(cat "$H1/launchctl.log")"
+[[ "$(grep -c '^bootstrap ' "$H1/launchctl.log")" -eq 1 ]] \
+  && good "no imperative agent is bootstrapped" \
+  || bad "no imperative agent is bootstrapped" "calls: $(cat "$H1/launchctl.log")"
 grep -q "declared by the active home-manager generation" <<<"$OUT" \
-  && good "says why it skipped" || bad "says why it skipped" "got: $OUT"
+  && good "says why it skipped the imperative install" || bad "says why it skipped the imperative install" "got: $OUT"
 
 echo ""
-echo "collector-runner --install — declared but NOT running (falls back)"
+echo "collector-runner --install — declared but NOT loadable (falls back)"
 
 H3="$TMP/declared-missing"
 make_home "$H3"
 run_install "$H3"
 assert_imperative "$H3" "deployed plist missing"
 
-H4="$TMP/declared-unloaded"
+H4="$TMP/declared-refused"
 make_home "$H4" deploy
-run_install "$H4" LAUNCHCTL_UNLOADED=1
-assert_imperative "$H4" "launchd job not loaded"
+run_install "$H4" LAUNCHCTL_FAIL_FIRST_BOOTSTRAP=1
+assert_imperative "$H4" "launchd refuses the declared plist"
 
 echo ""
 echo "collector-runner --install — no declared agent (imperative path)"

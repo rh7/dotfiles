@@ -263,18 +263,26 @@ install_schedule() {
   # #315). Overwriting it with the imperative plist would silently swap the
   # declared, store-pinned agent for an unmanaged one until the next rebuild
   # (setup.sh calls --install right after activation). So when the ACTIVE
-  # home-manager generation ships this label AND that exact plist is deployed
-  # AND launchd has it loaded, leave it alone. If any of those is false the
-  # declared agent is not actually running: fall through and install the
-  # imperative one so the device keeps auditing; the next rebuild re-asserts
-  # the declared agent (same Label).
+  # home-manager generation ships this label and that exact plist is deployed,
+  # (re)load THAT plist instead — a bare "is the label loaded?" check can't tell
+  # the declared job from a stale imperative registration left behind by a
+  # partially failed activation. If the declared plist is not deployed or won't
+  # load, fall through and install the imperative agent so the device keeps
+  # auditing; the next rebuild re-asserts the declared agent (same Label).
   local hm_plist="$HOME/.local/state/home-manager/gcroots/current-home/LaunchAgents/${LABEL}.plist"
   if [ "$OS" = "Darwin" ] && [ -f "$hm_plist" ]; then
-    if cmp -s "$hm_plist" "$PLIST" && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-      log "$LABEL is declared by the active home-manager generation and loaded — keeping the nix-managed agent (no imperative install)"
-      return 0
+    local hm_domain hm_out
+    hm_domain="gui/$(id -u)"
+    if cmp -s "$hm_plist" "$PLIST"; then
+      launchctl bootout "$hm_domain/$LABEL" 2>/dev/null || true
+      if hm_out="$(launchctl bootstrap "$hm_domain" "$PLIST" 2>&1)" \
+        && launchctl print "$hm_domain/$LABEL" >/dev/null 2>&1; then
+        log "$LABEL is declared by the active home-manager generation — reloaded the nix-managed agent (no imperative install)"
+        return 0
+      fi
+      log "declared $LABEL failed to load: ${hm_out:-launchctl print found no job}"
     fi
-    log "$LABEL is declared by home-manager but not deployed/loaded as declared — installing the imperative agent so audits keep running (next rebuild restores the declared one)"
+    log "$LABEL is declared by home-manager but not deployed/loadable as declared — installing the imperative agent so audits keep running (next rebuild restores the declared one)"
   fi
   local self; self="$(resolve_self)" || { log "cannot resolve runner path for schedule — aborting install"; return 1; }
   if [ "$OS" = "Darwin" ]; then
