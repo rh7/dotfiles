@@ -7,62 +7,229 @@ How to onboard, audit, and manage devices — from a brand new Mac to an existin
 There are two paths depending on whether the machine already has stuff on it:
 
 ```
-New device (blank)              Existing device (apps installed)
-  │                                │
-  └─ ./scripts/device setup       └─ ./scripts/device audit     ← discover first
-     (backup → rebuild →              │
-      secrets → register)            Review gaps & compare
-                                      │
-                                     ./scripts/device setup      ← then deploy
-                                     (backup → rebuild →
-                                      secrets → register)
+New device (blank)                 Existing device (apps installed)
+  │                                   │
+  └─ scripts/setup.sh                 ├─ audit + checklist        ← discover first
+     (Xcode CLI → hostname →          │   (Before migrating an existing Mac)
+      official Nix → build →          ├─ fold kept apps into the flake (PR → merge)
+      1Password → gh → Tailscale →    ├─ secrets recipient (needsSecrets hosts)
+      register → daily audit)         └─ ./scripts/rebuild.sh     ← then deploy
 ```
 
 **Rule: always audit existing machines before deploying.** This lets you review what's installed, decide what to keep, and add anything missing to the dotfiles before nix-darwin takes over.
 
+Throughout, `$CS` is the config service. It runs on the Mac Studio,
+`http://rouvens-mac-studio:3456`, reachable only over Tailscale. The scripts do
+not hard-code one name: `audit-device.sh` / `collector-runner.sh` resolve it from
+`$CONFIG_SERVICE_URL`, then a pin file (`/etc/rh7/config-service`, then
+`~/.config/rh7/config-service`), then the fallbacks `rouvens-mac-studio`,
+`Rouvens-Mac-Studio.local`, `100.100.241.110`, and check the answer really is
+the config service.
+
+```bash
+CS=http://rouvens-mac-studio:3456
+```
+
 ---
 
-## Path A: Brand New Device (blank Mac or Linux)
+## Path A: Brand New Device (blank Mac)
 
 ### Prerequisites
 - The device has internet access
-- You can open a browser (for Tailscale auth)
+- You can open a browser (for Tailscale / 1Password / GitHub auth)
+- **A GUI session.** `setup.sh` installs Nix with the official installer
+  (`sh <(curl -L https://nixos.org/nix/install) --daemon`). On macOS that must
+  run from Terminal.app locally or via Screen Sharing — not over SSH; headless
+  sessions block the `/etc/fstab` write the Nix APFS volume needs. The fleet does
+  **not** use Determinate Nix; `setup.sh` warns if it finds it.
+- The hostname you'll pick exists as a `darwinConfigurations` attr in
+  `flake.nix` (otherwise setup skips the Nix build and tells you what to add).
 
-### Step 1: Bootstrap
-
-```bash
-# Clone dotfiles
-git clone https://github.com/rh7/dotfiles.git ~/dotfiles
-cd ~/dotfiles
-
-# Full setup: installs Nix, rebuilds system, sets up secrets, registers with config service
-./scripts/device setup
-```
-
-That's it. The setup script handles everything:
-1. Backs up current system state (even on a blank machine, for reference)
-2. Pulls latest dotfiles
-3. Updates flake inputs
-4. Rebuilds with nix-darwin (macOS) or nixos-rebuild (Linux)
-5. Runs `setup-secrets.sh` (generates age key, encrypts secrets)
-6. Registers with the config service (if reachable)
-
-### Step 2: Post-setup
+### Step 1: Run setup
 
 ```bash
-# Install the heartbeat cron (reports to config service every 5 min)
-./scripts/device heartbeat --install
-
-# Open a NEW terminal to get the full shell config
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/setup.sh | bash
+# or: git clone https://github.com/rh7/dotfiles.git ~/dotfiles && ~/dotfiles/scripts/setup.sh
 ```
 
-### Step 3: Verify
+`setup.sh` (8 steps): Xcode CLI tools → hostname (matched against the known
+flake profiles) → official Nix (+ flakes and the macOS SSL cert in
+`/etc/nix/nix.conf`) → clone `~/dotfiles`, generate the age key
+(`~/.config/sops/age/keys.txt`) and SSH key, install Homebrew if missing, build
+and activate the host's config → 1Password → `gh auth` → Tailscale → register
+with the config service → install the daily audit schedule
+(`collector-runner.sh --install`).
+
+**Registration needs the tailnet at start.** `setup.sh` looks for the config
+service once, before the Tailscale step. On a Mac that only joins the tailnet
+during setup it prints *Config service not discovered — skipping registration*,
+and the installed runner won't audit until the next day. Once Tailscale is up,
+register immediately from the clone:
 
 ```bash
-nrs                    # should rebuild without errors
-type nrs               # should show: ~/dotfiles/scripts/rebuild.sh
-./scripts/device status # should show device info + fleet overview
+~/dotfiles/scripts/audit-device.sh --run   # audit + upload + register now
 ```
+
+An audit from a device the registry doesn't know yet creates it with role
+`unknown`, and later audits preserve that. So set the intended role for
+**every** device registered this way (`workstation`, `personal`, …) —
+`PATCH /api/devices/<hostname>` is admin-gated, so do it from an admin tailnet
+identity:
+
+```bash
+curl -s -X PATCH -H 'content-type: application/json' \
+  -d '{"role":"workstation"}' $CS/api/devices/<hostname>
+```
+
+**Secrets hosts:** a host with `needsSecrets = true` (the `mkMac` default)
+cannot complete its first activation until its age key is a recipient of
+`secrets/secrets.yaml`. With `fix/310-sops-onboarding`, `setup.sh` stops before
+activation on such a host and prints the device's public key plus the exact
+`sops-add-host.sh` command to run on an existing recipient — follow
+[Secrets](#secrets-sops-nix), then re-run `setup.sh`. **Until that PR merges,
+`setup.sh` does not stop:** it activates, treats the decryption failure as
+non-fatal and still prints *Setup Complete*. Take the `Age key` it prints at
+the end through the manual recipient step in [Secrets](#secrets-sops-nix),
+then `~/dotfiles/scripts/rebuild.sh`. `Kassie-M5-Air13` (`needsSecrets = false`,
+personal role) skips this.
+
+### Step 2: Verify
+
+Open a **new** terminal to get the full shell config, then:
+
+```bash
+type nrs                     # ~/dotfiles/scripts/rebuild.sh
+~/dotfiles/scripts/device status   # device info, age key, config service + fleet overview
+launchctl list | grep com.rh7.collector-runner   # daily audit scheduled
+```
+
+---
+
+## Secrets (sops-nix)
+
+Each host has its own age key at `~/.config/sops/age/keys.txt`;
+`secrets/secrets.yaml` is encrypted to every recipient listed in `.sops.yaml`.
+A new host can only be added by someone who can already decrypt — any current
+recipient in `.sops.yaml`: `m5-air` (admin), the Mac Studio, `rouven-m5-pro` or
+`thinkpad`. This flow arrives with **`fix/310-sops-onboarding`**
+(`scripts/sops-add-host.sh` does not exist on `main` before that PR merges).
+
+1. **On the device:** `~/dotfiles/scripts/setup-secrets.sh` (or `~/dotfiles/scripts/device secrets`).
+   It generates the age key if missing, registers its public key with the
+   config service, and verifies the device can decrypt `secrets/secrets.yaml`.
+   If it cannot yet, it exits **non-zero** and prints the public key and the
+   command to run next. It does not edit `.sops.yaml` itself.
+2. **On an existing recipient** (any host listed above), in a branch/worktree
+   of the dotfiles repo:
+
+   ```bash
+   ./scripts/sops-add-host.sh <hostname> <age1…public key printed by the device>
+   ```
+
+   It adds the key to `.sops.yaml` under the flake hostname, runs
+   `sops updatekeys` on `secrets/secrets.yaml`, verifies the result, commits on
+   a branch and opens a PR. If you omit the key it reads `age_public_key` from
+   the config service registry and asks you to confirm it matches what the
+   device printed (registration is unauthenticated, so never skip that check);
+   non-interactive runs must pass the key.
+3. **Merge** the PR.
+4. **On the device:** `git -C ~/dotfiles pull --ff-only` (the merged
+   re-encryption isn't in the local checkout yet), re-run
+   `~/dotfiles/scripts/setup-secrets.sh` (it should now decrypt), then
+   `~/dotfiles/scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
+
+**Until `fix/310-sops-onboarding` merges, don't run `setup-secrets.sh` /
+`device secrets`.** On `main` it never runs `sops updatekeys`, reports success
+regardless, and if it does manage to edit `.sops.yaml` it commits and pushes
+that straight to `main` (rh-device-management#310). Do the recipient step by
+hand on an existing recipient, in a branch/worktree:
+
+1. On the device, make sure it has a key and print the public half (`setup.sh`
+   generates one; on a Mac you haven't run it on, create it here):
+
+   ```bash
+   mkdir -p ~/.config/sops/age
+   [ -f ~/.config/sops/age/keys.txt ] || \
+     nix shell nixpkgs#age -c age-keygen -o ~/.config/sops/age/keys.txt
+   chmod 600 ~/.config/sops/age/keys.txt
+   nix shell nixpkgs#age -c age-keygen -y ~/.config/sops/age/keys.txt
+   ```
+2. In `.sops.yaml`, add `- &<hostname> <age1…>` under `keys:` and `*<hostname>`
+   to the `age: [ … ]` list of the `secrets/secrets.yaml` creation rule.
+3. `export SOPS_AGE_KEY_FILE=$HOME/.config/sops/age/keys.txt` then
+   `sops updatekeys secrets/secrets.yaml` — editing `.sops.yaml` alone does not
+   re-encrypt anything.
+4. Commit both files, PR, merge; then on the device
+   `git -C ~/dotfiles pull --ff-only && ~/dotfiles/scripts/rebuild.sh`.
+
+Manual `sops` on macOS needs the key path, because sops' macOS default is under
+`~/Library/Application Support`:
+
+```bash
+export SOPS_AGE_KEY_FILE=$HOME/.config/sops/age/keys.txt
+sops secrets/secrets.yaml
+```
+
+Hosts with `needsSecrets = false` (today only `Kassie-M5-Air13`, personal role)
+don't import sops-nix and skip this section entirely.
+
+---
+
+## Before migrating an existing Mac
+
+Run through this before the first nix-darwin activation on a Mac that already
+has apps, settings and data. `$CS` as above.
+
+- [ ] **Fresh audit** uploaded today: `./scripts/device audit` (choose run) or
+      `./scripts/audit-device.sh --run`; confirm with
+      `curl -s $CS/api/audit/$(hostname -s)`.
+- [ ] **Hostname == flake attr.** `hostname -s` must equal the
+      `darwinConfigurations` attr exactly (e.g. `rouven-air-m3`; the Mac mini is
+      `rouvens-mac-mini-m4` once `chore/326-315-flake-hygiene` merges). Set it
+      with `sudo scutil --set HostName <name>`, and the same for
+      `LocalHostName` and `ComputerName`.
+- [ ] **Escrow single-copy secrets.** Record the FileVault recovery key in
+      1Password by hand (no script covers it). Escrow the age key, SSH private
+      keys, GPG secret keys + ownertrust and any high-value `.env` files with
+      rh-device-management's `scripts/escrow-secrets-1password.sh` — dry-run by
+      default, `--apply` to upload; needs an interactive `op` session, so run
+      it yourself.
+- [ ] **Time Machine backup** completed (plus `./scripts/device backup` for the
+      Brewfile / dock / defaults snapshot).
+- [ ] **Retirement verdict is ready:** `curl -s $CS/api/fleet/retirement/$(hostname -s)`
+      returns `"ready": true` (`status` `ready` or `ready-with-warnings`, no
+      critical blockers). Admin-gated — run it from an admin tailnet identity.
+- [ ] **Adopt what you want to keep.** `curl -s $CS/api/audit/gaps/$(hostname -s)`:
+      `present_unmanaged` lists apps from the managed-cask catalogue that are
+      installed but not brew-declared; `unmanaged_casks` / `unmanaged_formulas`
+      list Homebrew installs no profile declares. Apps outside the catalogue
+      appear in neither — also go through the audit's `applications` list
+      (`curl -s $CS/api/audit/$(hostname -s)`) and the drift audit's
+      informational `·` lines (undeclared casks/apps) from
+      `./scripts/audit-config-drift.sh`. Add the keepers to the right
+      `modules/darwin/profiles/*.nix` (or the host's `configurations/macos/*.nix`),
+      PR, merge.
+- [ ] **Dock:** the workstation and personal roles set
+      `system.defaults.dock.persistent-apps`, which replaces the **whole** Dock
+      on activation. Anything not declared there disappears from it.
+- [ ] **Secrets recipient added** for `needsSecrets` hosts — see
+      [Secrets](#secrets-sops-nix); with `fix/310-sops-onboarding`,
+      `./scripts/setup-secrets.sh` must report that it can decrypt (before it,
+      use the manual recipient step there).
+- [ ] **Activate with `./scripts/rebuild.sh`** (drift audit → build → `nvd`
+      diff → confirm), not `nrs-raw` / a raw `darwin-rebuild switch`. With
+      `fix/312-rebuild-merged-only` it only activates a clean `main` equal to
+      `origin/main`; `--allow-unmerged` deliberately tests a branch.
+- [ ] **Know the rollback:** `sudo darwin-rebuild --rollback` returns to the
+      previous nix-darwin generation, but **Homebrew installs/upgrades and
+      `defaults` writes are not rolled back**. Undo Homebrew changes by hand
+      (`brew uninstall`, or reinstall an older version) or from Time Machine —
+      the `device backup` Brewfile is an inventory, not a rollback: `brew
+      bundle` neither removes new packages nor downgrades. `dock.plist` from the
+      backup restores the Dock.
+
+Homebrew `cleanup` stays `"none"` (see FAQ) until the drift audit covers
+formulae (dotfiles#11), so activation never uninstalls anything.
 
 ---
 
@@ -70,21 +237,22 @@ type nrs               # should show: ~/dotfiles/scripts/rebuild.sh
 
 ### Why audit first?
 
-When you run `nrs` for the first time on an existing machine, nix-darwin will:
+When you rebuild for the first time on an existing machine, nix-darwin will:
 - **Install** everything in the dotfiles that's missing
-- **Keep** everything that's not in the dotfiles (unless `cleanup = "zap"`)
-- **Overwrite** macOS defaults (dock layout, finder settings, keyboard repeat rate)
+- **Keep** everything that's not in the dotfiles (`cleanup = "none"`)
+- **Overwrite** macOS defaults (Dock layout — the whole Dock, Finder settings, keyboard repeat rate)
 
 The audit lets you see what you have, compare it to what the dotfiles manage, and add anything missing before you deploy.
 
 > **Tip:** `./scripts/rebuild.sh` runs `audit-config-drift.sh` automatically as
 > Step 2 and prompts before activating when **risky drift** (manual changes
-> not in the flake) is detected. So you can use it both for first-time
-> onboarding and for daily updates without worrying about silently losing
-> manual customisations. The fleet-wide audit (`./scripts/device audit`)
-> below is still recommended for the broader inventory + config-service flow.
+> not in the flake) is detected. The fleet-wide audit (`./scripts/device audit`)
+> below is still the broader inventory + config-service flow.
 
 ### Step 1: Clone dotfiles (don't rebuild yet!)
+
+Nix must already be installed — the official installer from a GUI session (see
+Path A prerequisites).
 
 ```bash
 git clone https://github.com/rh7/dotfiles.git ~/dotfiles
@@ -94,7 +262,7 @@ cd ~/dotfiles
 ### Step 2: Audit the device
 
 ```bash
-# Collect full inventory and upload to config service
+# Interactive menu (run + upload, save, install schedule, …)
 ./scripts/device audit
 
 # Or just print locally (no config service needed)
@@ -138,23 +306,21 @@ the application is restarted. The command is `claude`.
 
 ### Step 3: Review gaps
 
-If the config service is running (on the Mac Studio), check what's installed but not managed:
-
 ```bash
 # What's on this device but not in dotfiles?
-curl -s http://rouvens-mac-studio-1:3456/api/audit/gaps/$(hostname) | python3 -m json.tool
+curl -s $CS/api/audit/gaps/$(hostname -s) | python3 -m json.tool
 ```
 
 This shows:
-- **Unmanaged casks**: installed via Homebrew but not in any dotfiles profile
-- **Unmanaged formulas**: same for CLI tools
-- **Missing from device**: in dotfiles but not installed yet
+- **`present_unmanaged`**: apps from the managed-cask catalogue that are installed (e.g. dragged into /Applications) but not brew-declared. Apps the catalogue doesn't know are not listed here — review the audit's `applications` list for those
+- **`unmanaged_casks`** / **`unmanaged_formulas`**: installed via Homebrew but not in any dotfiles profile
+- **`missing_from_device`**: in dotfiles and genuinely absent from the device
 
 ### Step 4: Compare with another device
 
 ```bash
 # What's different between this device and the Mac Air?
-curl -s http://rouvens-mac-studio-1:3456/api/audit/compare/$(hostname)/m5-air | python3 -m json.tool
+curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
 ```
 
 Shows side-by-side differences in:
@@ -176,32 +342,57 @@ Based on the gap analysis, add any apps you want to keep to the appropriate prof
 | Dev tool | `modules/home/profiles/development.nix` |
 | NixOS GUI app | `modules/nixos/profiles/` |
 
-Commit and push after adding.
+Branch → PR → review → merge. Don't rebuild from the branch: `rebuild.sh`
+activates merged `main` (with `fix/312-rebuild-merged-only`).
 
-### Step 6: Backup and deploy
+### Step 6: Checklist, backup and deploy
+
+Work through [Before migrating an existing Mac](#before-migrating-an-existing-mac), then:
 
 ```bash
-# Backup current state (just in case)
-./scripts/device backup
-
-# Now deploy
-./scripts/device setup
+./scripts/device backup     # safety net
+./scripts/rebuild.sh        # drift audit → build → nvd diff → confirm → switch
 ```
 
-The backup captures everything needed to restore if something goes wrong:
-- `~/dotfiles-backups/<timestamp>/Brewfile` → `brew bundle install --file=...`
+The backup is a reference snapshot, not a full rollback:
+- `~/dotfiles-backups/<timestamp>/Brewfile` → inventory of what was installed (`brew bundle install --file=...` reinstalls missing entries; it does not remove or downgrade)
 - `~/dotfiles-backups/<timestamp>/dock.plist` → `defaults import com.apple.dock ... && killall Dock`
 - Shell configs, git config, etc.
 
 ### Step 7: Post-deploy
 
 ```bash
-# Install heartbeat
-./scripts/device heartbeat --install
-
-# Verify
+./scripts/audit-device.sh --run   # fresh audit + registration (keeps the device's assigned role)
 ./scripts/device status
 ```
+
+If this device's first upload came from this onboarding (Step 2), the registry
+created it with role `unknown`, and audits keep that role. Set the real one
+(admin-gated, from an admin tailnet identity):
+
+```bash
+curl -s -X PATCH -H 'content-type: application/json' \
+  -d '{"role":"workstation"}' $CS/api/devices/$(hostname -s)
+```
+
+Don't use `./scripts/device register` for this: it posts the hard-coded role
+`workstation`, overwriting whatever role the registry holds for a
+non-workstation host (`Kassie-M5-Air13`, the Studio). The audit path reads the
+registered role back first and re-posts it.
+
+The daily audit keeps the device's connectivity current (if `crontab -l` still
+shows the legacy `auto-sync.sh` heartbeat cron, remove it with
+`./scripts/device sync --uninstall`). With `chore/326-315-flake-hygiene` every
+`mkMac` host declares the schedule via
+`modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
+daily 08:17). On `main` today only the Studio imports it, so on **any** host
+without a `com.rh7.collector-runner` agent (`launchctl list | grep collector`)
+run `./scripts/collector-runner.sh --install` once (it also retires a legacy
+`com.rh7.audit` agent). Non-nix devices without a clone enrol with
+`curl -fsSL https://config.rh7labs.com/enroll | bash` (first audit + a direct daily
+audit schedule; append `-s -- --status` to check only, `-s -- --role <role>`
+to set one of `personal`/`developer`/`server`/`ai-inference`/`smart-home`/`mobile`
+— that PATCH is admin-gated, so it only succeeds from an admin tailnet identity).
 
 ---
 
@@ -215,34 +406,45 @@ All commands are run from `~/dotfiles`:
 
 | Command | Purpose |
 |---------|---------|
-| `setup` | First-time: backup → rebuild → secrets → register |
-| `update` | Daily: pull → rebuild → heartbeat |
-| `update --full` | Weekly: pull → flake update → rebuild → heartbeat |
-| `status` | Show device info + fleet overview |
-| `audit` | Collect inventory, upload to config service |
+| `setup` | Backup → rebuild (via `rebuild.sh`) → `setup-secrets.sh` → register. Assumes Nix is installed; for a blank Mac use `scripts/setup.sh`. It rebuilds **before** the secrets step, so on a `needsSecrets` host use it only once the host is already a recipient (see [Secrets](#secrets-sops-nix)) — and not at all before `fix/310-sops-onboarding` merges |
+| `update` | Rebuild via `rebuild.sh` → register |
+| `status` | Device info (Nix, Tailscale, age key) + config service + fleet overview |
+| `audit` | Interactive audit menu |
+| `audit --run` | Audit + upload (non-interactive) |
 | `audit --local` | Audit only, print JSON |
-| `audit --save` | Save audit to ~/dotfiles-backups/audit/ |
-| `backup` | Backup current system state |
+| `audit --save` | Save audit to `~/dotfiles-backups/audit/` |
+| `backup` | Backup current system state (Homebrew, dock, defaults, dotfiles) |
 | `backup /path` | Backup to custom location |
-| `register` | Register/heartbeat with config service |
-| `heartbeat` | Send one heartbeat |
-| `heartbeat --install` | Install 5-minute cron heartbeat |
-| `heartbeat --uninstall` | Remove cron heartbeat |
-| `secrets` | Setup age key and encrypt secrets |
+| `register` | `POST /api/devices/register` with OS, Tailscale IP, age pubkey. **Caveat:** hard-codes role `workstation` — `setup` and `update` call it too, so on non-workstation hosts (`Kassie-M5-Air13`, the Studio) prefer `rebuild.sh` + `audit-device.sh --run` |
+| `secrets` | Run `setup-secrets.sh` — only after `fix/310-sops-onboarding` merges |
+| `sync` / `sync --install` / `sync --uninstall` | Legacy auto-sync cron (every 30 min). Still runs `heartbeat.sh`, which posts role `workstation` — uninstall it; the daily audit replaces it |
+| `fleet` | Fleet-wide status from the config service (`--detail`, `--stale`) |
+| `heartbeat` | Retired — prints a warning and runs `audit-device.sh` instead |
+
+On `main` today, `device setup` pulls, runs `nix flake update`, then rebuilds;
+`device update` pulls and rebuilds, and only `device update --full` also runs
+`nix flake update`. With `fix/312-rebuild-merged-only` neither command runs
+`git pull` or `nix flake update` (`rebuild.sh` syncs to `origin/main` itself),
+and `update --full` is removed: bump inputs on a branch with
+`nix flake update --flake ~/dotfiles`, PR, merge, then `device update`. (The
+`nup` alias currently expands to `nix flake update ~/dotfiles`, which newer Nix
+reads as an input name and silently updates nothing.)
 
 ---
 
 ## Config Service API (for reviewing audits)
 
-The config service runs on the Mac Studio (`rouvens-mac-studio-1:3456`).
+The config service runs on the Mac Studio (`rouvens-mac-studio:3456`, tailnet only).
 
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/audit` | All latest audits |
 | `GET /api/audit/:hostname` | Latest audit for one device |
 | `GET /api/audit/compare/:a/:b` | Diff two devices |
-| `GET /api/audit/gaps/:hostname` | What's installed but not in dotfiles |
-| `GET /api/fleet/overview` | Fleet status (online/stale/offline) |
+| `GET /api/audit/gaps/:hostname` | `present_unmanaged`, unmanaged casks/formulas, `missing_from_device` |
+| `GET /api/fleet/overview` | Fleet status (online/stale/offline, from audit `last_seen`) |
+| `GET /api/fleet/health` | Fleet-wide action items |
+| `GET /api/fleet/retirement/:hostname` | Safe-to-wipe verdict (admin-gated) |
 | `GET /api/system/info` | Live Mac Studio system stats |
 
 ---
@@ -297,29 +499,34 @@ enumerate VM names, source paths, mounts, credentials, or guest contents.
 ## Typical Workflow for Onboarding an Existing Mac
 
 ```bash
-# 1. Clone dotfiles
+CS=http://rouvens-mac-studio:3456
+
+# 1. Clone dotfiles (Nix already installed: official installer, GUI session)
 git clone https://github.com/rh7/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 
-# 2. Audit (non-destructive, just collects info)
+# 2. Audit (non-destructive, just collects info) — choose "run" to upload
 ./scripts/device audit
 
-# 3. Check gaps (from any machine with curl)
-curl -s http://rouvens-mac-studio-1:3456/api/audit/gaps/$(hostname) | python3 -m json.tool
+# 3. Check gaps (from any machine on the tailnet)
+curl -s $CS/api/audit/gaps/$(hostname -s) | python3 -m json.tool
 
-# 4. Review the unmanaged_casks list
-#    → Add any you want to keep to the dotfiles profiles
-#    → Commit and push
+# 4. Adopt keepers from present_unmanaged / unmanaged_casks / the audit's
+#    applications list into profiles
+#    → branch → PR → merge
 
 # 5. Compare with a known-good device
-curl -s http://rouvens-mac-studio-1:3456/api/audit/compare/$(hostname)/m5-air | python3 -m json.tool
+curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
 
-# 6. When satisfied, deploy
-./scripts/device backup    # safety net
-./scripts/device setup     # rebuild + secrets + register
+# 6. Work through "Before migrating an existing Mac" (escrow, Time Machine,
+#    retirement verdict, secrets recipient), then deploy
+./scripts/device backup     # safety net
+# needsSecrets hosts: recipient added first (see Secrets; once fix/310 merges,
+# ./scripts/setup-secrets.sh confirms the device can decrypt)
+./scripts/rebuild.sh        # drift audit → build → nvd diff → confirm → switch
 
-# 7. Post-setup
-./scripts/device heartbeat --install
+# 7. Daily audit schedule (until fleet-audit.nix covers this host)
+./scripts/collector-runner.sh --install
 ```
 
 ---
@@ -330,7 +537,7 @@ curl -s http://rouvens-mac-studio-1:3456/api/audit/compare/$(hostname)/m5-air | 
 A: No. The current config sets `cleanup = "none"` in `modules/darwin/homebrew.nix`, so brew bundle never auto-uninstalls anything — manually installed apps stay, and casks removed from the flake also stay on disk until you uninstall them yourself. `audit-config-drift.sh` flags any installed-but-not-declared casks so you can decide what to do.
 
 **Q: Why is `cleanup = "none"` instead of `"uninstall"`?**
-A: Workaround for a Homebrew change (2026-06): `brew bundle install --cleanup` now refuses to run without `--force` / `--force-cleanup` / `$HOMEBREW_ASK`. nix-darwin's activate script hardcodes the `--cleanup` flag and runs brew under `sudo --preserve-env=PATH ... env brew bundle`, which strips any env var we'd set. The upstream nix-darwin fix bumps the required nixpkgs from 26.05 → 26.11 (newer nix-darwin enforces version matching), so disabling cleanup is the smaller change. Revisit when ready for a combined `nixpkgs` + `nix-darwin` input bump.
+A: Workaround for a Homebrew change (2026-06): `brew bundle install --cleanup` now refuses to run without `--force` / `--force-cleanup` / `$HOMEBREW_ASK`. nix-darwin's activate script hardcodes the `--cleanup` flag and runs brew under `sudo --preserve-env=PATH ... env brew bundle`, which strips any env var we'd set. The upstream nix-darwin fix bumps the required nixpkgs from 26.05 → 26.11 (newer nix-darwin enforces version matching), so disabling cleanup is the smaller change. Revisit when ready for a combined `nixpkgs` + `nix-darwin` input bump — and not before `audit-config-drift.sh` covers Homebrew formulae (dotfiles#11): the drift gate `rebuild.sh` runs before activation checks casks only, so turning cleanup on would uninstall undeclared formulae with no pre-activation warning (the fleet audit's `unmanaged_formulas` lists them, but nothing gates activation on it).
 
 **Q: What about macOS settings (dock, finder, etc.)?**
 A: These *will* be overwritten to match the dotfiles config. `./scripts/rebuild.sh` mitigates this by running `audit-config-drift.sh` as a pre-flight step and prompting when risky drift is detected — so you get a chance to fold manual changes into the flake before they're overwritten. `nrs` runs that gate for you; `nrs-raw` and a direct `darwin-rebuild switch` skip it. You can always restore with `defaults import`.
@@ -339,10 +546,10 @@ A: These *will* be overwritten to match the dotfiles config. `./scripts/rebuild.
 A: Yes. Use `./scripts/device audit --local` to just print the JSON, or `--save` to write it to a file.
 
 **Q: What if hostname doesn't match the flake?**
-A: `nrs` (and `darwin-rebuild` under it) uses `$(hostname)` to pick the flake config. If your hostname is `Rs-MacBook-Air-M5` but the flake expects `m5-air`, the rebuild will fail. Either rename the host (`sudo scutil --set HostName m5-air` on macOS) or add the actual hostname to `flake.nix`.
+A: `rebuild.sh` (`nrs`) uses `hostname -s` to pick the flake config. If your hostname is `Rs-MacBook-Air-M5` but the flake expects `m5-air`, the rebuild will fail. Either rename the host (`sudo scutil --set HostName m5-air`, likewise `LocalHostName` and `ComputerName`) or add the actual hostname to `flake.nix`. Don't activate a Mac under a *different* host's attr — `networking.hostName` would rename it and split its device identity in the fleet registry.
 
 **Q: How do I add a new machine to the flake?**
-A: Add an entry in `flake.nix` under `darwinConfigurations` (Mac) or `nixosConfigurations` (Linux). Use an existing entry as template — pick a role and any extra modules. Then commit, push, and run `./scripts/device setup` on the new machine.
+A: Add an entry in `flake.nix` under `darwinConfigurations` (Mac) or `nixosConfigurations` (Linux). Use an existing entry as template — pick a role and any extra modules; set `needsSecrets = false` for a Mac that should not get sops-nix. Branch → PR → merge, then run `scripts/setup.sh` on the new machine (and, for a secrets host, the [Secrets](#secrets-sops-nix) flow).
 
 **Q: How do I add an app that has no Homebrew cask and isn't on the App Store?**
 A: If the vendor ships a stable direct-download URL, install it from `postActivation` in the relevant profile. See the **Dia browser** installer in `modules/darwin/profiles/core.nix` for the reference pattern: guard on the installed `.app` so the download only runs once per machine, mount the DMG read-only with `hdiutil -nobrowse`, copy the app out with `ditto`, `chown` it to `config.system.primaryUser`, and clear the quarantine xattr. Two gotchas that will bite you: (1) `postActivation` runs under `set -e`, so wrap the whole thing as `install_foo || true` or a single failure aborts the entire `switch`; (2) the nixpkgs **GNU** `mktemp` is on the activation PATH and rejects a bare `-t foo` template — call the system `/usr/bin/mktemp` (and other system tools) by absolute path. For apps that need GUI auth and *can't* be scripted (e.g. ExpressVPN), fall back to a `[ -d /Applications/Foo.app ] || echo "[WARN] …"` reminder instead.
