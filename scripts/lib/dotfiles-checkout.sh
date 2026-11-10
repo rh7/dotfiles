@@ -65,9 +65,11 @@ sync_dotfiles_checkout() {
         warn "Fast-forward to origin/main failed"
       fi
       # Re-read everything the checks below use: the merge — or a post-merge
-      # hook — may have moved HEAD or touched tracked files. An unreadable
-      # answer is a refusal (unknown HEAD reads as diverged).
-      head=$(git -C "$dir" rev-parse --verify --quiet 'HEAD^{commit}') || head="unknown"
+      # hook — may have moved HEAD, touched tracked files, or (via a fetch)
+      # moved origin/main. An unreadable answer is a refusal: the sentinels
+      # differ, so an unknown HEAD or origin can never compare equal.
+      head=$(git -C "$dir" rev-parse --verify --quiet 'HEAD^{commit}') || head="unknown-HEAD"
+      remote=$(git -C "$dir" rev-parse --verify --quiet 'origin/main^{commit}') || remote="unknown-origin"
       dirty=$(git -C "$dir" status --porcelain --untracked-files=no) \
         || dirty="(could not re-read working-tree status after fast-forward)"
       branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
@@ -107,8 +109,8 @@ sync_dotfiles_checkout() {
   if [[ -n "$flake_ref" ]]; then
     src="${flake_ref%%#*}"
     src="${src#path:}"
-    if [[ -z "$src" ]] \
-       || [[ "$(cd "$dir" 2>/dev/null && cd -P "$src" 2>/dev/null && pwd)" != "$(cd -P "$dir" 2>/dev/null && pwd)" ]]; then
+    # `#host` is the current directory to nix, i.e. the checkout.
+    if [[ "$(cd "$dir" 2>/dev/null && cd -P "${src:-.}" 2>/dev/null && pwd)" != "$(cd -P "$dir" 2>/dev/null && pwd)" ]]; then
       problems+=("--flake '$flake_ref' is not the guarded checkout $dir")
       fixes+=("build from the checkout: --flake \"$dir#<host>\" (or drop --flake)")
     fi

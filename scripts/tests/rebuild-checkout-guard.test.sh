@@ -169,6 +169,8 @@ out=$(cd "$d/sub" && run "$d" false "..#host")
 expect "--flake relative path is resolved from the checkout, not the cwd" 1 "$out" "is not the guarded checkout"
 out=$(cd "$TEST_ROOT" && run "$d" false ".#host")
 expect "--flake '.' means the checkout" 0 "$out"
+out=$(cd "$TEST_ROOT" && run "$d" false "#host")
+expect "--flake '#host' (empty source) means the checkout" 0 "$out"
 
 echo ""
 echo "checkout guard — --allow-unmerged proceeds, loudly"
