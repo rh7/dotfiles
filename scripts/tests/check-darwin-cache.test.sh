@@ -33,11 +33,15 @@ lacks() { # lacks <name> <needle> <haystack>
 
 h() { printf "%032d" 0 | tr 0 "$1"; } # 32-char fake store hash
 # --- current format (Nix >= 2.33): {version, derivations}, basenames ----------
-# drv <char> <name> <env-json> <outputs-json> <input-drv-basenames...>
+# drv <char> <name> <env-json> <outputs-json> <input...>; input = drv basename,
+# optionally `=out,dev` for the outputs the parent needs (default: out).
 drv() {
   local c=$1 name=$2 env=$3 outs=$4; shift 4
   local ins='{}'
-  for i in "$@"; do ins=$(jq -c --arg i "$i" '. + {($i): {dynamicOutputs: {}, outputs: ["out"]}}' <<<"$ins"); done
+  for i in "$@"; do
+    ins=$(jq -c --arg i "${i%%=*}" --arg o "$( [[ $i == *=* ]] && echo "${i#*=}" || echo out)" \
+      '. + {($i): {dynamicOutputs: {}, outputs: ($o | split(","))}}' <<<"$ins")
+  done
   jq -nc --arg k "$(h "$c")-$name.drv" --arg n "$name" --argjson env "$env" --argjson outs "$outs" --argjson ins "$ins" \
     '{($k): ({name: $n, system: "aarch64-darwin", builder: "/bin/sh", args: [], env: $env, outputs: $outs, inputs: {drvs: $ins, srcs: []}, version: 4}
              + (if $env.__sa then {structuredAttrs: $env.__sa} else {} end) | .env |= del(.__sa))}'
@@ -49,14 +53,15 @@ mkdir -p "$TMP/fx" "$TMP/cwd"
 {
   # system: runCommandLocal-style, never substituted → walked into.
   drv a darwin-system '{"preferLocalBuild":"1","allowSubstitutes":""}' "$(out A darwin-system)" \
-    "$(d b system-path)" "$(d f heavy-1.0)" "$(d j sops-install-secrets-0.0.1)" "$(d k source)" "$(d l launchd.plist)" "$(d n sa-nosub)"
+    "$(d b system-path)" "$(d f heavy-1.0)=out,dev" "$(d j sops-install-secrets-0.0.1)" "$(d k source)" \
+    "$(d l launchd.plist)" "$(d n sa-nosub)" "$(d o multi-1.0)"
   # system-path: structured attrs, allowSubstitutes = false (a real `false`).
   drv b system-path '{"__sa":{"preferLocalBuild":true,"allowSubstitutes":false}}' "$(out B system-path)" \
     "$(d c cached-1.0)"
   # cached package: its uncached build input must never be walked.
   drv c cached-1.0 '{}' "$(out C cached-1.0)" "$(d e deep-uncached-1.0)"
   drv e deep-uncached-1.0 '{}' "$(out E deep-uncached-1.0)"
-  # heavy: `out` cached but `dev` missing → still built; its uncached dep too.
+  # heavy: `out` cached but the also-needed `dev` missing → built; its uncached dep too.
   drv f heavy-1.0 '{}' \
     "$(printf '{"out":{"path":"%s-heavy-1.0"},"dev":{"path":"%s-heavy-1.0-dev"}}' "$(h F)" "$(h G)")" \
     "$(d i libheavy-2.0)"
@@ -69,6 +74,10 @@ mkdir -p "$TMP/fx" "$TMP/cwd"
   drv m tool-1.0 '{}' "$(out M tool-1.0)"
   # structured allowSubstitutes = false, no preferLocalBuild → trivial.
   drv n sa-nosub '{"__sa":{"allowSubstitutes":false}}' "$(out N sa-nosub)"
+  # multi-output, only `out` needed and cached; unneeded `dev` missing → substituted.
+  drv o multi-1.0 '{}' \
+    "$(printf '{"out":{"path":"%s-multi-1.0"},"dev":{"path":"%s-multi-1.0-dev"}}' "$(h O)" "$(h T)")" \
+    "$(d e deep-uncached-1.0)"
 } | jq -s '{version: 4, derivations: add}' > "$TMP/fx/mac-new.json"
 
 # --- legacy format: full paths, inputDrvs, env.__json -------------------------
@@ -85,8 +94,9 @@ jq -n --arg s /nix/store --arg r "$(h p)" --arg L "$(h q)" --arg C "$(h r)" --ar
       outputs: o($oS; "json-attrs"), inputDrvs: {}, inputSrcs: []}
   }' > "$TMP/fx/mac-legacy.json"
 
-# The cache holds: cached-1.0, heavy-1.0 `out` (not `dev`), legacy-cached-1.0.
-printf '%s\n' "$(h C)" "$(h F)" "$(h R)" > "$TMP/present"
+# The cache holds: cached-1.0, heavy-1.0 and multi-1.0 `out` (not `dev`),
+# legacy-cached-1.0.
+printf '%s\n' "$(h C)" "$(h F)" "$(h O)" "$(h R)" > "$TMP/present"
 
 empty_allow="$TMP/empty-allowlist"; : > "$empty_allow"
 run() { # run [env...] → stdout in $TMP/out, exit code in $rc
@@ -101,7 +111,8 @@ run
 check "uncached heavy derivation → exit 1" 1 "$rc"
 contains "failure headline" "❌" "$(cat "$TMP/out")"
 new=$(row mac-new)
-contains "heavy package with one uncached output is reported" '`heavy-1.0`' "$new"
+contains "needed output missing from cache → reported" '`heavy-1.0`' "$new"
+lacks "only an UNneeded output missing → substituted, not reported" 'multi-1.0' "$new"
 contains "uncached dependency of a heavy package is reported" '`libheavy-2.0`' "$new"
 contains "uncached dependency of trivial glue is reported" '`tool-1.0`' "$new"
 contains "non-allowlisted sops-install-secrets is reported" '`sops-install-secrets-0.0.1`' "$new"

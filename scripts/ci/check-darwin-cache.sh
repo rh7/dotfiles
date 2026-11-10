@@ -76,7 +76,8 @@ trap 'rm -rf "$work"' EXIT
 # `inputDrvs`, `env.__json`) and the current one (`{version, derivations}` keyed
 # by store-path basename, `inputs.drvs`, `structuredAttrs`). Result, keyed by
 # drv basename: {n: name, local: preferLocalBuild, nosub: !allowSubstitutes,
-# fod, outs: [output hash parts | null when unknown], ins: [drv basenames]}.
+# fod, outs: {output: hash part | null when unknown},
+# ins: [{d: drv basename, o: [the outputs of it this derivation needs]}]}.
 # shellcheck disable=SC2016 # jq program, not shell
 normalize_jq='
   def base: sub("^.*/"; "");
@@ -95,39 +96,47 @@ normalize_jq='
           local: ($plb | truthy),
           nosub: ($as != null and ($as | falsy)),
           fod: ([$d.outputs[] | has("hash")] | any),
-          outs: [$d.outputs[] | if .path then (.path | base | .[0:32]) else null end],
-          ins: [($d.inputs.drvs // $d.inputDrvs // {}) | keys[] | base]
+          outs: ($d.outputs | map_values(if .path then (.path | base | .[0:32]) else null end)),
+          ins: [($d.inputs.drvs // $d.inputDrvs // {}) | to_entries[]
+                | {d: (.key | base), o: (.value | if type == "array" then . else .outputs end)}]
         })'
 
 # Root = the one derivation no other derivation in the closure references.
 # shellcheck disable=SC2016
 root_jq='
-  ([.[].ins[]] | map({key: ., value: true}) | from_entries) as $ref
+  ([.[].ins[].d] | map({key: ., value: true}) | from_entries) as $ref
   | [keys[] | select($ref[.] | not)]
   | if length == 1 then .[0] else error("expected exactly one root derivation, found \(length)") end'
 
 # --- walk: which derivations would be built, given what the cache has --------
-# $known: {hash: true|false}. Stops (and reports the hash as unknown) where the
-# cache has not been asked yet; the caller asks and walks again.
+# Edges carry the outputs the parent needs (a parent that only needs `out`
+# substitutes it even when an unrequested `dev`/`doc` is missing), as Nix's
+# queryMissing does. A derivation that must be built needs all its inputs, so
+# those are walked in turn. $known: {hash: true|false}. Stops (and reports the
+# hash as unknown) where the cache has not been asked yet; the caller asks and
+# walks again.
 # shellcheck disable=SC2016
 walk_jq='
   def walk($g; $root; $known):
-    {q: [$root], i: 0, seen: {}, build: [], unknown: []}
+    {q: [{d: $root, o: ($g[$root].outs | keys)}], i: 0, seen: {}, built: {}, unknown: []}
     | until(.i >= (.q | length);
-        .q[.i] as $d | .i += 1
-        | if .seen[$d] then .
-          else .seen[$d] = true
-          | ($g[$d] // error("derivation \($d) missing from the graph")) as $n
+        .q[.i] as $it | .i += 1
+        | "\($it.d)\t\($it.o | sort | join(","))" as $key
+        | if .built[$it.d] or .seen[$key] then .
+          else .seen[$key] = true
+          | ($g[$it.d] // error("derivation \($it.d) missing from the graph")) as $n
           | if $n.fod then .
-            elif $n.nosub then .build += [$d] | .q += $n.ins
-            elif ($n.outs | any(. == null)) then error("\($d): output path unknown (content-addressed?) — cannot ask the cache")
-            else [$n.outs[] | $known[.]] as $st
-              | if any($st[]; . == false) then .build += [$d] | .q += $n.ins
-                elif any($st[]; . == null) then .unknown += [$n.outs[] | select($known[.] == null)]
-                else . end
+            elif $n.nosub then .built[$it.d] = true | .q += $n.ins
+            else [$it.o[] | $n.outs[.]] as $hs
+              | if any($hs[]; . == null) then error("\($it.d): output path unknown (content-addressed?) — cannot ask the cache")
+                else [$hs[] | $known[.]] as $st
+                | if any($st[]; . == false) then .built[$it.d] = true | .q += $n.ins
+                  elif any($st[]; . == null) then .unknown += [$hs[] | select($known[.] == null)]
+                  else . end
+                end
             end
           end)
-    | {build, unknown: (.unknown | unique)};'
+    | {build: (.built | keys), unknown: (.unknown | unique)};'
 
 # --- cache oracle ------------------------------------------------------------
 # $1: file of output hash parts; stdout: {hash: true|false}. Fails closed on
