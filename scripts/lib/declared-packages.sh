@@ -88,6 +88,28 @@ critical_upgrade_names() {
     <<<"$raw" 2>/dev/null || return 1
 }
 
+# retired_cask_names <flake_ref>
+#
+# Prints dotfiles.homebrew.retiredCasks (modules/darwin/homebrew.nix), one name
+# per line: casks rebuild.sh uninstalls if present. Same contract as above —
+# nonzero on failure, so a failed eval never reads as "nothing to remove".
+retired_cask_names() {
+  local flake_ref="$1"
+  local dir="${flake_ref%#*}" host="${flake_ref##*#}"
+  local raw
+
+  raw=$(nix eval --json \
+    "${dir}#darwinConfigurations.\"${host}\".config.dotfiles.homebrew.retiredCasks" \
+    2>/dev/null) || return 1
+
+  jq -e 'if type=="array" then true
+         else error("retiredCasks was \(type), expected array") end' \
+    >/dev/null <<<"$raw" 2>/dev/null || return 1
+
+  jq -r '.[] | (strings // error("retiredCasks entry is not a string"))' \
+    <<<"$raw" 2>/dev/null || return 1
+}
+
 # declared_mas_ids <flake_ref>
 #
 # Prints one Mac App Store app ID per line. Returns nonzero if evaluation or

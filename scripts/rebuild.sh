@@ -239,6 +239,182 @@ declared_outdated_mas() {
   return $rc
 }
 
+# ── Hand-installed apps and retired casks ──
+# Two jobs that used to need hand-run, privileged commands — each one its own
+# unexplained Touch ID prompt — and now happen inside the run's single
+# authentication, listed in the plan beforehand:
+#
+#   ADOPT  — a newly declared cask whose app is ALREADY in /Applications,
+#            installed by hand. `brew bundle` cannot take those over: its
+#            --adopt refuses any version mismatch, and macOS App Management
+#            blocks it from touching the bundle at all (see below). rebuild.sh
+#            replaces them with `brew install --cask --force` BEFORE activation.
+#   RETIRE — casks in dotfiles.homebrew.retiredCasks that are still installed.
+#            cleanup = "none" never removes anything, so this list is the
+#            fleet's only removal path. Uninstalled AFTER a successful switch.
+#
+# Results are globals, not stdout, for the same subshell reason as MAS_OUTDATED.
+ADOPT_CASKS=""      # space-separated cask names to replace
+ADOPT_APPS=""       # newline-separated app paths those casks will overwrite
+ADOPT_BLOCKED=""    # newline-separated subset App Management currently blocks
+RETIRE_CASKS=""     # space-separated cask names to uninstall
+NEW_CASKS=""        # space-separated declared casks activation installs fresh
+
+APP_MGMT_PANE="x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AppBundles"
+
+# app_bundle_modifiable <app path>
+# 0 = this process may modify the bundle, 1 = macOS App Management blocks it.
+#
+# App Management (macOS 13+) stops a process from modifying an app bundle it did
+# not install unless its responsible app — the TERMINAL — holds that permission.
+# Ownership is irrelevant and so is sudo: a user-owned, hand-installed Zen.app
+# refused even `sudo chmod`, while VLC, installed by Homebrew, stays writable.
+# Apple lets only the user (or an MDM profile) grant it, so the script cannot;
+# what it can do is find out BEFORE asking for Touch ID instead of failing
+# halfway through activation.
+#
+# The probe sets and removes an extended attribute on the bundle directory:
+# blocked exactly like any other modification, and harmless when allowed (a
+# non-com.apple xattr on the directory is not part of the code signature).
+# Only EPERM counts as blocked. EACCES (a root-owned bundle) is a plain
+# ownership error that the run's sudo-backed brew handles.
+app_bundle_modifiable() {
+  local app="$1" out
+  if out=$(xattr -w com.rh7.dotfiles.probe 1 "$app" 2>&1); then
+    xattr -d com.rh7.dotfiles.probe "$app" 2>/dev/null || true
+    return 0
+  fi
+  [[ "$out" != *"Operation not permitted"* ]]
+}
+
+# cask_app_targets — cask names on stdin, prints "<cask><TAB><app path>" for
+# each one that installs an .app. pkg-based casks have no app artifact and are
+# skipped; their installers handle an existing copy themselves.
+cask_app_targets() {
+  local names
+  names=$(awk 'NF' | tr '\n' ' ')
+  [[ -n "$names" ]] || return 0
+  # shellcheck disable=SC2086
+  brew info --cask --json=v2 $names 2>/dev/null \
+    | jq -r '.casks[] | .token as $t | .artifacts[] | select(has("app"))
+             | (.target // ("/Applications/" + (.app[0] | strings)))
+             | "\($t)\t\(.)"'
+}
+
+# cask_lifecycle_plan — fills the globals above. Needs PLAN_TMP/declared_casks
+# from homebrew_plan. A failed inventory leaves the lists EMPTY and says so:
+# not removing or replacing is the safe direction, guessing is not.
+cask_lifecycle_plan() {
+  ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
+  if ! brew list --cask -1 >"$PLAN_TMP/installed_casks" 2>/dev/null; then
+    warn "'brew list --cask' failed — install/replace/remove plan unavailable"
+    return 0
+  fi
+
+  if retired_cask_names "$FLAKE_REF" >"$PLAN_TMP/retired_casks"; then
+    RETIRE_CASKS=$(intersect_lines "$PLAN_TMP/installed_casks" "$PLAN_TMP/retired_casks" | xargs)
+  else
+    warn "Could not evaluate dotfiles.homebrew.retiredCasks — nothing will be removed"
+  fi
+
+  subtract_lines "$PLAN_TMP/declared_casks" "$PLAN_TMP/installed_casks" >"$PLAN_TMP/missing_casks"
+  if [[ -s "$PLAN_TMP/missing_casks" ]]; then
+    local cask app adopt=()
+    if cask_app_targets <"$PLAN_TMP/missing_casks" >"$PLAN_TMP/missing_targets"; then
+      while IFS=$'\t' read -r cask app; do
+        [[ -n "$app" && -e "$app" ]] || continue
+        adopt+=("$cask")
+        ADOPT_APPS+="$app"$'\n'
+        if ! app_bundle_modifiable "$app"; then ADOPT_BLOCKED+="$app"$'\n'; fi
+      done <"$PLAN_TMP/missing_targets"
+    else
+      warn "Could not read cask metadata — hand-installed copies not checked"
+    fi
+    ADOPT_CASKS="${adopt[*]:-}"
+    NEW_CASKS=$(subtract_lines "$PLAN_TMP/missing_casks" <(printf '%s\n' "${adopt[@]:-}") | xargs)
+  fi
+
+  if [[ -n "$NEW_CASKS" ]]; then
+    info "Will INSTALL $(wc -w <<<"$NEW_CASKS" | tr -d ' ') newly declared cask(s): $NEW_CASKS"
+  fi
+  if [[ -n "$ADOPT_CASKS" ]]; then
+    warn "Will REPLACE $(wc -w <<<"$ADOPT_CASKS" | tr -d ' ') hand-installed app(s) with the Homebrew copy:"
+    local running=""
+    while IFS= read -r app; do
+      [[ -n "$app" ]] || continue
+      echo "    $app"
+      if pgrep -qf "$app/Contents/MacOS/"; then running+=" $(basename "$app" .app)"; fi
+    done <<<"$ADOPT_APPS"
+    echo "    (settings and data live outside the app and are kept)"
+    if [[ -n "$running" ]]; then
+      echo "    Quit these first:$running"
+    fi
+  fi
+  if [[ -n "$RETIRE_CASKS" ]]; then
+    warn "Will UNINSTALL $(wc -w <<<"$RETIRE_CASKS" | tr -d ' ') retired cask(s) (dotfiles.homebrew.retiredCasks): $RETIRE_CASKS"
+  fi
+  if [[ -n "$ADOPT_BLOCKED" ]]; then
+    warn "macOS App Management currently blocks replacing:"
+    sed '/^$/d; s/^/    /' <<<"$ADOPT_BLOCKED"
+  fi
+}
+
+# terminal_app_name — the app macOS holds responsible for this script, i.e.
+# the one that needs App Management. Falls back to a generic phrase.
+terminal_app_name() {
+  local id="${__CFBundleIdentifier:-}" path
+  if [[ -n "$id" ]]; then
+    path=$(mdfind "kMDItemCFBundleIdentifier == '$id'" 2>/dev/null | head -1)
+    if [[ -n "$path" ]]; then basename "$path" .app; return; fi
+  fi
+  if [[ -n "${TERM_PROGRAM:-}" ]]; then echo "$TERM_PROGRAM"; return; fi
+  echo "your terminal app"
+}
+
+# ensure_app_management — runs after the plan, BEFORE confirmation and
+# authentication. If replacements are blocked, opens the exact Settings page,
+# names the switch to flip, and continues on its own once the probe passes.
+# Gives up before anything is applied, so a missing permission costs a re-run,
+# never a half-switched system.
+ensure_app_management() {
+  [[ -n "$ADOPT_BLOCKED" ]] || return 0
+  # A short wait, not a long one: macOS usually applies the switch only once
+  # the terminal is relaunched, so this mainly catches an already-granted
+  # permission or a terminal that applies it live. Seen on m5-air 2026-11-10:
+  # a 5-minute wait in a terminal running since before the grant just timed out.
+  local term waited=0 limit="${REBUILD_APP_MGMT_WAIT:-60}" app still
+  term=$(terminal_app_name)
+  echo ""
+  warn "One-time step only you can do (Apple allows no script or sudo to):"
+  echo "    1. System Settings → Privacy & Security → App Management → turn on '$term'"
+  echo "       (not listed? add it with the + button)"
+  echo "    2. QUIT '$term' completely with ⌘Q — closing its windows is not enough —"
+  echo "       then reopen it and re-run this command. Nothing has been applied yet."
+  open "$APP_MGMT_PANE" 2>/dev/null || true
+  # A notification too: when this runs under another tool (e.g. an agent that
+  # buffers output) the terminal text may not be visible while it waits.
+  osascript -e "display notification \"Turn on '$term' under App Management, then quit and reopen it (⌘Q).\" with title \"Rebuild needs a one-time permission\"" >/dev/null 2>&1 || true
+  info "Opened that page. Checking for ${limit}s in case it applies without a relaunch..."
+  while :; do
+    still=""
+    while IFS= read -r app; do
+      [[ -n "$app" ]] || continue
+      app_bundle_modifiable "$app" || still+="$app"$'\n'
+    done <<<"$ADOPT_BLOCKED"
+    if [[ -z "$still" ]]; then
+      ADOPT_BLOCKED=""
+      ok "App Management granted to '$term' — continuing"
+      echo ""
+      return 0
+    fi
+    if (( waited >= limit )); then break; fi
+    sleep 3; waited=$((waited + 3))
+  done
+  err "Still blocked — nothing was applied. Turn on '$term' (step 1), quit it"
+  err "with ⌘Q (step 2), reopen it, and re-run."
+  exit 1
+}
+
 # ── Step 4b: Homebrew plan ──
 # A function, not an inline block, so `--plan-only` can run it without building
 # or activating — which also makes its failure paths testable. It needs no root
@@ -446,6 +622,9 @@ homebrew_plan() {
       if [[ -n "$skip_casks" ]]; then echo "    casks:    $skip_casks"; fi
       echo "    (upgrade by hand with 'brew upgrade <name>', or declare them in a profile)"
     fi
+
+    echo ""
+    cask_lifecycle_plan
   fi
 
   # Mac App Store, shown in the same breath as Homebrew so the plan covers
@@ -696,6 +875,7 @@ fi
 
 
 homebrew_plan
+ensure_app_management
 
 # ── Step 5: Confirm ──
 if ! $AUTO_CONFIRM; then
@@ -728,6 +908,18 @@ fi
 # Claiming it early is the safe direction — if we die before sudo ever succeeds,
 # the worst case is a `sudo -k` that revokes nothing (or costs one extra prompt).
 SUDO_TOUCHED=true
+
+# Say what the one prompt is for, so it can be attributed — and so a SECOND
+# prompt during the run stands out as something to report, not to tap through.
+info "One authentication covers this entire run:"
+echo "    • activation: system settings, launchd services, /etc links"
+if [[ -n "$NEW_CASKS" ]]; then echo "    • install: $NEW_CASKS"; fi
+if [[ -n "$ADOPT_CASKS" ]]; then echo "    • replace hand-installed: $ADOPT_CASKS"; fi
+if [[ -n "$BREW_UPGRADE_FORMULAE$BREW_UPGRADE_CASKS" ]]; then
+  echo "    • upgrade: $(xargs <<<"$BREW_UPGRADE_FORMULAE $BREW_UPGRADE_CASKS")"
+fi
+if [[ -n "$RETIRE_CASKS" ]]; then echo "    • uninstall retired: $RETIRE_CASKS"; fi
+echo "    Any further prompt during this run is unexpected — the log will show what asked."
 
 if sudo -n true 2>/dev/null; then
   info "sudo already authenticated — no prompt needed"
@@ -820,6 +1012,24 @@ run_darwin_rebuild() {
   return "$rc"
 }
 
+# ── Step 5c: Replace hand-installed copies of newly declared casks ──
+# Before activation, because `brew bundle` inside it fails on exactly these
+# (see cask_lifecycle_plan). --force overwrites the existing bundle; the plan
+# already confirmed App Management allows it. A failure here is left for
+# activation to report rather than aborting the run.
+if [[ "$OS" == "Darwin" && -n "$ADOPT_CASKS" ]]; then
+  echo -e "${BOLD}━━━ Replacing hand-installed apps ━━━${NC}"
+  echo ""
+  for cask in $ADOPT_CASKS; do
+    if HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask --force "$cask"; then
+      ok "$cask now managed by Homebrew"
+    else
+      warn "$cask could not be replaced — activation will report it"
+    fi
+  done
+  echo ""
+fi
+
 info "Activating configuration..."
 # Activation failure must reach the exit status. Previously run_darwin_rebuild
 # swallowed it (its last statement was `rm -f`, always 0), so a switch that died
@@ -849,6 +1059,22 @@ if [[ $ACTIVATION_RC -ne 0 ]]; then
   echo "Log: $LOG_FILE"
   echo ""
   exit "$ACTIVATION_RC"
+fi
+
+# ── Step 6r: Uninstall retired casks ──
+# After a successful switch only, so a failed activation never leaves a machine
+# with the old app removed and its replacement missing.
+if [[ "$OS" == "Darwin" && -n "$RETIRE_CASKS" ]]; then
+  echo -e "${BOLD}━━━ Removing retired casks ━━━${NC}"
+  echo ""
+  # shellcheck disable=SC2086
+  if HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask $RETIRE_CASKS; then
+    ok "Removed: $RETIRE_CASKS"
+  else
+    warn "Some retired casks were not removed — re-run to retry:"
+    warn "  $(brew list --cask -1 2>/dev/null | grep -Fx -f <(tr ' ' '\n' <<<"$RETIRE_CASKS") | xargs || true)"
+  fi
+  echo ""
 fi
 
 # ── Step 6a: Upgrade the Homebrew packages the plan selected ──

@@ -275,9 +275,14 @@ installed_casks=$( { brew list --cask 2>/dev/null || true; } | sort -u)
 orphan=$(comm -23 <(echo "$installed_casks") <(echo "$declared_casks"))
 missing=$(comm -13 <(echo "$installed_casks") <(echo "$declared_casks"))
 cleanup_mode=$(eval_str "homebrew.onActivation.cleanup")
+# Retired casks are declared state too ("must be absent"): rebuild.sh uninstalls
+# them, so a still-installed one is pending, not merely preserved.
+retired_casks=$(eval_list "dotfiles.homebrew.retiredCasks" | sort -u)
 if [[ -n "$orphan" ]]; then
   while read -r c; do
-    if [[ "$cleanup_mode" == "zap" || "$cleanup_mode" == "uninstall" ]]; then
+    if grep -qFx -- "$c" <<<"$retired_casks"; then
+      sub "$c (retired in dotfiles.homebrew.retiredCasks; rebuild.sh will uninstall it)"
+    elif [[ "$cleanup_mode" == "zap" || "$cleanup_mode" == "uninstall" ]]; then
       add "$c (installed, not declared; cleanup=$cleanup_mode will remove it)"
     else
       observe "$c (installed, not declared; cleanup=${cleanup_mode:-none} preserves it)"
@@ -308,6 +313,7 @@ declare -A PKG_CASK_APPS=(
 MANUAL_APPS=(
   "ExpressVPN.app"  # cask installer helper needs GUI auth — install via `brew install --cask expressvpn`
   "Private Internet Access.app"  # retained manually; Homebrew cask has quarantine issues
+  "Dia.app"  # no cask / not on App Store — installed from the official DMG by core.nix postActivation
 )
 
 # ── Mac App Store drift ───────────────────────────────────────────────

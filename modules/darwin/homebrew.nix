@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ config, lib, ... }:
 
 {
   # Packages that scripts/rebuild.sh upgrades on a default run
@@ -17,6 +17,18 @@
     description = "Declared packages that rebuild.sh upgrades by default.";
   };
 
+  # Casks that scripts/rebuild.sh UNINSTALLS wherever they are still present.
+  # This is the fleet's removal path: cleanup = "none" (below) means dropping a
+  # cask from a profile never removes it from a machine, so retirements used to
+  # be hand-run `brew uninstall`s — each its own unexplained Touch ID prompt.
+  # Listed here, the removal shows in the rebuild plan and runs inside that
+  # run's single authentication. Profiles may append (lists merge).
+  options.dotfiles.homebrew.retiredCasks = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    description = "Casks rebuild.sh uninstalls if installed. Must not also be declared.";
+  };
+
   config = {
     dotfiles.homebrew.criticalUpgrades = [
       # Browsers
@@ -28,6 +40,24 @@
       # Messengers
       "signal" "whatsapp" "element" "telegram" "slack" "zoom"
     ];
+
+    # Record the reason and date with each entry; archive.nix keeps the
+    # long-form history of why an app was dropped.
+    dotfiles.homebrew.retiredCasks = [
+      "session"   # onion-routing messenger, NOT Session Pomodoro (MAS). 2026-11-09
+      "stremio"   # never opened. 2026-11-09
+    ];
+
+    # A cask both declared and retired would be installed by activation and
+    # then uninstalled by rebuild.sh on every run. Fail the build instead.
+    assertions =
+      let
+        declared = map (c: c.name) config.homebrew.casks;
+        both = lib.filter (c: lib.elem c declared) config.dotfiles.homebrew.retiredCasks;
+      in [{
+        assertion = both == [ ];
+        message = "dotfiles.homebrew.retiredCasks also declared in homebrew.casks: ${lib.concatStringsSep ", " both}";
+      }];
 
     # ── Homebrew scaffold (managed declaratively by nix-darwin) ──────────────
     # App lists have been moved to modules/darwin/profiles/ and modules/roles/.
