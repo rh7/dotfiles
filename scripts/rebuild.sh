@@ -584,26 +584,49 @@ fi
 # <<< END DRIFT AUDIT <<<
 
 # ── Step 3: Build (no sudo needed) ──
+# Where the built system lands. `darwin-rebuild build` / `nixos-rebuild build`
+# write ./result in the cwd ($DOTFILES_DIR); the nix-build fallback below is
+# pointed at the same path explicitly, so every later step (closure diff,
+# activation, the "kept for inspection" messages, cleanup) refers to a link this
+# run actually created.
+RESULT_LINK="${DOTFILES_DIR}/result"
+
+# Build the Darwin system and set DARWIN_REBUILD to the binary that activates it.
+#
+# darwin-rebuild is not on PATH on a freshly-Nix-installed Mac — exactly the
+# first rebuild. The fallback used to build with `--no-link` and then point at
+# ./result/sw/bin/darwin-rebuild, which `--no-link` had just suppressed: the
+# closure diff was silently skipped and activation ran a path that did not exist
+# (rh7/rh-device-management#311). Build to an explicit out-link instead and
+# activate with the darwin-rebuild inside the closure we just built.
+build_darwin_system() {
+  if command -v darwin-rebuild &>/dev/null; then
+    DARWIN_REBUILD="darwin-rebuild"
+    darwin-rebuild build --flake "$FLAKE_REF" 2>&1 || return 1
+  else
+    info "darwin-rebuild not in PATH — using nix build..."
+    # Honour --flake: build the same configuration activation will switch to.
+    local flake_path="${FLAKE_REF%%#*}" flake_host="$HOSTNAME"
+    [[ "$FLAKE_REF" == *#* ]] && flake_host="${FLAKE_REF#*#}"
+    nix build "${flake_path}#darwinConfigurations.${flake_host}.system" \
+      --out-link "$RESULT_LINK" 2>&1 || return 1
+    DARWIN_REBUILD="${RESULT_LINK}/sw/bin/darwin-rebuild"
+    if [[ ! -x "$DARWIN_REBUILD" ]]; then
+      err "Built system has no darwin-rebuild at $DARWIN_REBUILD"
+      return 1
+    fi
+  fi
+}
+
 info "Building configuration (no root required)..."
 echo ""
 
 cd "$DOTFILES_DIR"
 case "$OS" in
   Darwin)
-    # darwin-rebuild may not be in PATH after fresh Nix install — use nix build fallback
-    if command -v darwin-rebuild &>/dev/null; then
-      if ! darwin-rebuild build --flake "$FLAKE_REF" 2>&1; then
-        err "Build failed. Fix the issue and try again."
-        exit 1
-      fi
-    else
-      info "darwin-rebuild not in PATH — using nix build..."
-      if ! nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
-        err "Build failed. Fix the issue and try again."
-        exit 1
-      fi
-      # Use the built result's darwin-rebuild for activation
-      DARWIN_REBUILD="./result/sw/bin/darwin-rebuild"
+    if ! build_darwin_system; then
+      err "Build failed. Fix the issue and try again."
+      exit 1
     fi
     ;;
   Linux)
@@ -619,7 +642,7 @@ echo ""
 
 # ── Step 4: Show diff (no sudo needed) ──
 CURRENT="/run/current-system"
-NEW="./result"
+NEW="$RESULT_LINK"
 
 if [[ -e "$CURRENT" ]] && [[ -e "$NEW" ]]; then
   echo -e "${BOLD}━━━ Changes ━━━${NC}"
@@ -779,14 +802,9 @@ info "Activating configuration..."
 ACTIVATION_RC=0
 case "$OS" in
   Darwin)
-    if command -v darwin-rebuild &>/dev/null; then
-      run_darwin_rebuild sudo darwin-rebuild switch --flake "$FLAKE_REF" || ACTIVATION_RC=$?
-    elif [[ -n "${DARWIN_REBUILD:-}" ]]; then
-      run_darwin_rebuild sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF" || ACTIVATION_RC=$?
-    else
-      nix build "${DOTFILES_DIR}#darwinConfigurations.${HOSTNAME}.system"
-      run_darwin_rebuild sudo ./result/sw/bin/darwin-rebuild switch --flake "${DOTFILES_DIR}#${HOSTNAME}" || ACTIVATION_RC=$?
-    fi
+    # DARWIN_REBUILD is the PATH binary, or the one inside the closure built in
+    # step 3 on a fresh Mac — never a ./result this run did not create.
+    run_darwin_rebuild sudo "$DARWIN_REBUILD" switch --flake "$FLAKE_REF" || ACTIVATION_RC=$?
     ;;
   Linux)
     sudo nixos-rebuild switch --flake "$FLAKE_REF" \
@@ -954,7 +972,7 @@ elif [[ "$OS" == "Darwin" ]]; then
 fi
 
 # ── Step 7: Clean up ──
-rm -f result
+rm -f "$RESULT_LINK"
 
 echo -e "${GREEN}${BOLD}Done.${NC} Run 'darwin-rebuild list' to see available generations."
 echo "Log: $LOG_FILE"

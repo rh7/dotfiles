@@ -109,6 +109,95 @@ grep -q "Unrecognised failure" <<<"$OUT" \
   && bad "real brew-bundle wording is not 'unrecognised'" "got: $OUT" \
   || good "real brew-bundle wording is not 'unrecognised'"
 
+# ── build_darwin_system: the fresh-Mac fallback (rh7/rh-device-management#311) ──
+# With darwin-rebuild not on PATH (a freshly-Nix-installed Mac) the fallback
+# used to build with `--no-link` and then activate ./result/sw/bin/darwin-rebuild
+# — a path the build had just declined to create. Pin that the fallback builds
+# to a real out-link and hands activation a darwin-rebuild that exists.
+info() { echo "[INFO] $*"; }
+# shellcheck disable=SC1090
+eval "$(sed -n '/^build_darwin_system() {/,/^}/p' "$SCRIPT")"
+if ! declare -F build_darwin_system >/dev/null; then
+  echo "FATAL: could not extract build_darwin_system from $SCRIPT" >&2
+  exit 1
+fi
+
+BUILD_ROOT="$(mktemp -d)"
+trap 'rm -rf "$BUILD_ROOT"' EXIT
+mkdir -p "$BUILD_ROOT/bin" "$BUILD_ROOT/dotfiles"
+# Stub nix: records its argv; on success honours --out-link the way nix does
+# (a link to a closure containing sw/bin/darwin-rebuild). `--no-link` creates
+# nothing, exactly as the real one.
+cat > "$BUILD_ROOT/bin/nix" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" > "$NIX_ARGS_FILE"
+[[ "${NIX_STUB_RC:-0}" -eq 0 ]] || exit "$NIX_STUB_RC"
+out=""
+while [[ $# -gt 0 ]]; do
+  [[ "$1" == --out-link ]] && { out="$2"; shift; }
+  shift
+done
+if [[ -n "$out" ]]; then
+  store="$NIX_STORE_DIR/system"
+  mkdir -p "$store/sw/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$store/sw/bin/darwin-rebuild"
+  chmod +x "$store/sw/bin/darwin-rebuild"
+  ln -sfn "$store" "$out"
+fi
+STUB
+chmod +x "$BUILD_ROOT/bin/nix"
+mkdir -p "$BUILD_ROOT/store"
+
+run_build() { # run_build <nix-rc>  -> sets BOUT, BRC, BREBUILD, BARGS
+  rm -f "$BUILD_ROOT/dotfiles/result"
+  BOUT="$(
+    # PATH holds only the stub dir and the base system — no darwin-rebuild.
+    # (Running in a subshell keeps the stripped PATH out of the harness.)
+    PATH="$BUILD_ROOT/bin:/usr/bin:/bin"
+    export NIX_ARGS_FILE="$BUILD_ROOT/nix-args" NIX_STORE_DIR="$BUILD_ROOT/store" NIX_STUB_RC="$1"
+    DOTFILES_DIR="$BUILD_ROOT/dotfiles" HOSTNAME="fresh-mac"
+    # shellcheck disable=SC2034  # read by the eval'd build_darwin_system
+    FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
+    # shellcheck disable=SC2034
+    RESULT_LINK="${DOTFILES_DIR}/result"
+    DARWIN_REBUILD=""
+    build_darwin_system 2>&1; rc=$?
+    echo "RC=$rc"; echo "DARWIN_REBUILD=$DARWIN_REBUILD"
+  )"
+  BRC="$(sed -n 's/^RC=//p' <<<"$BOUT")"
+  BREBUILD="$(sed -n 's/^DARWIN_REBUILD=//p' <<<"$BOUT")"
+  BARGS="$(cat "$BUILD_ROOT/nix-args" 2>/dev/null)"
+}
+
+echo ""
+echo "build_darwin_system — darwin-rebuild not on PATH"
+
+if PATH="/usr/bin:/bin" command -v darwin-rebuild >/dev/null 2>&1; then
+  bad "harness hides darwin-rebuild" "darwin-rebuild found in /usr/bin:/bin"
+else
+  run_build 0
+  [[ "$BRC" == 0 ]] && good "fallback build returns 0" || bad "fallback build returns 0" "got: $BOUT"
+  grep -q -- '--no-link' <<<"$BARGS" \
+    && bad "fallback does not build with --no-link" "nix args: $BARGS" \
+    || good "fallback does not build with --no-link"
+  grep -q -- "--out-link $BUILD_ROOT/dotfiles/result" <<<"$BARGS" \
+    && good "fallback builds to the result link the diff reads" \
+    || bad "fallback builds to the result link the diff reads" "nix args: $BARGS"
+  grep -q "#darwinConfigurations.fresh-mac.system" <<<"$BARGS" \
+    && good "fallback builds the FLAKE_REF host's system" \
+    || bad "fallback builds the FLAKE_REF host's system" "nix args: $BARGS"
+  [[ -n "$BREBUILD" && -x "$BREBUILD" ]] \
+    && good "activation binary exists and is executable" \
+    || bad "activation binary exists and is executable" "DARWIN_REBUILD='$BREBUILD'"
+  [[ "$BREBUILD" == /* ]] \
+    && good "activation binary is an absolute path (not cwd-relative ./result)" \
+    || bad "activation binary is an absolute path (not cwd-relative ./result)" "DARWIN_REBUILD='$BREBUILD'"
+
+  run_build 1
+  [[ "$BRC" != 0 ]] && good "failed nix build returns non-zero" \
+    || bad "failed nix build returns non-zero" "got: $BOUT"
+fi
+
 echo ""
 printf 'passed: %d   failed: %d\n\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
