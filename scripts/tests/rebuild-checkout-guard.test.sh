@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Coverage for sync_dotfiles_checkout() in scripts/rebuild.sh
-# (rh7/rh-device-management#312).
+# Coverage for sync_dotfiles_checkout() in scripts/lib/dotfiles-checkout.sh —
+# rebuild.sh's Step 1 checkout guard (rh7/rh-device-management#312).
 #
 # Run: bash scripts/tests/rebuild-checkout-guard.test.sh
 #
@@ -8,25 +8,18 @@
 # is silent: a machine that activated a stale or unmerged checkout looks exactly
 # like one that activated main, and the drift audit (which compares against the
 # same checkout) agrees with it. So every refusal condition is pinned here
-# against a real bare-origin + clone pair, not against stubbed git.
-#
-# Extracted rather than sourced, like rebuild-activation.test.sh: rebuild.sh
-# executes top-to-bottom and would run a real rebuild (nix, sudo) if sourced.
+# against a real bare-origin + clone pair, not against stubbed git. Only the
+# lib is sourced, so nothing here builds or activates (no nix, no sudo).
 
 set -uo pipefail
 
-SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/rebuild.sh"
+LIB="$(cd "$(dirname "$0")/.." && pwd)/lib/dotfiles-checkout.sh"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 pass=0; fail=0
 good() { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; printf '      %s\n' "$2"; fail=$((fail+1)); }
-
-FUNC="$TEST_ROOT/guard.sh"
-sed -n '/^sync_dotfiles_checkout() {/,/^}/p' "$SCRIPT" > "$FUNC"
-grep -q 'merge --ff-only' "$FUNC" || {
-  echo "FATAL: could not extract sync_dotfiles_checkout from $SCRIPT" >&2; exit 1; }
 
 # Hermetic git: no user/system config, fixed identity.
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$TEST_ROOT/gitconfig"
@@ -51,8 +44,9 @@ advance_origin() { # advance_origin — merges a new commit into origin/main
   echo "$RANDOM" >> "$UPSTREAM/flake.nix"
   git -C "$UPSTREAM" commit -qam more && git -C "$UPSTREAM" push -q origin main; }
 
-# run <dir> <allow_unmerged> — runs the guard as rebuild.sh does (set -euo
-# pipefail, no color), prints its combined output then "RC:<status>".
+# run <dir> <allow_unmerged> [flake_ref] — runs the guard as rebuild.sh does
+# (set -euo pipefail, `|| exit`-style call, no color), prints its combined
+# output then "RC:<status>".
 run() {
   (
     set -euo pipefail
@@ -60,10 +54,14 @@ run() {
     warn() { echo "[WARN] $*"; }; err() { echo "[ERROR] $*" >&2; }
     # Read by the sourced guard, which shellcheck cannot see.
     # shellcheck disable=SC2034
-    { BOLD=''; NC=''; DOTFILES_DIR="$1"; ALLOW_UNMERGED="$2"; }
-    # shellcheck disable=SC1090
-    . "$FUNC"
-    rc=0; sync_dotfiles_checkout || rc=$?
+    { BOLD=''; NC=''; DOTFILES_DIR="$1"; }
+    if [[ -n "${FAIL_GIT_STATUS:-}" ]]; then
+      git() { case " $* " in *" status "*) return 128 ;; esac; command git "$@"; }
+    fi
+    # shellcheck source=../lib/dotfiles-checkout.sh
+    . "$LIB"
+    declare -F sync_dotfiles_checkout >/dev/null || { echo "FATAL: guard not defined by $LIB"; exit 99; }
+    rc=0; sync_dotfiles_checkout "$2" "rebuild.sh --allow-unmerged" "${3:-}" || rc=$?
     echo "RC:$rc"
   ) 2>&1
 }
@@ -139,6 +137,22 @@ expect "fetch failure (offline) refuses and names the escape hatch" 1 "$out" \
 d="$TEST_ROOT/not-a-repo"; mkdir -p "$d"
 out=$(run "$d" false)
 expect "non-git checkout refuses" 1 "$out" "not a git checkout"
+
+# A git that cannot report status (corrupt/unreadable index) must not read as
+# "clean". Corrupting the real index also breaks `fetch`, so fail only
+# `status`, via a git wrapper the sourced guard resolves to.
+fresh; advance_origin
+out=$(FAIL_GIT_STATUS=1 run "$d" false)
+expect "unreadable working-tree status refuses (not read as clean)" 1 "$out" "could not read"
+
+fresh
+out=$(run "$d" false "$d#some-other-host")
+expect "--flake selecting another host from the checkout proceeds" 0 "$out"
+other="$TEST_ROOT/elsewhere"; mkdir -p "$other"
+out=$(run "$d" false "$other#host")
+expect "--flake pointing outside the guarded checkout refuses" 1 "$out" "is not the guarded checkout"
+out=$(run "$d" false "github:rh7/dotfiles/some-branch#host")
+expect "--flake remote ref refuses" 1 "$out" "is not the guarded checkout"
 
 echo ""
 echo "checkout guard — --allow-unmerged proceeds, loudly"
