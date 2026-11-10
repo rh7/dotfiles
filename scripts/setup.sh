@@ -449,6 +449,22 @@ if [[ -n "$CONFIG_SERVER" ]] && curl -sf "http://${CONFIG_SERVER}/api/health" --
     || true
 fi
 
+# Secrets precheck (#310). sops-nix decrypts at ACTIVATION, so a host whose
+# config declares sops secrets but whose age key is not yet a recipient builds
+# fine and then fails mid-activation. Stop before anything is built or applied.
+# setup-secrets.sh owns the whole decision: it evaluates whether this host's
+# config declares sops secrets (needsSecrets = false hosts pass), tests
+# decryption, and prints the exact command for an existing recipient
+# (scripts/sops-add-host.sh) — that half cannot run on this device.
+if [[ -n "$MATCHED_PROFILE" ]]; then
+  info "Checking $MATCHED_PROFILE can decrypt the sops secrets its config declares..."
+  if ! "$DOTFILES_DIR/scripts/setup-secrets.sh" --hostname "$MATCHED_PROFILE" --no-register; then
+    err "Stopping before the Nix build: $MATCHED_PROFILE would fail activation without its secrets."
+    echo "  Once the sops-add-host PR is merged, re-run this script."
+    exit 1
+  fi
+fi
+
 # Build and apply Nix configuration
 NIX_BUILD_OK=false
 if [[ -n "$MATCHED_PROFILE" ]]; then
