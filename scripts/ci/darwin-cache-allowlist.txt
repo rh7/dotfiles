@@ -1,0 +1,37 @@
+# Derivations every Mac builds locally BY DESIGN — read by check-darwin-cache.sh.
+# One glob per line, matched against the derivation name. Only add an entry with
+# the reason it can never be in cache.nixos.org AND why building it is cheap; a
+# nixpkgs package does not belong here (wait for Hydra instead).
+#
+# Baseline: these are exactly what origin/main's lock produced on 2026-11-10 for
+# all eight darwinConfigurations.
+
+# sops-nix's Go activation helper (every host that imports sops-nix). sops-nix
+# is a flake input, not nixpkgs, so Hydra never builds it for our pin; a small
+# `go build` against a cached Go toolchain (its vendored modules are a
+# fixed-output fetch). Seconds to a minute.
+sops-install-secrets-*
+
+# nix-darwin documentation rendered from THIS flake's module set
+# (documentation.enable): option dump, man pages, HTML manual, and the
+# darwin-uninstaller script that embeds this system. Their inputs are the
+# configuration itself, so no cache can hold them; nixos-render-docs/python
+# only, no compiler (stdenvNoCC).
+options.json
+darwin-manpages
+darwin-manual-html
+darwin-uninstaller
+
+# home-manager is a flake input, not part of nixpkgs: its translations
+# (`msgfmt` over .po files) and reference man page are never on Hydra.
+hm-modules-messages
+home-configuration-reference-manpage
+
+# Per-user launchd agent bundles home-manager assembles from this
+# configuration's plists (shell `cp`/`ln`, stdenvNoCC).
+home-manager-agents
+home-manager-agent-domains
+
+# nix-darwin security.pki: `cat` of the nss-cacert bundle plus any configured
+# certificates — configuration-specific, one shell line.
+ca-certificates.crt
