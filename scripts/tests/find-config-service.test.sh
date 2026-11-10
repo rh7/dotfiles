@@ -159,6 +159,19 @@ else
   sed 's/^/         /' "$TEST_ROOT/drift.diff" | head -40
   fail=$((fail+1))
 fi
+# scripts/pre-wipe-check.sh carries a third copy (it is also fetched standalone
+# via `curl … | bash`). It only reads from the service, but it must resolve the
+# same instance the fleet writes to, so it is held to the same byte-identity.
+PREWIPE="$REPO_ROOT/scripts/pre-wipe-check.sh"
+extract_block "$PREWIPE" "$TEST_ROOT/prewipe.sh"
+if diff -u "$TEST_ROOT/audit.sh" "$TEST_ROOT/prewipe.sh" > "$TEST_ROOT/drift-prewipe.diff"; then
+  echo "  ok   — pre-wipe-check.sh carries the same resolver"
+  pass=$((pass+1))
+else
+  echo "  FAIL — the shared resolver has DRIFTED in pre-wipe-check.sh:"
+  sed 's/^/         /' "$TEST_ROOT/drift-prewipe.diff" | head -40
+  fail=$((fail+1))
+fi
 
 # ── one resolution per run ───────────────────────────────────────────────────
 echo
