@@ -236,6 +236,8 @@ check "consecutive_failures reset" "$(field consecutive_failures)" "0"
 [[ "$(field last_success_at)" != null ]] && good "last_success_at set" || bad "last_success_at set" "null"
 grep -q 'build .*darwinConfigurations."test-host".system' "$ROOT/stub.log" \
   && good "builds the baked-in flake attr" || bad "builds the baked-in flake attr" "$(cat "$ROOT/stub.log")"
+grep -q 'build --no-update-lock-file ' "$ROOT/stub.log" \
+  && good "never re-resolves flake.lock" || bad "never re-resolves flake.lock" "$(cat "$ROOT/stub.log")"
 grep -q 'sudo -n -u tester -- sudo -K' "$ROOT/stub.log" \
   && good "closes the primary user's sudo window first" || bad "closes the primary user's sudo window first" "$(cat "$ROOT/stub.log")"
 check "checkout is detached at the tip" "$(git -C "$ROOT/var/lib/rh7-fleet-update/dotfiles" rev-parse HEAD)" "$C2"
@@ -408,7 +410,7 @@ check "reason outside the closed set -> state-unreadable" \
   "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
 for bad_state in '.last_run_at = "garbage"' '.reason = "fetch-failed"' \
                  '.last_result = "refused" | .reason = "on-battery"' 'del(.target_commit)' \
-                 '.applied_commit = "abc"' '.consecutive_failures = -1'; do
+                 '.applied_commit = "abc"' '.consecutive_failures = -1' '.generation = -1'; do
   jq "$bad_state" "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
   check "contract violation ($bad_state) -> state-unreadable" \
     "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'

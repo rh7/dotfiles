@@ -2665,7 +2665,7 @@ def valid(s):
     if s["last_success_at"] is not None and not (isinstance(s["last_success_at"], str) and ISO.match(s["last_success_at"])):
         return False
     g = s.get("generation")
-    if g is not None and (isinstance(g, bool) or not isinstance(g, int)):
+    if g is not None and (isinstance(g, bool) or not isinstance(g, int) or g < 0):
         return False
     f = s.get("consecutive_failures")
     if isinstance(f, bool) or not isinstance(f, int) or f < 0:

@@ -351,9 +351,11 @@ is_ancestor() { g merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
 # ── Build + activate ─────────────────────────────────────────────────────────
 build_system() {
   local out
+  # --no-update-lock-file: a commit whose flake.lock is missing or stale must
+  # FAIL, not resolve fresh input revisions the signature never covered.
   out=$(run_timeout "$BUILD_TIMEOUT" nix --extra-experimental-features 'nix-command flakes' \
       --option accept-flake-config false \
-      build --out-link "$BUILD_LINK" --print-out-paths \
+      build --no-update-lock-file --out-link "$BUILD_LINK" --print-out-paths \
       "$CHECKOUT#darwinConfigurations.\"$FLAKE_ATTR\".system" </dev/null) || return 1
   out=$(printf '%s\n' "$out" | tail -n 1)
   [[ -n "$out" && -x "$out/activate" ]] || { log "build produced no activatable system ($out)"; return 1; }
@@ -446,13 +448,8 @@ main() {
   setup_logging
   log "start channel=$CHANNEL attr=$FLAKE_ATTR dry_run=$DRY_RUN force_check=$FORCE_CHECK scheduled=$SCHEDULED"
 
-  if ! read_state; then
-    # Not overwritten on purpose: the audit then reports state-unreadable, and
-    # the rewind guard is never silently reset by a blank applied_commit.
-    log "state file $STATE_FILE is unreadable or not schema 1 — refusing to run; inspect and remove it"
-    exit 1
-  fi
-
+  # Jitter first, then the lock, THEN the state read: values read before
+  # holding the lock could be stale by the time this run writes.
   if [[ $SCHEDULED -eq 1 && $FORCE_CHECK -eq 0 && $DRY_RUN -eq 0 ]]; then
     local delay=$((RANDOM % JITTER_MAX))
     log "scheduled run: sleeping ${delay}s"
@@ -466,6 +463,14 @@ main() {
     log "skipped (lock-held): another fleet-update run holds $LOCK_DIR — state not written"
     exit 0
   fi
+
+  if ! read_state; then
+    # Not overwritten on purpose: the audit then reports state-unreadable, and
+    # the rewind guard is never silently reset by a blank applied_commit.
+    log "state file $STATE_FILE does not match the contract — refusing to run; inspect and remove it"
+    exit 1
+  fi
+
   if rebuild_in_progress; then finish skipped rebuild-in-progress; fi
   if [[ $FORCE_CHECK -eq 0 ]] && ! on_ac_power; then finish skipped on-battery; fi
 
