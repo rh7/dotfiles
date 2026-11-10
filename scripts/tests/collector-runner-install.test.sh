@@ -8,8 +8,10 @@
 # setup.sh runs `--install` right AFTER activation; without a guard that call
 # boots the declared agent out and overwrites its plist with the imperative one,
 # so the host silently runs an unmanaged schedule until the next rebuild.
-# These tests pin both directions: a declared agent is left untouched, and a
-# host without one still gets the imperative LaunchAgent.
+# These tests pin: a declared, deployed and loaded agent is left untouched; a
+# declared agent that is missing on disk or not loaded falls back to the
+# imperative LaunchAgent (the device must keep auditing); and a host without a
+# home-manager agent still gets the imperative LaunchAgent.
 #
 # The script runs for real in a sandbox HOME; `uname` and `launchctl` are stubbed
 # on PATH so the Darwin branch is exercised on any OS without touching launchd.
@@ -26,7 +28,9 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; printf '      %s\n' "$2"; fail
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Stub bin: uname reports Darwin; launchctl records calls and succeeds.
+# Stub bin: uname reports Darwin; launchctl records calls and succeeds, except
+# that with LAUNCHCTL_UNLOADED=1 `print` fails until something is bootstrapped
+# (models a declared agent whose launchd job is not loaded).
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/uname" <<'EOF'
 #!/usr/bin/env bash
@@ -34,38 +38,73 @@ echo Darwin
 EOF
 cat > "$TMP/bin/launchctl" <<'EOF'
 #!/usr/bin/env bash
+if [ "$1" = "print" ] && [ "${LAUNCHCTL_UNLOADED:-0}" = 1 ] \
+  && ! grep -q '^bootstrap ' "$LAUNCHCTL_LOG"; then
+  echo "$*" >> "$LAUNCHCTL_LOG"
+  exit 113
+fi
 echo "$*" >> "$LAUNCHCTL_LOG"
 exit 0
 EOF
 chmod +x "$TMP/bin/uname" "$TMP/bin/launchctl"
 
-# run_install <home> -> sets OUT; launchctl calls land in <home>/launchctl.log
+# make_home <dir> [deploy] -> HOME whose active home-manager generation declares
+# the agent; with "deploy" the same plist is also in ~/Library/LaunchAgents.
+make_home() {
+  local home="$1" hm_dir="$1/.local/state/home-manager/gcroots/current-home/LaunchAgents"
+  mkdir -p "$hm_dir" "$home/Library/LaunchAgents"
+  echo "declared-by-home-manager" > "$hm_dir/$LABEL.plist"
+  [[ "${2:-}" == deploy ]] && cp "$hm_dir/$LABEL.plist" "$home/Library/LaunchAgents/$LABEL.plist"
+  return 0
+}
+
+# run_install <home> [ENV=VAL...] -> sets OUT; launchctl calls land in <home>/launchctl.log
 run_install() {
-  local home="$1"
+  local home="$1"; shift
   : > "$home/launchctl.log"
-  OUT="$(HOME="$home" LAUNCHCTL_LOG="$home/launchctl.log" \
+  OUT="$(env "$@" HOME="$home" LAUNCHCTL_LOG="$home/launchctl.log" \
     COLLECTOR_CACHE_DIR="$home/cache" PATH="$TMP/bin:$PATH" \
     bash "$SCRIPT" --install 2>&1)"
 }
 
+# assert_imperative <home> <case> — the imperative agent was written and bootstrapped
+assert_imperative() {
+  grep -q "<string>$LABEL</string>" "$1/Library/LaunchAgents/$LABEL.plist" 2>/dev/null \
+    && good "$2: imperative LaunchAgent plist is written" \
+    || bad "$2: imperative LaunchAgent plist is written" "got: $OUT"
+  grep -q "^bootstrap " "$1/launchctl.log" \
+    && good "$2: agent is bootstrapped into launchd" \
+    || bad "$2: agent is bootstrapped into launchd" "calls: $(cat "$1/launchctl.log")"
+}
+
 echo ""
-echo "collector-runner --install — home-manager-declared agent"
+echo "collector-runner --install — declared, deployed and loaded"
 
 H1="$TMP/declared"
-hm_dir="$H1/.local/state/home-manager/gcroots/current-home/LaunchAgents"
-mkdir -p "$hm_dir" "$H1/Library/LaunchAgents"
-echo "declared-by-home-manager" > "$hm_dir/$LABEL.plist"
-cp "$hm_dir/$LABEL.plist" "$H1/Library/LaunchAgents/$LABEL.plist"
+make_home "$H1" deploy
 run_install "$H1"
 
 [[ "$(cat "$H1/Library/LaunchAgents/$LABEL.plist")" == "declared-by-home-manager" ]] \
   && good "declared plist is not overwritten" \
   || bad "declared plist is not overwritten" "plist now: $(cat "$H1/Library/LaunchAgents/$LABEL.plist")"
-[[ ! -s "$H1/launchctl.log" ]] \
-  && good "launchctl is never called (no bootout of the declared agent)" \
-  || bad "launchctl is never called (no bootout of the declared agent)" "calls: $(cat "$H1/launchctl.log")"
+! grep -qE '^(bootout|bootstrap|unload) ' "$H1/launchctl.log" \
+  && good "declared agent is neither booted out nor re-bootstrapped" \
+  || bad "declared agent is neither booted out nor re-bootstrapped" "calls: $(cat "$H1/launchctl.log")"
 grep -q "declared by the active home-manager generation" <<<"$OUT" \
   && good "says why it skipped" || bad "says why it skipped" "got: $OUT"
+
+echo ""
+echo "collector-runner --install — declared but NOT running (falls back)"
+
+H3="$TMP/declared-missing"
+make_home "$H3"
+run_install "$H3"
+assert_imperative "$H3" "deployed plist missing"
+
+H4="$TMP/declared-unloaded"
+make_home "$H4" deploy
+run_install "$H4" LAUNCHCTL_UNLOADED=1
+assert_imperative "$H4" "launchd job not loaded"
 
 echo ""
 echo "collector-runner --install — no declared agent (imperative path)"
@@ -73,13 +112,7 @@ echo "collector-runner --install — no declared agent (imperative path)"
 H2="$TMP/imperative"
 mkdir -p "$H2"
 run_install "$H2"
-
-grep -q "<string>$LABEL</string>" "$H2/Library/LaunchAgents/$LABEL.plist" 2>/dev/null \
-  && good "imperative LaunchAgent plist is written" \
-  || bad "imperative LaunchAgent plist is written" "got: $OUT"
-grep -q "^bootstrap " "$H2/launchctl.log" \
-  && good "agent is bootstrapped into launchd" \
-  || bad "agent is bootstrapped into launchd" "calls: $(cat "$H2/launchctl.log")"
+assert_imperative "$H2" "no home-manager agent"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

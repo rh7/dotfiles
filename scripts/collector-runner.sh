@@ -263,11 +263,18 @@ install_schedule() {
   # #315). Overwriting it with the imperative plist would silently swap the
   # declared, store-pinned agent for an unmanaged one until the next rebuild
   # (setup.sh calls --install right after activation). So when the ACTIVE
-  # home-manager generation ships this label, leave it alone.
+  # home-manager generation ships this label AND that exact plist is deployed
+  # AND launchd has it loaded, leave it alone. If any of those is false the
+  # declared agent is not actually running: fall through and install the
+  # imperative one so the device keeps auditing; the next rebuild re-asserts
+  # the declared agent (same Label).
   local hm_plist="$HOME/.local/state/home-manager/gcroots/current-home/LaunchAgents/${LABEL}.plist"
   if [ "$OS" = "Darwin" ] && [ -f "$hm_plist" ]; then
-    log "$LABEL is declared by the active home-manager generation — keeping the nix-managed agent (no imperative install)"
-    return 0
+    if cmp -s "$hm_plist" "$PLIST" && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+      log "$LABEL is declared by the active home-manager generation and loaded — keeping the nix-managed agent (no imperative install)"
+      return 0
+    fi
+    log "$LABEL is declared by home-manager but not deployed/loaded as declared — installing the imperative agent so audits keep running (next rebuild restores the declared one)"
   fi
   local self; self="$(resolve_self)" || { log "cannot resolve runner path for schedule — aborting install"; return 1; }
   if [ "$OS" = "Darwin" ]; then
