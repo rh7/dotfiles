@@ -396,6 +396,40 @@ to set one of `personal`/`developer`/`server`/`ai-inference`/`smart-home`/`mobil
 
 ---
 
+## Fixing issues on a device
+
+Every action item on the dashboard (`GET /api/fleet/health`) names a **fix id**.
+Run it **on the affected device** — `scripts/fleet-fix.sh` inspects that machine,
+prints each finding as `OK` / `FIX` / `MANUAL` with the exact command, and changes
+nothing unless you pass `--apply`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/fleet-fix.sh | bash -s -- doctor
+~/dotfiles/scripts/fleet-fix.sh <fix-id> [--apply]      # same thing from a clone
+```
+
+| Fix id | Dry-run shows | `--apply` does | Needs |
+|---|---|---|---|
+| `doctor` | this host's open action items → fix id, then each fix id's plan | nothing (read-only) | — |
+| `backup` | at-risk repos (re-checked live) with the git commands to push to a `backup/<host>-<date>` branch; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
+| `age-key` | whether `~/.config/sops/age/keys.txt` exists | runs `setup-secrets.sh` (generate + register); prints `sops-add-host.sh <host>` for an existing recipient | recipient host |
+| `audit` | collector-runner schedule + last audit age | `collector-runner.sh --install` (reloads the nix-declared agent where one exists) + one gated audit | — |
+| `firewall` | macOS application firewall state; `rouvens-mac-studio` is exempt (#93) unless `--force` | `sudo socketfilterfw --setglobalstate on`, re-verify; if the CLI no-ops (macOS 15+), opens System Settings and re-verifies | sudo, GUI |
+| `filevault` | `fdesetup status` | `sudo fdesetup enable` (interactive) + reminder to store the recovery key in 1Password | sudo |
+| `disk-encryption` | Linux: LUKS present? (macOS: same as `filevault`) | nothing — Linux can't encrypt in place; accepted-risk path is a dashboard Ack | — |
+| `resources` | disk %, swap, nix store, dead store paths, brew cache, `~/Library/Caches`, docker | only when disk > 80%: `nix-collect-garbage --delete-older-than 30d` + `brew cleanup` (never user data) | — |
+| `drift` | output of `audit-config-drift.sh` | nothing — fold drift into the flake or `rebuild.sh` | a clone |
+| `fleet-update` | `state.json`, last 50 log lines, `rh7-fleet-update --dry-run` (only with cached sudo) | lets that dry-run prompt for sudo; nothing else | sudo |
+
+`--apply` asks on the terminal before anything that needs sudo, a GUI or
+1Password (`--yes` answers for you). Exit codes: `0` nothing to fix, `1` items
+remain (or `--apply` incomplete), `2` error (e.g. config service unreachable),
+`64` usage. It reuses `scripts/lib/config-service.sh` (pin → probe resolver),
+`setup-secrets.sh` and `collector-runner.sh`; run clone-free it fetches those
+from raw `main`.
+
+---
+
 ## Device CLI Reference
 
 All commands are run from `~/dotfiles`:
