@@ -2614,6 +2614,77 @@ print(json.dumps(result) if result else '{}')
 # Assemble full audit
 # ══════════════════════════════════════════════════════════════════════════
 
+# ── Fleet update daemon (rh-device-management fleet_update contract) ────────
+# Reports the state of the unattended updater (modules/darwin/fleet-update.nix):
+#   - plist absent                 -> {"enabled": false}
+#   - plist present, state missing
+#     or not a valid schema-1 file -> {"enabled": true, "error": "state-unreadable"}
+#   - otherwise                    -> the state file, restricted to the contract
+#                                     fields (nothing else is ever forwarded).
+# Linux has no such daemon -> {"enabled": false}. Paths are parameters so the
+# test suite can point them at fixtures.
+collect_fleet_update() {
+  local plist="${1:-/Library/LaunchDaemons/org.rh7.fleet-update.plist}"
+  local state="${2:-/var/lib/rh7-fleet-update/state.json}"
+  if [[ "$OS" != "Darwin" || ! -e "$plist" ]]; then
+    echo '{"enabled": false}'
+    return
+  fi
+  python3 - "$state" <<'PYEOF' 2>/dev/null || echo '{"enabled": true, "error": "state-unreadable"}'
+import json, re, sys
+
+UNREADABLE = {"enabled": True, "error": "state-unreadable"}
+SHA = re.compile(r"^[0-9a-f]{40}$")
+ISO = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+REFUSED = {"signature-invalid", "signer-key-expired", "not-fast-forward", "not-in-main"}
+SKIPPED = {"on-battery", "lock-held", "rebuild-in-progress"}
+FAILED = {"fetch-failed", "build-failed", "activation-failed", "brew-failed", "unknown"}
+# result -> the reasons it may carry (None = reason must be null)
+RESULT_REASONS = {"applied": {None}, "no-op": {None}, "skipped": SKIPPED,
+                  "failed": FAILED, "refused": REFUSED}
+
+KEYS = ("schema", "enabled", "channel", "last_run_at", "last_result", "reason",
+        "target_commit", "applied_commit", "last_success_at", "generation",
+        "consecutive_failures")
+
+def valid(s):
+    if not isinstance(s, dict) or any(k not in s for k in KEYS):
+        return False
+    if s["schema"] != 1 or s["enabled"] is not True:
+        return False
+    if s.get("channel") not in ("main", "fleet/stable"):
+        return False
+    if not (isinstance(s["last_run_at"], str) and ISO.match(s["last_run_at"])):
+        return False
+    if s["last_result"] not in RESULT_REASONS or s["reason"] not in RESULT_REASONS[s["last_result"]]:
+        return False
+    for k in ("target_commit", "applied_commit"):
+        v = s.get(k)
+        if v is not None and not (isinstance(v, str) and SHA.match(v)):
+            return False
+    if s["last_success_at"] is not None and not (isinstance(s["last_success_at"], str) and ISO.match(s["last_success_at"])):
+        return False
+    g = s.get("generation")
+    if g is not None and (isinstance(g, bool) or not isinstance(g, int) or g < 0):
+        return False
+    f = s.get("consecutive_failures")
+    if isinstance(f, bool) or not isinstance(f, int) or f < 0:
+        return False
+    return True
+
+try:
+    with open(sys.argv[1]) as fh:
+        state = json.load(fh)
+except Exception:
+    state = None
+
+if not valid(state):
+    print(json.dumps(UNREADABLE))
+else:
+    print(json.dumps({k: state[k] for k in KEYS}))
+PYEOF
+}
+
 collect_audit_scope() {
   if [[ "$AUDIT_INCLUDE_PROTECTED" == "1" || "$OS" != "Darwin" ]]; then
     echo '{"mode":"deep","protected_locations":true,"permission_note":"May request macOS access to personal/cloud folders, browser profiles, Location, and System Events."}'
@@ -2723,6 +2794,8 @@ $(collect_backup_posture)
 $(collect_git_repos)
 ---SECTION: secret_inventory
 $(collect_secret_inventory)
+---SECTION: fleet_update
+$(collect_fleet_update)
 AUDIT_DATA
 )
 
