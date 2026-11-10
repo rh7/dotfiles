@@ -10,8 +10,9 @@
 # from the tree it is about to fetch.
 #
 # Per run, in order (first failing step decides the result):
-#   1. preconditions  single-instance lock; no darwin-rebuild / rebuild.sh
-#                     running; on AC power          -> skipped
+#   1. preconditions  single-instance lock (lock-held: logged, state untouched);
+#                     no darwin-rebuild / rebuild.sh running (checked again
+#                     before activation); on AC power -> skipped
 #   2. fetch          root-owned checkout /var/lib/rh7-fleet-update/dotfiles,
 #                     fetch `main` + the channel     -> failed / fetch-failed
 #   3. trust          channel tip T must
@@ -187,7 +188,7 @@ finish() {
     log "dry-run result: ${result}${reason:+ ($reason)}${TARGET:+ target=$TARGET} — state not written"
     case "$result" in failed) exit 1 ;; refused) exit 3 ;; *) exit 0 ;; esac
   fi
-  # Re-read so a concurrent lock-held skip cannot resurrect stale fields.
+  # Re-read: the lock holder is the only writer, but the file is the truth.
   read_state || true
   applied="$PREV_APPLIED"; success="$PREV_SUCCESS"
   generation="$PREV_GENERATION"; failures="$PREV_FAILURES"
@@ -420,7 +421,13 @@ main() {
     sleep "$delay"
   fi
 
-  acquire_lock || { log "another fleet-update run holds $LOCK_DIR"; finish skipped lock-held; }
+  if ! acquire_lock; then
+    # Logged only, NOT recorded: the holder owns state.json for its whole run.
+    # A read-modify-write from here could land after the holder's final write
+    # and resurrect a stale applied_commit, weakening the rewind guard.
+    log "skipped (lock-held): another fleet-update run holds $LOCK_DIR — state not written"
+    exit 0
+  fi
   if rebuild_in_progress; then finish skipped rebuild-in-progress; fi
   if [[ $FORCE_CHECK -eq 0 ]] && ! on_ac_power; then finish skipped on-battery; fi
 
@@ -464,6 +471,11 @@ main() {
   out=$(build_system) || finish failed build-failed
   log "built $out"
 
+  # Re-check right before touching the system profile: a manual rebuild may
+  # have started during the (possibly hours-long) build. This narrows the race
+  # to the activation itself; closing it fully needs rebuild.sh to honour
+  # $LOCK_DIR (follow-up — rebuild.sh is outside this change).
+  if rebuild_in_progress; then finish skipped rebuild-in-progress; fi
   close_user_sudo_window
   local reason gen_before
   gen_before=$(current_generation)

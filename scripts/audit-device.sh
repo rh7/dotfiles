@@ -2635,11 +2635,13 @@ import json, re, sys
 
 UNREADABLE = {"enabled": True, "error": "state-unreadable"}
 SHA = re.compile(r"^[0-9a-f]{40}$")
-RESULTS = {"applied", "no-op", "skipped", "failed", "refused"}
-REASONS = {"on-battery", "lock-held", "rebuild-in-progress", "fetch-failed",
-           "signature-invalid", "signer-key-expired", "not-fast-forward",
-           "not-in-main", "build-failed", "activation-failed", "brew-failed",
-           "unknown"}
+ISO = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+REFUSED = {"signature-invalid", "signer-key-expired", "not-fast-forward", "not-in-main"}
+SKIPPED = {"on-battery", "lock-held", "rebuild-in-progress"}
+FAILED = {"fetch-failed", "build-failed", "activation-failed", "brew-failed", "unknown"}
+# result -> the reasons it may carry (None = reason must be null)
+RESULT_REASONS = {"applied": {None}, "no-op": {None}, "skipped": SKIPPED,
+                  "failed": FAILED, "refused": REFUSED}
 
 KEYS = ("schema", "enabled", "channel", "last_run_at", "last_result", "reason",
         "target_commit", "applied_commit", "last_success_at", "generation",
@@ -2652,15 +2654,15 @@ def valid(s):
         return False
     if s.get("channel") not in ("main", "fleet/stable"):
         return False
-    if not isinstance(s.get("last_run_at"), str) or s.get("last_result") not in RESULTS:
+    if not (isinstance(s["last_run_at"], str) and ISO.match(s["last_run_at"])):
         return False
-    if s.get("reason") is not None and s.get("reason") not in REASONS:
+    if s["last_result"] not in RESULT_REASONS or s["reason"] not in RESULT_REASONS[s["last_result"]]:
         return False
     for k in ("target_commit", "applied_commit"):
         v = s.get(k)
         if v is not None and not (isinstance(v, str) and SHA.match(v)):
             return False
-    if s.get("last_success_at") is not None and not isinstance(s.get("last_success_at"), str):
+    if s["last_success_at"] is not None and not (isinstance(s["last_success_at"], str) and ISO.match(s["last_success_at"])):
         return False
     g = s.get("generation")
     if g is not None and (isinstance(g, bool) or not isinstance(g, int)):

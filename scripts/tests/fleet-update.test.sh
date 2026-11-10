@@ -114,7 +114,13 @@ echo "Now drawing from '${STUB_POWER:-AC Power}'"
 EOF
 cat >"$STUBS/pgrep" <<'EOF'
 #!/usr/bin/env bash
-[[ -n "${STUB_REBUILD:-}" ]]
+# STUB_REBUILD=1: a rebuild is running from the start. STUB_REBUILD=after-build:
+# one starts while the daemon is building (seen once something is in the store).
+case "${STUB_REBUILD:-}" in
+  1) exit 0 ;;
+  after-build) [[ -n "$(ls -A "$STUB_STORE" 2>/dev/null)" ]] ;;
+  *) exit 1 ;;
+esac
 EOF
 cat >"$STUBS/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -277,9 +283,17 @@ STUB_REBUILD=1 run_fu
 expect "darwin-rebuild running" 0 skipped rebuild-in-progress
 
 fresh; refs "$C2" "$C2"
+STUB_REBUILD=after-build run_fu
+expect "rebuild started during the build" 0 skipped rebuild-in-progress
+[[ ! -e "$ROOT/nix/var/nix/profiles/system" ]] && good "rebuild during build: profile untouched" \
+  || bad "rebuild during build: profile untouched" "$(readlink "$ROOT/nix/var/nix/profiles/system")"
+
+fresh; refs "$C2" "$C2"
 mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"; echo $$ >"$ROOT/var/run/rh7-fleet-update.lock/pid"
 run_fu
-expect "another run holds the lock" 0 skipped lock-held
+check "another run holds the lock: exit 0" "$RC" "0"
+[[ ! -e "$STATE" ]] && good "lock-held: state left to the holder" || bad "lock-held: state left to the holder" "$(cat "$STATE")"
+grep -q 'skipped (lock-held)' <<<"$OUT" && good "lock-held: logged" || bad "lock-held: logged" "$OUT"
 check "lock-held: foreign lock left alone" "$(cat "$ROOT/var/run/rh7-fleet-update.lock/pid")" "$$"
 
 echo ""
@@ -366,6 +380,13 @@ check "valid state -> values passed through" "$(jq -r '.applied_commit' <<<"$got
 jq '.reason = "made-up"' "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
 check "reason outside the closed set -> state-unreadable" \
   "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
+for bad_state in '.last_run_at = "garbage"' '.reason = "fetch-failed"' \
+                 '.last_result = "refused" | .reason = "on-battery"' 'del(.target_commit)' \
+                 '.applied_commit = "abc"' '.consecutive_failures = -1'; do
+  jq "$bad_state" "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
+  check "contract violation ($bad_state) -> state-unreadable" \
+    "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
+done
 # shellcheck disable=SC2034
 OS=Linux
 check "Linux -> disabled" "$(collect_fleet_update "$A/plist" "$A/state.json")" '{"enabled": false}'
