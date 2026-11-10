@@ -122,6 +122,11 @@ check "Documents, synced"           1 "$(cloud "$HOME/Documents/vault" 1)"
 check "Documents, NOT synced"       0 "$(cloud "$HOME/Documents/vault" 0)"
 check "plain home folder"           0 "$(cloud "$HOME/vault" 1)"
 check "Dropbox lookalike prefix"    0 "$(cloud "$HOME/DropboxOld/vault" 1)"
+check "legacy ~/Dropbox root"      1 "$(cloud "$HOME/Dropbox/vault" 0)"
+check "legacy ~/OneDrive root"     1 "$(cloud "$HOME/OneDrive - Acme/vault" 0)"
+check "legacy ~/Google Drive root" 1 "$(cloud "$HOME/Google Drive/vault" 0)"
+check "iCloud archive is local"    0 "$(cloud "$HOME/iCloud Drive (Archive)/vault" 1)"
+check ".local is not a cache"      other "$(home_entry_kind .local)"
 
 echo "== table_get =="
 T=$'\nArc.app\tarc\nGoogle Chrome.app\tgoogle-chrome\n'

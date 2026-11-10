@@ -164,7 +164,7 @@ home_entry_kind() {
     Dropbox|"Dropbox ("*|OneDrive|OneDrive*|"Google Drive"|"Google Drive ("*|"Creative Cloud Files"*|Box|"Box Sync"|"iCloud Drive") echo cloud ;;
     .ssh|.gnupg|.aws|.kube|.netrc|.git-credentials|.password-store) echo secret ;;
     .orbstack|OrbStack|.lima|.colima|.docker|.vagrant.d|Parallels|"Virtual Machines"|"Virtual Machines.localized"|"VirtualBox VMs") echo vm ;;
-    .cache|.npm|.npm-global|.cargo|.rustup|.gradle|.m2|.pnpm-store|.bun|.nvm|.pyenv|.rbenv|.gem|.ollama|.lmstudio|.vscode|.vscode-insiders|.cursor|.windsurf|.node-gyp|.yarn|.deno|.expo|.android|.swiftpm|.platformio|go|.nix-defexpr|.nix-profile|.cocoapods|.conda|miniconda3|anaconda3|.pub-cache|.dartServer|.huggingface|.zsh_sessions|.local) echo cache ;;
+    .cache|.npm|.npm-global|.cargo|.rustup|.gradle|.m2|.pnpm-store|.bun|.nvm|.pyenv|.rbenv|.gem|.ollama|.lmstudio|.vscode|.vscode-insiders|.cursor|.windsurf|.node-gyp|.yarn|.deno|.expo|.android|.swiftpm|.platformio|go|.nix-defexpr|.nix-profile|.cocoapods|.conda|miniconda3|anaconda3|.pub-cache|.dartServer|.huggingface|.zsh_sessions) echo cache ;;
     *) echo other ;;
   esac
 }
@@ -251,11 +251,16 @@ parse_gpg_fprs() {
   awk -F: '/^sec:/ { want = 1; next } /^ssb:/ { want = 0 } /^fpr:/ && want { print $10; want = 0 }'
 }
 
-# Is a path inside something that is synced off this Mac?
+# Is a path inside something that is synced off this Mac? Same provider roots
+# as home_entry_kind's "cloud" set, so the two never disagree.
 is_cloud_path() { # is_cloud_path PATH DD_SYNCED
+  local top rest
   case "$1" in
-    "$HOME/Library/Mobile Documents/"*|"$HOME/Library/CloudStorage/"*|"$HOME/Dropbox"|"$HOME/Dropbox/"*|"$HOME/Dropbox ("*) return 0 ;;
-    "$HOME/Desktop"|"$HOME/Desktop/"*|"$HOME/Documents"|"$HOME/Documents/"*) [ "$2" = 1 ] ;;
+    "$HOME/Library/Mobile Documents/"*|"$HOME/Library/CloudStorage/"*) return 0 ;;
+    "$HOME/Desktop"|"$HOME/Desktop/"*|"$HOME/Documents"|"$HOME/Documents/"*) [ "$2" = 1 ]; return ;;
+    "$HOME"/*)
+      rest="${1#"$HOME"/}"; top="${rest%%/*}"
+      [ "$(home_entry_kind "$top")" = cloud ] ;;
     *) return 1 ;;
   esac
 }
@@ -1062,15 +1067,21 @@ appdata_table() { # appdata_table ROWS TITLE
     emit "| $(md_cell "$name") | $(size_label "$kb" "$den") | $(md_cell "$note") |"
   done < <(printf '%s' "$rows" | awk -F'\t' 'BEGIN{OFS="\t"} { s=($1 ~ /^[0-9]+$/) ? $1 : -1; print s, $0 }' | sort -t$'\t' -k1,1nr | cut -f2-)
   blank
-  # Findings for every flagged entry, not just the top 20. Entries that could
-  # not be (fully) read are never silently fine: they are folded into one AMBER.
-  local unread=0 unread_names=""
+  # Findings for every flagged entry, not just the top 20. Unrecognised data
+  # is never silently fine either: big third-party folders and folders that
+  # could not be (fully) read are each folded into one AMBER.
+  local unread=0 unread_names="" big=0 big_names=""
   while IFS=$'\t' read -r kb den name; do
     [ -n "$name" ] || continue
     flag="$(appdata_flag "$name")"
     if [ -z "$flag" ]; then
       if [ "$kb" = "?" ] || [ "$den" = 1 ]; then
         unread=$((unread + 1)); [ "$unread" -le 5 ] && unread_names+="$name, "
+      elif [ "$kb" -ge "$BIG_KB" ]; then
+        # macOS's own folders are system state, not something to carry over.
+        case "$name" in com.apple.*|group.com.apple.*) ;;
+          *) big=$((big + 1)); [ "$big" -le 8 ] && big_names+="$name ($(human_kb "$kb")), " ;;
+        esac
       fi
       continue
     fi
@@ -1081,7 +1092,10 @@ appdata_table() { # appdata_table ROWS TITLE
       else lvl=NONE; fi
     fi
     [ "$lvl" = NONE ] || finding "$lvl" "$name: $note ($(size_label "$kb" "$den"))."
-  done < <(printf '%s' "$rows")
+  done < <(printf '%s' "$rows" | awk -F'\t' 'BEGIN{OFS="\t"} { s=($1 ~ /^[0-9]+$/) ? $1 : -1; print s, $0 }' | sort -t$'\t' -k1,1nr | cut -f2-)
+  if [ "$big" -gt 0 ]; then
+    finding AMBER "$big app-data folder(s) of 100 MB+ under $2 that a reinstall will not restore — confirm each app syncs or is disposable: ${big_names%, }$( [ "$big" -gt 8 ] && printf ', …')."
+  fi
   if [ "$unread" -gt 0 ]; then
     finding AMBER "$unread folder(s) under $2 could not be fully read (Full Disk Access / timeout), e.g. ${unread_names%, }$( [ "$unread" -gt 5 ] && printf ', …')."
   fi
@@ -1331,7 +1345,7 @@ section_backups() {
     done
     [ "$total" -gt 0 ] || continue
     if [ "$signed" -eq "$total" ]; then
-      emit "- ${b%%:*}: $total profile(s), all signed in to an account (sync itself not verified)."
+      finding AMBER "${b%%:*}: $total profile(s) signed in to an account — confirm Sync is actually on in each (signed in ≠ syncing)."
     else
       finding AMBER "${b%%:*}: $((total - signed)) of $total profile(s) not signed in — bookmarks/passwords/extensions there are local only."
     fi
@@ -1345,7 +1359,7 @@ section_backups() {
     if [ "$total" -gt 0 ] && [ "$signed" -lt "$total" ]; then
       finding AMBER "Firefox: $((total - signed)) of $total profile(s) not signed in to a Firefox account."
     elif [ "$total" -gt 0 ]; then
-      emit "- Firefox: $total profile(s), signed in."
+      finding AMBER "Firefox: $total profile(s) signed in — confirm Sync is on in each (signed in ≠ syncing)."
     fi
   fi
   if [ -d "$HOME/Library/Safari" ]; then
@@ -1381,7 +1395,13 @@ section_backups() {
 # ── section 6: checklist ───────────────────────────────────────────────────
 
 section_checklist() {
-  local cfg="${CFG_URL:-http://rouvens-mac-studio:3456}"
+  # The DELETE must go to the instance the fleet actually uses. Never put the
+  # bootstrap fallback here: if resolution failed, use the configured pin
+  # (even if it was unreachable just now) or leave a placeholder.
+  local cfg="${CFG_URL:-${CONFIG_SERVICE_URL:-}}"
+  [ -n "$cfg" ] || cfg="$(_config_service_pin "$CONFIG_SERVICE_PIN_SYSTEM" || _config_service_pin "$CONFIG_SERVICE_PIN_USER")"
+  [ -n "$cfg" ] || cfg="<config-service-url>"
+  cfg="${cfg%/}"
   emit "## 6. Checklist (in this order)"
   blank
   emit "1. **Escrow secrets** — SSH keys, GPG keys, age key, .env files: \`scripts/escrow-secrets-1password.sh\` (rh7/rh-device-management)."
