@@ -109,8 +109,9 @@ launchctl list | grep com.rh7.collector-runner   # daily audit scheduled
 
 Each host has its own age key at `~/.config/sops/age/keys.txt`;
 `secrets/secrets.yaml` is encrypted to every recipient listed in `.sops.yaml`.
-A new host can only be added by someone who can already decrypt — the Mac
-Studio or `m5-air`. This flow arrives with **`fix/310-sops-onboarding`**
+A new host can only be added by someone who can already decrypt — any current
+recipient in `.sops.yaml`: `m5-air` (admin), the Mac Studio, `rouven-m5-pro` or
+`thinkpad`. This flow arrives with **`fix/310-sops-onboarding`**
 (`scripts/sops-add-host.sh` does not exist on `main` before that PR merges).
 
 1. **On the device:** `./scripts/setup-secrets.sh` (or `./scripts/device secrets`).
@@ -118,7 +119,7 @@ Studio or `m5-air`. This flow arrives with **`fix/310-sops-onboarding`**
    config service, and verifies the device can decrypt `secrets/secrets.yaml`.
    If it cannot yet, it exits **non-zero** and prints the public key and the
    command to run next. It does not edit `.sops.yaml` itself.
-2. **On an existing recipient** (Mac Studio or `m5-air`), in a branch/worktree
+2. **On an existing recipient** (any host listed above), in a branch/worktree
    of the dotfiles repo:
 
    ```bash
@@ -135,9 +136,11 @@ Studio or `m5-air`. This flow arrives with **`fix/310-sops-onboarding`**
 4. **On the device:** re-run `./scripts/setup-secrets.sh` (it should now
    decrypt), then `./scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
 
-**Until `fix/310-sops-onboarding` merges** (on `main` today `setup-secrets.sh`
-reports success without adding anything — rh-device-management#310), do the
-recipient step by hand on the Mac Studio or `m5-air`, in a branch/worktree:
+**Until `fix/310-sops-onboarding` merges, don't run `setup-secrets.sh` /
+`device secrets`.** On `main` it never runs `sops updatekeys`, reports success
+regardless, and if it does manage to edit `.sops.yaml` it commits and pushes
+that straight to `main` (rh-device-management#310). Do the recipient step by
+hand on an existing recipient, in a branch/worktree:
 
 1. Get the device's public key: `age-keygen -y ~/.config/sops/age/keys.txt` on
    the device (also printed as `Age key` at the end of `setup.sh`).
@@ -382,7 +385,7 @@ All commands are run from `~/dotfiles`:
 
 | Command | Purpose |
 |---------|---------|
-| `setup` | Backup → rebuild (via `rebuild.sh`) → `setup-secrets.sh` → register. Assumes Nix is installed; for a blank Mac use `scripts/setup.sh` |
+| `setup` | Backup → rebuild (via `rebuild.sh`) → `setup-secrets.sh` → register. Assumes Nix is installed; for a blank Mac use `scripts/setup.sh`. Don't use before `fix/310-sops-onboarding` merges (see [Secrets](#secrets-sops-nix)) |
 | `update` | Rebuild via `rebuild.sh` → register |
 | `status` | Device info (Nix, Tailscale, age key) + config service + fleet overview |
 | `audit` | Interactive audit menu |
@@ -392,7 +395,7 @@ All commands are run from `~/dotfiles`:
 | `backup` | Backup current system state (Homebrew, dock, defaults, dotfiles) |
 | `backup /path` | Backup to custom location |
 | `register` | `POST /api/devices/register` with OS, Tailscale IP, age pubkey. **Caveat:** hard-codes role `workstation` — `setup` and `update` call it too, so on non-workstation hosts (`Kassie-M5-Air13`, the Studio) prefer `rebuild.sh` + `audit-device.sh --run` |
-| `secrets` | Run `setup-secrets.sh` |
+| `secrets` | Run `setup-secrets.sh` — only after `fix/310-sops-onboarding` merges |
 | `sync` / `sync --install` / `sync --uninstall` | Legacy auto-sync cron (every 30 min). Still runs `heartbeat.sh`, which posts role `workstation` — uninstall it; the daily audit replaces it |
 | `fleet` | Fleet-wide status from the config service (`--detail`, `--stale`) |
 | `heartbeat` | Retired — prints a warning and runs `audit-device.sh` instead |

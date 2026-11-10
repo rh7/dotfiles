@@ -312,7 +312,7 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ./scripts/device audit             # interactive audit menu; --local / --save / --run
 ./scripts/device status            # this device + fleet overview
 ./scripts/rebuild.sh               # rebuild (= nrs)
-./scripts/device secrets           # run setup-secrets.sh
+./scripts/device secrets           # setup-secrets.sh — only after fix/310-sops-onboarding merges
 ./scripts/collector-runner.sh --install   # daily audit on any host without com.rh7.collector-runner
 curl -fsSL https://config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ```
