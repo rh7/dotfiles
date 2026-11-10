@@ -70,14 +70,15 @@ register immediately from the clone:
 ~/dotfiles/scripts/audit-device.sh --run   # audit + upload + register now
 ```
 
-An audit from a device the registry doesn't know yet registers it as
-`workstation`. For any other host (e.g. `Kassie-M5-Air13` → `personal`), set
-the role afterwards — `PATCH /api/devices/<hostname>` is admin-gated, so do it
-from an admin tailnet identity:
+An audit from a device the registry doesn't know yet creates it with role
+`unknown`, and later audits preserve that. So set the intended role for
+**every** device registered this way (`workstation`, `personal`, …) —
+`PATCH /api/devices/<hostname>` is admin-gated, so do it from an admin tailnet
+identity:
 
 ```bash
 curl -s -X PATCH -H 'content-type: application/json' \
-  -d '{"role":"personal"}' $CS/api/devices/<hostname>
+  -d '{"role":"workstation"}' $CS/api/devices/<hostname>
 ```
 
 **Secrets hosts:** a host with `needsSecrets = true` (the `mkMac` default)
@@ -185,10 +186,14 @@ has apps, settings and data. `$CS` as above.
       returns `"ready": true` (`status` `ready` or `ready-with-warnings`, no
       critical blockers). Admin-gated — run it from an admin tailnet identity.
 - [ ] **Adopt what you want to keep.** `curl -s $CS/api/audit/gaps/$(hostname -s)`:
-      `present_unmanaged` lists apps installed but not brew-declared — add the
-      keepers to the right `modules/darwin/profiles/*.nix` (or the host's
-      `configurations/macos/*.nix`), PR, merge. Also review `unmanaged_casks`
-      and `unmanaged_formulas`.
+      `present_unmanaged` lists apps from the managed-cask catalogue that are
+      installed but not brew-declared; `unmanaged_casks` / `unmanaged_formulas`
+      list Homebrew installs no profile declares. Apps outside the catalogue
+      appear in neither — also go through the audit's `applications` list
+      (`curl -s $CS/api/audit/$(hostname -s)`) and the `+` lines of
+      `./scripts/audit-config-drift.sh`. Add the keepers to the right
+      `modules/darwin/profiles/*.nix` (or the host's `configurations/macos/*.nix`),
+      PR, merge.
 - [ ] **Dock:** the workstation and personal roles set
       `system.defaults.dock.persistent-apps`, which replaces the **whole** Dock
       on activation. Anything not declared there disappears from it.
@@ -292,7 +297,7 @@ curl -s $CS/api/audit/gaps/$(hostname -s) | python3 -m json.tool
 ```
 
 This shows:
-- **`present_unmanaged`**: installed (e.g. dragged into /Applications) but not brew-declared — the adoption worklist
+- **`present_unmanaged`**: apps from the managed-cask catalogue that are installed (e.g. dragged into /Applications) but not brew-declared. Apps the catalogue doesn't know are not listed here — review the audit's `applications` list for those
 - **`unmanaged_casks`** / **`unmanaged_formulas`**: installed via Homebrew but not in any dotfiles profile
 - **`missing_from_device`**: in dotfiles and genuinely absent from the device
 
@@ -480,7 +485,8 @@ cd ~/dotfiles
 # 3. Check gaps (from any machine on the tailnet)
 curl -s $CS/api/audit/gaps/$(hostname -s) | python3 -m json.tool
 
-# 4. Adopt keepers from present_unmanaged / unmanaged_casks into profiles
+# 4. Adopt keepers from present_unmanaged / unmanaged_casks / the audit's
+#    applications list into profiles
 #    → branch → PR → merge
 
 # 5. Compare with a known-good device
