@@ -53,6 +53,7 @@ stub crontab        'exit 1'
 stub systemctl      'exit 1'
 stub lsblk          'echo "NAME FSTYPE"; echo "sda1 ext4"'
 stub rh7-fleet-update 'echo "dry-run result: no-op"'
+stub gh             'case "$*" in "repo view "*private*) echo PRIVATE ;; "repo view "*public*) echo PUBLIC ;; *) exit 1 ;; esac'
 cat >"$FAKE_BIN/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 out=""; wfmt=""; url=""
@@ -107,6 +108,8 @@ JSON
 cat >"$FIX_DIR/backup-repo.json" <<'JSON'
 {"hostname":"test-mac","audited_at":"2026-11-01 00:00:00","audit_age_hours":200,"paths":[],
  "at_risk_repos":[{"path":"~/code/my repo","dirty":0,"unpushed":1,"branch":"main"},
+                  {"path":"~/code/pubrepo","dirty":0,"unpushed":1,"branch":"main"},
+                  {"path":"~/code/mystery","dirty":2,"unpushed":1,"branch":"main"},
                   {"path":"~/code/lonely","dirty":0,"unpushed":1,"branch":"main","has_remote":false}]}
 JSON
 "$REAL_PY" -c 'import datetime; t=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=300); print("{\"hostname\":\"test-mac\",\"audited_at\":\"%s\"}" % t.strftime("%Y-%m-%d %H:%M:%S"))' >"$FIX_DIR/audit.json"
@@ -202,15 +205,20 @@ echo "== doctor propagates a plan error (backup endpoint down) as exit 2 =="
 reset; ffpipe BACKUP_DOWN=1 -- doctor
 check "plan error -> exit 2" "$RC" 2
 
-echo "== backup re-checks EVERY local branch, quotes paths =="
+echo "== backup re-checks EVERY local branch, quotes paths, never pushes WIP to a public remote =="
 reset
-R="$TEST_ROOT/home/code/my repo"; G=(git -c user.name=t -c user.email=t@t -c init.defaultBranch=main)
-rm -rf "${TEST_ROOT:?}/remote.git"
-"${G[@]}" init -q --bare "$TEST_ROOT/remote.git"
-"${G[@]}" init -q "$R" && "${G[@]}" -C "$R" commit -q --allow-empty -m one \
-  && "${G[@]}" -C "$R" remote add origin "$TEST_ROOT/remote.git" && "${G[@]}" -C "$R" push -q origin main 2>/dev/null \
-  && "${G[@]}" -C "$R" switch -q -c feature && "${G[@]}" -C "$R" commit -q --allow-empty -m two \
-  && "${G[@]}" -C "$R" switch -q main
+G=(git -c user.name=t -c user.email=t@t -c init.defaultBranch=main)
+mkrepo() { # mkrepo DIR GITHUB_SLUG — main pushed, an unpushed feature branch, origin then pointed at GitHub
+  rm -rf "${TEST_ROOT:?}/remote.git"; "${G[@]}" init -q --bare "$TEST_ROOT/remote.git"
+  "${G[@]}" init -q "$1" && "${G[@]}" -C "$1" commit -q --allow-empty -m one \
+    && "${G[@]}" -C "$1" remote add origin "$TEST_ROOT/remote.git" && "${G[@]}" -C "$1" push -q origin main 2>/dev/null \
+    && "${G[@]}" -C "$1" switch -q -c feature && "${G[@]}" -C "$1" commit -q --allow-empty -m two \
+    && "${G[@]}" -C "$1" switch -q main && "${G[@]}" -C "$1" remote set-url origin "git@github.com:$2.git"
+}
+mkrepo "$TEST_ROOT/home/code/my repo" rh7/private-stuff
+mkrepo "$TEST_ROOT/home/code/pubrepo" rh7/public-thing
+mkrepo "$TEST_ROOT/home/code/mystery" rh7/unknown-vis
+echo dirty >"$TEST_ROOT/home/code/mystery/f"
 "${G[@]}" init -q "$TEST_ROOT/home/code/lonely" && "${G[@]}" -C "$TEST_ROOT/home/code/lonely" commit -q --allow-empty -m solo
 ff BACKUP_FIXTURE=backup-repo.json -- backup
 # shellcheck disable=SC2088  # literal "~/" as printed
@@ -218,6 +226,14 @@ has "unpushed feature branch is caught though HEAD is pushed" "~/code/my repo: 1
 has "path is shell-quoted in the command" "git -C $TEST_ROOT/home/code/my\\ repo push origin 'refs/heads/*:refs/heads/backup/test-mac-"
 has "remote-less repo: create a remote, no push to a missing origin" "NO git remote — create a private remote first"
 has "remote-less repo: gh repo create command" "gh repo create lonely --private --source $TEST_ROOT/home/code/lonely"
+has "private remote: push command shown" "git -C $TEST_ROOT/home/code/my\\ repo push origin"
+hasnt "public remote: no push command" "code/pubrepo push"
+# shellcheck disable=SC2088  # literal "~/" as printed
+has "public remote: warns instead" "~/code/pubrepo: 0 uncommitted change(s), 1 unpushed commit(s) — remote 'origin' is PUBLIC or unverified"
+has "public remote: bundle suggested" "git -C $TEST_ROOT/home/code/pubrepo bundle create $TEST_ROOT/home/Backups/pubrepo-test-mac-"
+hasnt "unknown visibility: no push command" "code/mystery push"
+has "unknown visibility treated as public (bundle)" "git -C $TEST_ROOT/home/code/mystery bundle create"
+check "visibility was asked of gh" "$(grep -c '^gh repo view rh7/' "$CALLS")" 3
 
 echo "== --apply firewall: right command, verified =="
 reset; ff FW_CLI_WORKS=1 -- firewall --apply --yes

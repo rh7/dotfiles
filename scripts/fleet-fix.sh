@@ -273,13 +273,36 @@ backup_repo() { # live re-check of one at-risk repo from the audit
     st_manual "$path: $dirty uncommitted change(s), $unp commit(s), and NO git remote — create a private remote first (or rely on Time Machine)" \
       "gh repo create $(basename "$p" | tr ' ' '-') --private --source $q --remote origin && git -C $q push origin 'refs/heads/*:refs/heads/*'"
     [ "$dirty" != "0" ] && info "then commit the $dirty uncommitted change(s): git -C $q add -A && git -C $q commit -m 'wip' && git -C $q push origin HEAD"
+  elif [ "$(remote_visibility "$p" "$remote")" != "private" ]; then
+    # Never publish unreviewed WIP (possibly secrets) to a public — or
+    # unverifiable — remote: a local bundle stored in a private cloud folder instead.
+    local bundle wip=""
+    bundle="$(printf '%q' "$HOME/Backups/$(basename "$p" | tr ' ' '-')-$HOST_LC-$(date +%Y%m%d).bundle")"
+    [ "$dirty" != "0" ] && wip="git -C $q switch -c wip-backup-$(date +%Y%m%d) && git -C $q add -A && git -C $q commit -m 'wip: backup from $HOST_LC' && "
+    st_manual "$path: $dirty uncommitted change(s), $unp unpushed commit(s) — remote '$remote' is PUBLIC or unverified: do NOT push WIP there; bundle it and keep the bundle in iCloud/Dropbox (or push to a private mirror)" \
+      "${wip}mkdir -p ~/Backups && git -C $q bundle create $bundle --branches"
   elif [ "$dirty" != "0" ]; then
-    st_manual "$path: $dirty uncommitted change(s), $unp unpushed commit(s) — commit on a wip branch, push every branch to a backup namespace" \
+    st_manual "$path: $dirty uncommitted change(s), $unp unpushed commit(s) — commit on a wip branch, push every branch to a backup namespace on the private remote" \
       "git -C $q switch -c wip-backup-$(date +%Y%m%d) && git -C $q add -A && git -C $q commit -m 'wip: backup from $HOST_LC' && git -C $q push $remote 'refs/heads/*:$ns/*'"
   else
-    st_manual "$path: $unp commit(s) on local branches no remote has — push every branch to a backup namespace (never onto main)" \
+    st_manual "$path: $unp commit(s) on local branches no remote has — push every branch to a backup namespace on the private remote (never onto main)" \
       "git -C $q push $remote 'refs/heads/*:$ns/*'"
   fi
+}
+
+# "private" only when GitHub (via gh) says PRIVATE/INTERNAL; anything else —
+# public, non-GitHub, gh missing or failing — is treated as public.
+remote_visibility() {
+  local url slug vis=""
+  url="$(git -C "$1" remote get-url "$2" 2>/dev/null)"
+  case "$url" in
+    git@github.com:*) slug="${url#git@github.com:}" ;;
+    https://github.com/*|ssh://git@github.com/*) slug="${url#*github.com/}" ;;
+    *) echo public; return ;;
+  esac
+  slug="${slug%.git}"; slug="${slug%/}"
+  command -v gh >/dev/null 2>&1 && vis="$(run_timeout 15 gh repo view "$slug" --json visibility -q .visibility </dev/null 2>/dev/null)"
+  case "$vis" in PRIVATE|INTERNAL|private|internal) echo private ;; *) echo public ;; esac
 }
 
 backup_local_darwin() {

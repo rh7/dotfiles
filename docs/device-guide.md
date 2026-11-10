@@ -411,7 +411,7 @@ curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/fleet-fix
 | Fix id | Dry-run shows | `--apply` does | Needs |
 |---|---|---|---|
 | `doctor` | this host's open action items → fix id, then each fix id's plan | nothing (read-only) | — |
-| `backup` | at-risk repos (re-checked live) with the git commands to push to a `backup/<host>-<date>` branch; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
+| `backup` | at-risk repos (re-checked live) with the git commands to push every branch to `backup/<host>-<date>/*` — only on a remote `gh` confirms PRIVATE; public/unverifiable remotes get a `git bundle` to keep in iCloud/Dropbox instead; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
 | `age-key` | whether `~/.config/sops/age/keys.txt` exists | runs `setup-secrets.sh` (generate + register); prints `sops-add-host.sh <host>` for an existing recipient | a clone, recipient host |
 | `audit` | collector-runner schedule + last audit age | `collector-runner.sh --install` (reloads the nix-declared agent where one exists) + one gated audit | — |
 | `firewall` | macOS application firewall state; `rouvens-mac-studio` is exempt (#93) unless `--force` | `sudo socketfilterfw --setglobalstate on`, re-verify; if the CLI no-ops (macOS 15+), opens System Settings and re-verifies | sudo, GUI |
