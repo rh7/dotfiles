@@ -145,6 +145,14 @@ fresh; advance_origin
 out=$(FAIL_GIT_STATUS=1 run "$d" false)
 expect "unreadable working-tree status refuses (not read as clean)" 1 "$out" "could not read"
 
+# A post-merge hook (or anything the fast-forward triggers) that touches
+# tracked files must be caught: cleanliness is re-read after the merge.
+fresh; advance_origin
+printf '#!/bin/sh\necho hook >> flake.nix\n' > "$d/.git/hooks/post-merge"
+chmod +x "$d/.git/hooks/post-merge"
+out=$(run "$d" false)
+expect "tracked change made during the fast-forward refuses" 1 "$out" "uncommitted changes"
+
 fresh
 out=$(run "$d" false "$d#some-other-host")
 expect "--flake selecting another host from the checkout proceeds" 0 "$out"
@@ -153,6 +161,14 @@ out=$(run "$d" false "$other#host")
 expect "--flake pointing outside the guarded checkout refuses" 1 "$out" "is not the guarded checkout"
 out=$(run "$d" false "github:rh7/dotfiles/some-branch#host")
 expect "--flake remote ref refuses" 1 "$out" "is not the guarded checkout"
+# Relative sources resolve from the checkout (where rebuild.sh runs nix), not
+# from the caller's cwd: `..` typed inside $d/sub means $d to the caller but
+# the checkout's PARENT to nix.
+mkdir -p "$d/sub"
+out=$(cd "$d/sub" && run "$d" false "..#host")
+expect "--flake relative path is resolved from the checkout, not the cwd" 1 "$out" "is not the guarded checkout"
+out=$(cd "$TEST_ROOT" && run "$d" false ".#host")
+expect "--flake '.' means the checkout" 0 "$out"
 
 echo ""
 echo "checkout guard — --allow-unmerged proceeds, loudly"

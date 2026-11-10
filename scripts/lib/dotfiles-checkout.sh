@@ -59,12 +59,18 @@ sync_dotfiles_checkout() {
 
     if [[ "$branch" == main && -z "$dirty" && "$head" != "$remote" ]] \
        && git -C "$dir" merge-base --is-ancestor "$head" "$remote"; then
-      if git -C "$dir" merge --ff-only --quiet "$remote" \
-         && head=$(git -C "$dir" rev-parse --verify --quiet 'HEAD^{commit}'); then
+      if git -C "$dir" merge --ff-only --quiet "$remote"; then
         ok "Fast-forwarded main → ${remote:0:8}"
       else
         warn "Fast-forward to origin/main failed"
       fi
+      # Re-read everything the checks below use: the merge — or a post-merge
+      # hook — may have moved HEAD or touched tracked files. An unreadable
+      # answer is a refusal (unknown HEAD reads as diverged).
+      head=$(git -C "$dir" rev-parse --verify --quiet 'HEAD^{commit}') || head="unknown"
+      dirty=$(git -C "$dir" status --porcelain --untracked-files=no) \
+        || dirty="(could not re-read working-tree status after fast-forward)"
+      branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
     fi
 
     if [[ -z "$branch" ]]; then
@@ -95,11 +101,14 @@ sync_dotfiles_checkout() {
 
   # The guarded checkout must be the one that gets built. `--flake` may still
   # select another host's attribute from it (`~/dotfiles#other-host`).
+  # A relative source is resolved from $dir, because that is where callers run
+  # nix (rebuild.sh cds there before building) — resolving it from the
+  # caller's cwd could certify one directory while nix builds another.
   if [[ -n "$flake_ref" ]]; then
     src="${flake_ref%%#*}"
     src="${src#path:}"
-    if [[ -z "$src" || ! -d "$src" ]] \
-       || [[ "$(cd -P "$src" 2>/dev/null && pwd)" != "$(cd -P "$dir" 2>/dev/null && pwd)" ]]; then
+    if [[ -z "$src" ]] \
+       || [[ "$(cd "$dir" 2>/dev/null && cd -P "$src" 2>/dev/null && pwd)" != "$(cd -P "$dir" 2>/dev/null && pwd)" ]]; then
       problems+=("--flake '$flake_ref' is not the guarded checkout $dir")
       fixes+=("build from the checkout: --flake \"$dir#<host>\" (or drop --flake)")
     fi
