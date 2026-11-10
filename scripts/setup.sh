@@ -472,18 +472,24 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
         ok "Homebrew installed"
       fi
 
-      if nix build ".#darwinConfigurations.${HOSTNAME}.system" --no-link 2>&1; then
+      # Build to an explicit out-link: on a fresh Mac darwin-rebuild is not on
+      # PATH yet, and activation must use the one inside this closure. The old
+      # `--no-link` build left no ./result, so the fallback ran a path that did
+      # not exist (rh7/rh-device-management#311).
+      if nix build ".#darwinConfigurations.${HOSTNAME}.system" --out-link "${DOTFILES_DIR}/result" 2>&1; then
+        DARWIN_REBUILD="darwin-rebuild"
+        command -v darwin-rebuild &>/dev/null \
+          || DARWIN_REBUILD="${DOTFILES_DIR}/result/sw/bin/darwin-rebuild"
         info "Running darwin-rebuild switch..."
-        if command -v darwin-rebuild &>/dev/null; then
-          sudo darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
-            || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
+        # A failed activation is a failure. It used to be reported as "likely
+        # brew bundle — non-fatal" with NIX_BUILD_OK=true, so a half-switched
+        # Mac went on to the 1Password/GitHub/Tailscale steps as if configured.
+        if sudo "$DARWIN_REBUILD" switch --flake ".#${HOSTNAME}"; then
+          NIX_BUILD_OK=true
+          ok "Configuration applied"
         else
-          nix build ".#darwinConfigurations.${HOSTNAME}.system"
-          sudo ./result/sw/bin/darwin-rebuild switch --flake ".#${HOSTNAME}" && NIX_BUILD_OK=true \
-            || { warn "darwin-rebuild had errors (likely brew bundle — non-fatal)"; NIX_BUILD_OK=true; }
-        fi
-        if $NIX_BUILD_OK; then
-          ok "Configuration applied (re-run 'darwin-rebuild switch' later to retry failed casks)"
+          err "darwin-rebuild switch failed — the system was NOT fully configured."
+          echo "  Fix the error above, then: cd ~/dotfiles && ./scripts/rebuild.sh"
         fi
       else
         warn "Nix build failed. Check flake.nix or run manually later:"
@@ -492,9 +498,12 @@ if [[ -n "$MATCHED_PROFILE" ]]; then
       ;;
     Linux)
       if nix build ".#nixosConfigurations.${HOSTNAME}.config.system.build.toplevel" --no-link 2>/dev/null; then
-        sudo nixos-rebuild switch --flake ".#${HOSTNAME}"
-        NIX_BUILD_OK=true
-        ok "Configuration applied"
+        if sudo nixos-rebuild switch --flake ".#${HOSTNAME}"; then
+          NIX_BUILD_OK=true
+          ok "Configuration applied"
+        else
+          err "nixos-rebuild switch failed — the system was NOT fully configured."
+        fi
       else
         warn "No config found for '$HOSTNAME'"
       fi
