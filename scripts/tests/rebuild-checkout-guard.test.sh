@@ -172,6 +172,15 @@ expect "--flake '.' means the checkout" 0 "$out"
 out=$(cd "$TEST_ROOT" && run "$d" false "#host")
 expect "--flake '#host' (empty source) means the checkout" 0 "$out"
 
+# A narrowed fetch refspec must not leave a stale origin/main to compare
+# against: the guard fetches main explicitly.
+fresh; git -C "$d" config remote.origin.fetch '+refs/heads/nothing:refs/remotes/origin/nothing'
+advance_origin
+out=$(run "$d" false)
+expect "narrowed fetch refspec still sees the real origin/main" 0 "$out" "Fast-forwarded"
+[[ "$(head_of "$d")" == "$(origin_main)" ]] && good "…and lands on it, not a stale tracking ref" \
+  || bad "…and lands on it, not a stale tracking ref" "HEAD $(head_of "$d") != $(origin_main)"
+
 echo ""
 echo "checkout guard — --allow-unmerged proceeds, loudly"
 

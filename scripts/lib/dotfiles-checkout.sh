@@ -46,8 +46,10 @@ sync_dotfiles_checkout() {
   if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     problems+=("$dir is not a git checkout — cannot prove it matches origin/main")
     fixes+=("clone it: git clone https://github.com/rh7/dotfiles.git \"$dir\"")
-  elif ! git -C "$dir" fetch --quiet origin 2>&1 \
-       || ! remote=$(git -C "$dir" rev-parse --verify --quiet 'origin/main^{commit}'); then
+  # Explicit refspec: a narrowed remote.origin.fetch could otherwise "succeed"
+  # without updating origin/main, leaving a stale ref to compare against.
+  elif ! git -C "$dir" fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' 2>&1 \
+       || ! remote=$(git -C "$dir" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}'); then
     problems+=("could not fetch origin/main (offline, or auth failure) — cannot prove the checkout is the merged config")
     fixes+=("retry when online (offline: see the bypass below)")
   elif ! head=$(git -C "$dir" rev-parse --verify --quiet 'HEAD^{commit}') \
@@ -69,7 +71,7 @@ sync_dotfiles_checkout() {
       # moved origin/main. An unreadable answer is a refusal: the sentinels
       # differ, so an unknown HEAD or origin can never compare equal.
       head=$(git -C "$dir" rev-parse --verify --quiet 'HEAD^{commit}') || head="unknown-HEAD"
-      remote=$(git -C "$dir" rev-parse --verify --quiet 'origin/main^{commit}') || remote="unknown-origin"
+      remote=$(git -C "$dir" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}') || remote="unknown-origin"
       dirty=$(git -C "$dir" status --porcelain --untracked-files=no) \
         || dirty="(could not re-read working-tree status after fast-forward)"
       branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
