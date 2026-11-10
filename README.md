@@ -17,7 +17,7 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `rouven-air-m3` | MacBook Air M3 | workstation | `macbook.nix` |
 | `rouven-pro-m4` | MacBook Pro M4 | workstation | `macbook.nix` |
 | `rouvens-mac-mini` → `rouvens-mac-mini-m4` | Mac mini M4 (office) | workstation | `mac-mini-office.nix`, smart-home |
-| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain/secrets/audit only; Homebrew disabled) | `mac-studio.nix`, `fleet-audit.nix` |
+| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS `defaults.nix`, Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix`, `fleet-audit.nix` |
 | `Kassie-M5-Air13` | MacBook Air M5 (user `kassie`) | personal | `macbook.nix`; `needsSecrets = false` |
 | `nixos-vm` | UTM VM (aarch64) | workstation-linux (NixOS) | `vm.nix` |
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
@@ -225,7 +225,7 @@ modules/
   roles/                               # Composable role bundles
     workstation-mac.nix                #   imports all darwin profiles
     workstation-linux.nix              #   imports desktop + all nixos profiles
-    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit only, Homebrew disabled
+    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit (+ defaults.nix via mkMac); Homebrew disabled
     ai-inference.nix                   #   lm-studio (not imported by any host today)
     smart-home.nix                     #   sensibo, sonos, homey (Mac Mini)
     personal-mac.nix                   #   lighter setup for non-developers
@@ -314,7 +314,7 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ./scripts/rebuild.sh               # rebuild (= nrs)
 ./scripts/device secrets           # run setup-secrets.sh
 ./scripts/collector-runner.sh --install   # daily audit on any host without com.rh7.collector-runner
-curl -fsSL config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
+curl -fsSL https://config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ```
 
 There is no heartbeat any more: connectivity comes from the **daily audit**.

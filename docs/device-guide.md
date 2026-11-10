@@ -60,6 +60,26 @@ and activate the host's config → 1Password → `gh auth` → Tailscale → reg
 with the config service → install the daily audit schedule
 (`collector-runner.sh --install`).
 
+**Registration needs the tailnet at start.** `setup.sh` looks for the config
+service once, before the Tailscale step. On a Mac that only joins the tailnet
+during setup it prints *Config service not discovered — skipping registration*,
+and the installed runner won't audit until the next day. Once Tailscale is up,
+register immediately from the clone:
+
+```bash
+~/dotfiles/scripts/audit-device.sh --run   # audit + upload + register now
+```
+
+An audit from a device the registry doesn't know yet registers it as
+`workstation`. For any other host (e.g. `Kassie-M5-Air13` → `personal`), set
+the role afterwards — `PATCH /api/devices/<hostname>` is admin-gated, so do it
+from an admin tailnet identity:
+
+```bash
+curl -s -X PATCH -H 'content-type: application/json' \
+  -d '{"role":"personal"}' $CS/api/devices/<hostname>
+```
+
 **Secrets hosts:** a host with `needsSecrets = true` (the `mkMac` default)
 cannot complete its first activation until its age key is a recipient of
 `secrets/secrets.yaml`. With `fix/310-sops-onboarding`, `setup.sh` stops before
@@ -335,9 +355,10 @@ daily 08:17). On `main` today only the Studio imports it, so on **any** host
 without a `com.rh7.collector-runner` agent (`launchctl list | grep collector`)
 run `./scripts/collector-runner.sh --install` once (it also retires a legacy
 `com.rh7.audit` agent). Non-nix devices without a clone enrol with
-`curl -fsSL config.rh7labs.com/enroll | bash` (first audit + a direct daily
+`curl -fsSL https://config.rh7labs.com/enroll | bash` (first audit + a direct daily
 audit schedule; append `-s -- --status` to check only, `-s -- --role <role>`
-to set the role).
+to set one of `personal`/`developer`/`server`/`ai-inference`/`smart-home`/`mobile`
+— that PATCH is admin-gated, so it only succeeds from an admin tailnet identity).
 
 ---
 
@@ -366,11 +387,12 @@ All commands are run from `~/dotfiles`:
 | `fleet` | Fleet-wide status from the config service (`--detail`, `--stale`) |
 | `heartbeat` | Retired — prints a warning and runs `audit-device.sh` instead |
 
-`device setup` / `device update` pull and flake-update before rebuilding on
-`main` today. With `fix/312-rebuild-merged-only` they no longer `git pull` or
-`nix flake update` (`rebuild.sh` syncs to `origin/main` itself), and
-`update --full` is removed: bump inputs with `nup` on a branch, PR, merge, then
-`device update`.
+On `main` today, `device setup` pulls, runs `nix flake update`, then rebuilds;
+`device update` pulls and rebuilds, and only `device update --full` also runs
+`nix flake update`. With `fix/312-rebuild-merged-only` neither command runs
+`git pull` or `nix flake update` (`rebuild.sh` syncs to `origin/main` itself),
+and `update --full` is removed: bump inputs with `nup` on a branch, PR, merge,
+then `device update`.
 
 ---
 
