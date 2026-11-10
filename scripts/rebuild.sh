@@ -606,8 +606,11 @@ build_darwin_system() {
   else
     info "darwin-rebuild not in PATH — using nix build..."
     # Honour --flake: build the same configuration activation will switch to.
-    local flake_path="${FLAKE_REF%%#*}" flake_host="$HOSTNAME"
+    # A missing or empty fragment (`path` / `path#`) means "this host", as it
+    # does for darwin-rebuild.
+    local flake_path="${FLAKE_REF%%#*}" flake_host=""
     [[ "$FLAKE_REF" == *#* ]] && flake_host="${FLAKE_REF#*#}"
+    flake_host="${flake_host:-$HOSTNAME}"
     nix build "${flake_path}#darwinConfigurations.${flake_host}.system" \
       --out-link "$RESULT_LINK" 2>&1 || return 1
     DARWIN_REBUILD="${RESULT_LINK}/sw/bin/darwin-rebuild"

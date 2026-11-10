@@ -148,7 +148,7 @@ STUB
 chmod +x "$BUILD_ROOT/bin/nix"
 mkdir -p "$BUILD_ROOT/store"
 
-run_build() { # run_build <nix-rc>  -> sets BOUT, BRC, BREBUILD, BARGS
+run_build() { # run_build <nix-rc> [flake-ref-suffix]  -> sets BOUT, BRC, BREBUILD, BARGS
   rm -f "$BUILD_ROOT/dotfiles/result"
   BOUT="$(
     # PATH holds only the stub dir and the base system — no darwin-rebuild.
@@ -157,7 +157,7 @@ run_build() { # run_build <nix-rc>  -> sets BOUT, BRC, BREBUILD, BARGS
     export NIX_ARGS_FILE="$BUILD_ROOT/nix-args" NIX_STORE_DIR="$BUILD_ROOT/store" NIX_STUB_RC="$1"
     DOTFILES_DIR="$BUILD_ROOT/dotfiles" HOSTNAME="fresh-mac"
     # shellcheck disable=SC2034  # read by the eval'd build_darwin_system
-    FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
+    FLAKE_REF="${DOTFILES_DIR}${2-#${HOSTNAME}}"
     # shellcheck disable=SC2034
     RESULT_LINK="${DOTFILES_DIR}/result"
     DARWIN_REBUILD=""
@@ -192,6 +192,17 @@ else
   [[ "$BREBUILD" == /* ]] \
     && good "activation binary is an absolute path (not cwd-relative ./result)" \
     || bad "activation binary is an absolute path (not cwd-relative ./result)" "DARWIN_REBUILD='$BREBUILD'"
+
+  run_build 0 "#other-mac"
+  grep -q "#darwinConfigurations.other-mac.system" <<<"$BARGS" \
+    && good "fallback honours an explicit --flake host" \
+    || bad "fallback honours an explicit --flake host" "nix args: $BARGS"
+  for frag in "#" ""; do
+    run_build 0 "$frag"
+    grep -q "#darwinConfigurations.fresh-mac.system" <<<"$BARGS" \
+      && good "flake ref '…${frag}' defaults to this host" \
+      || bad "flake ref '…${frag}' defaults to this host" "nix args: $BARGS"
+  done
 
   run_build 1
   [[ "$BRC" != 0 ]] && good "failed nix build returns non-zero" \
