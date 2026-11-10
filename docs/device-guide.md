@@ -372,6 +372,7 @@ RED (lost on erase), AMBER (check by hand) and GREEN counts, then a
 - an ordered checklist, ending with `DELETE /api/devices/<host>`
 
 Exit status is `0` (no RED), `1` (RED present) or `2` (script error). It never
-uses sudo or uploads anything, and the report is the only file it writes. To
-escrow secrets, use `scripts/escrow-secrets-1password.sh` in
+uses sudo, uploads anything or modifies user data. The report is the only file
+the script writes, though Homebrew and gpg may refresh their own caches when it
+queries them. To escrow secrets, use `scripts/escrow-secrets-1password.sh` in
 rh7/rh-device-management.

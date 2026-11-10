@@ -18,10 +18,13 @@
 #                     hostname, lowercased, without .local)
 #
 # What it guarantees:
-#   * Read-only. The only file written is the report itself,
+#   * Read-only. The only file this script writes is the report,
 #     ~/pre-wipe-<host>-<YYYYmmdd-HHMM>.md (mode 600). Git is run with
 #     GIT_OPTIONAL_LOCKS=0 so `git status` does not refresh the index. Here-strings
-#     are avoided because bash 3.2 backs them with temp files.
+#     are avoided because bash 3.2 backs them with temp files. Tools it queries
+#     may still touch their OWN caches: Homebrew (bootsnap disabled, but it can
+#     refresh ~/Library/Caches/Homebrew) and gpg (may start gpg-agent). npm logs
+#     are turned off. No user data is ever modified.
 #   * Nothing leaves the machine except one GET of this host's retirement verdict
 #     from the fleet config service. No file names or contents are uploaded.
 #   * No sudo. Things that need root are named, not attempted.
@@ -331,7 +334,7 @@ g() { GIT_OPTIONAL_LOCKS=0 run_timeout "$GIT_TIMEOUT" git -C "$@" 2>/dev/null; }
 
 brew_q() {
   HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 \
-    HOMEBREW_NO_INSTALL_CLEANUP=1 run_timeout 90 brew "$@" 2>/dev/null
+    HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_BOOTSNAP=1 run_timeout 90 brew "$@" 2>/dev/null
 }
 
 # JSON / plist evaluation through JXA (osascript ships with every macOS; jq and
@@ -1017,12 +1020,21 @@ section_local_data() {
   else
     finding AMBER "Messages in iCloud not confirmed (Messages → Settings → iMessage). ~/Library/Messages: $msz."
   fi
-  if [ "$PROTECTED_DONE" = 1 ] && [ -n "$MAIL_KB" ] && [ "$MAIL_KB" != "?" ] && [ "$MAIL_KB" -ge "$BIG_KB" ]; then
-    finding AMBER "Local Mail store $(size_label "$MAIL_KB" "$MAIL_DENIED") — IMAP/iCloud mail re-downloads, \"On My Mac\" mailboxes do not."
-  elif [ "$PROTECTED_DONE" = 1 ] && [ -n "$MAIL_KB" ]; then
-    emit "- ~/Library/Mail: $(size_label "$MAIL_KB" "$MAIL_DENIED")"
+  if [ "$PROTECTED_DONE" = 1 ] && [ -n "$MAIL_KB" ]; then
+    if [ "$MAIL_KB" = "?" ] || [ "$MAIL_DENIED" = 1 ]; then
+      finding AMBER "Local Mail store $(size_label "$MAIL_KB" "$MAIL_DENIED") — give the terminal Full Disk Access, or check Mail for \"On My Mac\" mailboxes by hand."
+    elif [ "$MAIL_KB" -ge "$BIG_KB" ]; then
+      finding AMBER "Local Mail store $(size_label "$MAIL_KB" "$MAIL_DENIED") — IMAP/iCloud mail re-downloads, \"On My Mac\" mailboxes do not."
+    else
+      emit "- ~/Library/Mail: $(size_label "$MAIL_KB" "$MAIL_DENIED")"
+    fi
   fi
-  [ "$MSG_DENIED" = 1 ] || [ "$MAIL_DENIED" = 1 ] && emit "- Mail/Messages sizes need Full Disk Access for the terminal to be exact."
+  if [ "$PROTECTED_DONE" = 1 ] && [ -n "$MSG_KB" ] && icloud_service MESSAGES && { [ "$MSG_KB" = "?" ] || [ "$MSG_DENIED" = 1 ]; }; then
+    emit "- ~/Library/Messages could not be fully read; Messages in iCloud covers it once it has finished syncing."
+  fi
+  if [ "$PROTECTED_DONE" = 0 ]; then
+    finding AMBER "Mail and app containers were not inspected (--skip-protected)."
+  fi
   blank
 
   section_app_data
@@ -1050,10 +1062,18 @@ appdata_table() { # appdata_table ROWS TITLE
     emit "| $(md_cell "$name") | $(size_label "$kb" "$den") | $(md_cell "$note") |"
   done < <(printf '%s' "$rows" | awk -F'\t' 'BEGIN{OFS="\t"} { s=($1 ~ /^[0-9]+$/) ? $1 : -1; print s, $0 }' | sort -t$'\t' -k1,1nr | cut -f2-)
   blank
-  # Findings for every flagged entry, not just the top 20.
+  # Findings for every flagged entry, not just the top 20. Entries that could
+  # not be (fully) read are never silently fine: they are folded into one AMBER.
+  local unread=0 unread_names=""
   while IFS=$'\t' read -r kb den name; do
     [ -n "$name" ] || continue
-    flag="$(appdata_flag "$name")"; [ -n "$flag" ] || continue
+    flag="$(appdata_flag "$name")"
+    if [ -z "$flag" ]; then
+      if [ "$kb" = "?" ] || [ "$den" = 1 ]; then
+        unread=$((unread + 1)); [ "$unread" -le 5 ] && unread_names+="$name, "
+      fi
+      continue
+    fi
     lvl="${flag%%$'\t'*}"; note="${flag#*$'\t'}"
     if [ "$lvl" = VM ]; then
       if [ "$kb" != "?" ] && [ "$kb" -ge "$BIG_KB" ]; then lvl=RED
@@ -1062,6 +1082,9 @@ appdata_table() { # appdata_table ROWS TITLE
     fi
     [ "$lvl" = NONE ] || finding "$lvl" "$name: $note ($(size_label "$kb" "$den"))."
   done < <(printf '%s' "$rows")
+  if [ "$unread" -gt 0 ]; then
+    finding AMBER "$unread folder(s) under $2 could not be fully read (Full Disk Access / timeout), e.g. ${unread_names%, }$( [ "$unread" -gt 5 ] && printf ', …')."
+  fi
 }
 
 section_app_data() {
@@ -1146,13 +1169,21 @@ section_git() {
         case "$seen" in *$'\n'"$common"$'\n'*) shared=1 ;; *) seen+="$common"$'\n' ;; esac
       fi
       if [ "$shared" = 1 ]; then
-        noremote=0; unpushed=0; stashes=0
+        # Branches/tags were counted at the main checkout; only a detached
+        # HEAD in this worktree can hold commits that nothing else reaches.
+        noremote=0; stashes=0
+        unpushed="$(g "$r" rev-list HEAD --not --branches --tags --remotes --count)"
+        [ -n "$unpushed" ] || unpushed=0
       else
+        # HEAD covers a detached checkout; tags cover tag-only commits.
+        local refs="--branches --tags"
+        [ -n "$(g "$r" rev-parse -q --verify HEAD)" ] && refs="HEAD $refs"
+        # shellcheck disable=SC2086  # $refs is a list of rev-list arguments
         if [ -n "$(g "$r" remote)" ]; then
           noremote=0
-          unpushed="$(g "$r" rev-list --branches --not --remotes --count)"
+          unpushed="$(g "$r" rev-list $refs --not --remotes --count)"
         else
-          noremote=1; unpushed="$(g "$r" rev-list --branches --count)"
+          noremote=1; unpushed="$(g "$r" rev-list $refs --count)"
         fi
         stashes="$(g "$r" rev-list --walk-reflogs --count refs/stash)"
         [ -n "$unpushed" ] || unpushed="?"
@@ -1161,7 +1192,7 @@ section_git() {
       if git_at_risk "$dirty" "$unpushed" "$noremote" "$stashes"; then
         at=$((at + 1))
         if [ "$shared" = 1 ]; then
-          rows+="| \`$(md_cell "$(tilde_path "$r")")\` | $dirty | (worktree) | – | – |"$'\n'
+          rows+="| \`$(md_cell "$(tilde_path "$r")")\` | $dirty | $unpushed (worktree; branches counted at main checkout) | – | – |"$'\n'
         else
           rows+="| \`$(md_cell "$(tilde_path "$r")")\` | $dirty | $unpushed | $( [ "$noremote" = 1 ] && printf 'yes' || printf 'no') | $stashes |"$'\n'
         fi
