@@ -303,6 +303,7 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 - Setting up a **brand new** device (`scripts/setup.sh`)
 - **Before migrating an existing Mac** — the checklist
 - Onboarding an **existing** device (audit first, then rebuild)
+- **Fixing dashboard issues on a device** (`scripts/fleet-fix.sh`, dry-run by default)
 - Secrets onboarding (age key → `sops-add-host.sh` on an existing recipient)
 - Config service API reference
 
@@ -315,6 +316,7 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ./scripts/device secrets           # setup-secrets.sh — only after fix/310-sops-onboarding merges
 ./scripts/collector-runner.sh --install   # daily audit on any host without com.rh7.collector-runner
 curl -fsSL https://config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
+./scripts/fleet-fix.sh doctor      # this device's dashboard issues -> fix ids + plans; <fix-id> [--apply] to fix
 ```
 
 Connectivity comes from the **daily audit**, not a heartbeat. Hosts that import
