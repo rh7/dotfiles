@@ -1,11 +1,27 @@
 # sops-nix configuration
 # Each machine has its own age key. Secrets are encrypted for specific hosts.
 #
-# To add a new machine:
-#   1. Generate key on the device: age-keygen -o ~/.config/sops/age/keys.txt
-#   2. Get the public key: age-keygen -y ~/.config/sops/age/keys.txt
-#   3. Add the public key below under the machine's name
-#   4. Re-encrypt secrets: sops updatekeys secrets/secrets.yaml
+# To add a new machine (must be MERGED before its first secrets-decrypting
+# rebuild — sops-nix decrypts at activation, so a non-recipient fails there):
+#   1. On the device: scripts/setup-secrets.sh
+#      (generates ~/.config/sops/age/keys.txt if missing, registers the public
+#      key with the config service, prints it, and checks decryptability)
+#   2. On an EXISTING recipient (rouvens-mac-studio or m5-air), in a worktree on
+#      a branch — never the live ~/dotfiles checkout:
+#        scripts/sops-add-host.sh <hostname> [age1pubkey]
+#      It adds &<hostname> below and *<hostname> to the creation rule, runs
+#      `sops updatekeys`, verifies the new recipient, commits and opens a PR.
+#      A new device cannot do this itself: it is not a recipient yet.
+#   3. Merge the PR; on the device: git pull, then re-run scripts/setup-secrets.sh
+#
+# Running sops by hand on macOS: sops looks for keys in
+# ~/Library/Application Support/sops/age/keys.txt, not where the fleet keeps them
+# ("identity did not match"). Export first:
+#   export SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/keys.txt"
+#
+# Keep the shape below (one anchor per line under keys:, ONE creation rule whose
+# age list is a one-line flow sequence) — sops-add-host.sh edits exactly that
+# shape and refuses anything else.
 #
 # To add a secret:
 #   1. sops secrets/secrets.yaml   (opens in $EDITOR, encrypted at rest)
