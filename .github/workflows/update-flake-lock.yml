@@ -16,6 +16,18 @@ name: update flake.lock
 # commit status, `flake-lock-bot / eval darwinConfigurations`. A failed eval
 # still opens/updates the PR (so the breakage is visible) and fails this run.
 #
+# Evaluating is not enough: a lock can point at a nixpkgs revision Hydra has
+# not finished building for aarch64-darwin, so every Mac would COMPILE the gap
+# (2026-11-10, PR #109: a from-source .NET SDK bootstrap, >1h per Mac, and the
+# nightly unattended updater running into it). After a clean eval the job runs
+# scripts/ci/check-darwin-cache.sh — derivation graph + cache.nixos.org narinfo
+# lookups, no build, so it works on this Linux runner — and reports it as a
+# second status, `flake-lock-bot / binary cache coverage`, with the host →
+# package table in the PR body. Uncached heavy packages mark the PR do-not-merge
+# exactly like a failed eval; the fix is to wait for a later bot run, by which
+# Hydra has usually caught up. By-design local builds are allowlisted in
+# scripts/ci/darwin-cache-allowlist.txt.
+#
 # Token: secrets.FLAKE_LOCK_BOT_TOKEN when set (fine-grained PAT or GitHub App
 # token with contents + pull-requests write; its PRs DO trigger flake-check),
 # else GITHUB_TOKEN. With GITHUB_TOKEN, the repo setting Settings → Actions →
@@ -39,6 +51,7 @@ concurrency:
 env:
   BOT_BRANCH: bot/flake-lock
   STATUS_CONTEXT: flake-lock-bot / eval darwinConfigurations
+  CACHE_STATUS_CONTEXT: flake-lock-bot / binary cache coverage
 
 jobs:
   update:
@@ -77,6 +90,18 @@ jobs:
         continue-on-error: true
         run: bash scripts/ci/eval-darwin-configs.sh
 
+      - name: Check every darwinConfiguration substitutes from cache.nixos.org
+        id: cache
+        if: steps.update.outputs.changed == 'true' && steps.eval.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          rc=0
+          bash scripts/ci/check-darwin-cache.sh > "$RUNNER_TEMP/cache.md" || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/cache.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
       - name: Commit and push ${{ env.BOT_BRANCH }}
         id: push
         if: steps.update.outputs.changed == 'true'
@@ -96,6 +121,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FLAKE_LOCK_BOT_TOKEN || github.token }}
           EVAL_OUTCOME: ${{ steps.eval.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          CACHE_RC: ${{ steps.cache.outputs.rc }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -104,10 +131,27 @@ jobs:
           else
             eval_line="❌ **darwinConfiguration evaluation FAILED** against the new lock ([run]($RUN_URL)). Do not merge."
           fi
+          if [ "$CACHE_OUTCOME" = "success" ]; then
+            cache_line="✅ every darwinConfiguration substitutes from cache.nixos.org — no heavy package compiles on the Macs."
+          elif [ "$CACHE_OUTCOME" = "skipped" ]; then
+            cache_line="⏭️ binary cache coverage not checked: the eval failed."
+          elif [ "$CACHE_RC" = "1" ]; then
+            cache_line="❌ **Heavy packages are NOT in cache.nixos.org** ([run]($RUN_URL)): every Mac — and the nightly unattended updater — would compile them locally. Do not merge. Hydra usually catches up within days: wait for a later bot run (next Monday, or re-run this workflow) instead of merging this lock."
+          else
+            cache_line="❌ **binary cache coverage could not be determined** ([run]($RUN_URL)). Do not merge until a bot run reports it."
+          fi
           {
             echo "Weekly \`nix flake update\`. **Owner merges — never auto-merged.**"
             echo
             echo "$eval_line"
+            echo
+            echo "$cache_line"
+            if [ -s "$RUNNER_TEMP/cache.md" ]; then
+              echo
+              echo "### Binary cache coverage"
+              echo
+              cat "$RUNNER_TEMP/cache.md"
+            fi
             echo
             echo "### Inputs"
             echo
@@ -116,7 +160,7 @@ jobs:
             echo "---"
             echo "Branch \`$BOT_BRANCH\` is regenerated from \`main\` on every run (force-pushed): do not push fixes to it."
             echo "If this PR came from GITHUB_TOKEN, \`flake check\` / \`shell tests\` do not run on it automatically;"
-            echo "the eval above is reported as the \`$STATUS_CONTEXT\` status. Close + reopen the PR to run the regular checks."
+            echo "the eval and cache checks above are reported as the \`$STATUS_CONTEXT\` and \`$CACHE_STATUS_CONTEXT\` statuses. Close + reopen the PR to run the regular checks."
           } > "$RUNNER_TEMP/body.md"
 
           title="chore(flake): weekly flake.lock update ($(date -u +%F))"
@@ -129,12 +173,14 @@ jobs:
             exit 1
           fi
 
-      - name: Report eval as a commit status on the PR head
+      - name: Report eval and cache coverage as commit statuses on the PR head
         if: ${{ !cancelled() && steps.update.outputs.changed == 'true' && steps.push.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.push.outputs.sha }}
           EVAL_OUTCOME: ${{ steps.eval.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          CACHE_RC: ${{ steps.cache.outputs.rc }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -147,8 +193,27 @@ jobs:
             -f state="$state" -f context="$STATUS_CONTEXT" \
             -f description="$desc" -f target_url="$RUN_URL" >/dev/null
 
+          if [ "$CACHE_OUTCOME" = "success" ]; then
+            state=success; desc="no heavy package compiles locally"
+          elif [ "$CACHE_OUTCOME" = "skipped" ]; then
+            state=failure; desc="not checked: eval failed"
+          elif [ "$CACHE_RC" = "1" ]; then
+            state=failure; desc="heavy packages not in cache.nixos.org — wait for Hydra"
+          else
+            state=failure; desc="cache coverage could not be determined"
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context="$CACHE_STATUS_CONTEXT" \
+            -f description="$desc" -f target_url="$RUN_URL" >/dev/null
+
       - name: Fail the run if the new lock does not evaluate
         if: ${{ !cancelled() && steps.update.outputs.changed == 'true' && steps.eval.outcome != 'success' }}
         run: |
           echo "::error::darwinConfiguration evaluation failed against the updated flake.lock"
+          exit 1
+
+      - name: Fail the run if the new lock is not covered by the binary cache
+        if: ${{ !cancelled() && steps.update.outputs.changed == 'true' && steps.eval.outcome == 'success' && steps.cache.outcome != 'success' }}
+        run: |
+          echo "::error::heavy packages of the updated flake.lock are not in cache.nixos.org (or coverage could not be determined) — see the PR body"
           exit 1
