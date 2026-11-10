@@ -103,7 +103,7 @@ package list — and say so.
 nrs                               # rebuild: sync checkout → audit drift → build → preview diff → confirm → switch
 nrs-raw                           # escape hatch: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
 ./scripts/rebuild.sh --plan-only  # what's pending? no build, no activation, no root
-nup                               # update flake inputs
+nix flake update --flake ~/dotfiles   # update flake inputs (the `nup` alias omits --flake and is a no-op on current Nix)
 dots                              # open dotfiles in Zed
 ```
 

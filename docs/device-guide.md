@@ -406,7 +406,7 @@ All commands are run from `~/dotfiles`:
 
 | Command | Purpose |
 |---------|---------|
-| `setup` | Backup → rebuild (via `rebuild.sh`) → `setup-secrets.sh` → register. Assumes Nix is installed; for a blank Mac use `scripts/setup.sh`. Don't use before `fix/310-sops-onboarding` merges (see [Secrets](#secrets-sops-nix)) |
+| `setup` | Backup → rebuild (via `rebuild.sh`) → `setup-secrets.sh` → register. Assumes Nix is installed; for a blank Mac use `scripts/setup.sh`. It rebuilds **before** the secrets step, so on a `needsSecrets` host use it only once the host is already a recipient (see [Secrets](#secrets-sops-nix)) — and not at all before `fix/310-sops-onboarding` merges |
 | `update` | Rebuild via `rebuild.sh` → register |
 | `status` | Device info (Nix, Tailscale, age key) + config service + fleet overview |
 | `audit` | Interactive audit menu |
@@ -425,8 +425,10 @@ On `main` today, `device setup` pulls, runs `nix flake update`, then rebuilds;
 `device update` pulls and rebuilds, and only `device update --full` also runs
 `nix flake update`. With `fix/312-rebuild-merged-only` neither command runs
 `git pull` or `nix flake update` (`rebuild.sh` syncs to `origin/main` itself),
-and `update --full` is removed: bump inputs with `nup` on a branch, PR, merge,
-then `device update`.
+and `update --full` is removed: bump inputs on a branch with
+`nix flake update --flake ~/dotfiles`, PR, merge, then `device update`. (The
+`nup` alias currently expands to `nix flake update ~/dotfiles`, which newer Nix
+reads as an input name and silently updates nothing.)
 
 ---
 
