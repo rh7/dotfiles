@@ -38,23 +38,6 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: Evaluate every darwinConfiguration (no build)
-        run: |
-          set -euo pipefail
-          hosts=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.attrNames' | jq -r '.[]')
-          echo "darwinConfigurations: $(echo "$hosts" | tr '\n' ' ')"
-          fail=0
-          for h in $hosts; do
-            echo "::group::eval $h"
-            if nix eval ".#darwinConfigurations.\"$h\".system.drvPath" >/dev/null; then
-              echo "$h: OK"
-            else
-              echo "$h: EVAL FAILED"
-              fail=1
-            fi
-            echo "::endgroup::"
-          done
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::one or more darwinConfigurations failed to evaluate"
-            exit 1
-          fi
-          echo "all darwinConfigurations evaluate cleanly"
+        # Shared with update-flake-lock.yml, which must run the same gate itself
+        # (its GITHUB_TOKEN-made PR does not trigger this workflow).
+        run: bash scripts/ci/eval-darwin-configs.sh
