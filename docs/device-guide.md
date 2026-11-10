@@ -498,7 +498,8 @@ curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
 # 6. Work through "Before migrating an existing Mac" (escrow, Time Machine,
 #    retirement verdict, secrets recipient), then deploy
 ./scripts/device backup     # safety net
-./scripts/setup-secrets.sh  # needsSecrets hosts, with fix/310: must decrypt first
+# needsSecrets hosts: recipient added first (see Secrets; once fix/310 merges,
+# ./scripts/setup-secrets.sh confirms the device can decrypt)
 ./scripts/rebuild.sh        # build → drift audit → nvd diff → confirm → switch
 
 # 7. Daily audit schedule (until fleet-audit.nix covers this host)
@@ -513,7 +514,7 @@ curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
 A: No. The current config sets `cleanup = "none"` in `modules/darwin/homebrew.nix`, so brew bundle never auto-uninstalls anything — manually installed apps stay, and casks removed from the flake also stay on disk until you uninstall them yourself. `audit-config-drift.sh` flags any installed-but-not-declared casks so you can decide what to do.
 
 **Q: Why is `cleanup = "none"` instead of `"uninstall"`?**
-A: Workaround for a Homebrew change (2026-06): `brew bundle install --cleanup` now refuses to run without `--force` / `--force-cleanup` / `$HOMEBREW_ASK`. nix-darwin's activate script hardcodes the `--cleanup` flag and runs brew under `sudo --preserve-env=PATH ... env brew bundle`, which strips any env var we'd set. The upstream nix-darwin fix bumps the required nixpkgs from 26.05 → 26.11 (newer nix-darwin enforces version matching), so disabling cleanup is the smaller change. Revisit when ready for a combined `nixpkgs` + `nix-darwin` input bump — and not before the drift audit covers Homebrew formulae (dotfiles#11): today it checks casks only, so turning cleanup on would uninstall undeclared formulae nothing has reported.
+A: Workaround for a Homebrew change (2026-06): `brew bundle install --cleanup` now refuses to run without `--force` / `--force-cleanup` / `$HOMEBREW_ASK`. nix-darwin's activate script hardcodes the `--cleanup` flag and runs brew under `sudo --preserve-env=PATH ... env brew bundle`, which strips any env var we'd set. The upstream nix-darwin fix bumps the required nixpkgs from 26.05 → 26.11 (newer nix-darwin enforces version matching), so disabling cleanup is the smaller change. Revisit when ready for a combined `nixpkgs` + `nix-darwin` input bump — and not before `audit-config-drift.sh` covers Homebrew formulae (dotfiles#11): the drift gate `rebuild.sh` runs before activation checks casks only, so turning cleanup on would uninstall undeclared formulae with no pre-activation warning (the fleet audit's `unmanaged_formulas` lists them, but nothing gates activation on it).
 
 **Q: What about macOS settings (dock, finder, etc.)?**
 A: These *will* be overwritten to match the dotfiles config. `./scripts/rebuild.sh` mitigates this by running `audit-config-drift.sh` as a pre-flight step and prompting when risky drift is detected — so you get a chance to fold manual changes into the flake before they're overwritten. `nrs` runs that gate for you; `nrs-raw` and a direct `darwin-rebuild switch` skip it. You can always restore with `defaults import`.
