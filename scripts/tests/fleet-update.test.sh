@@ -279,6 +279,21 @@ expect "channel rewound below applied commit" 3 refused not-fast-forward
 check "rewind: applied_commit kept" "$(field applied_commit)" "$C2"
 check "rewind: only the first run built" "$(builds)" "1"
 
+# First run on a freshly enrolled host: no state, so the floor is the commit
+# the running generation was built from (darwin-version.json).
+installed() { # installed <configurationRevision>
+  mkdir -p "$ROOT/store/installed"
+  printf '{"configurationRevision": "%s"}\n' "$1" >"$ROOT/store/installed/darwin-version.json"
+  ln -sfn "$ROOT/store/installed" "$ROOT/run/current-system"
+}
+fresh; refs "$C2" "$C1"; installed "$C2"
+run_fu
+expect "first run: channel behind the installed revision" 3 refused not-fast-forward
+check "first run behind: nothing built" "$(builds)" "0"
+fresh; refs "$C2" "$C2"; installed "$C1-dirty"
+run_fu
+expect "first run: channel ahead of a -dirty installed revision" 0 applied null
+
 echo ""
 echo "fleet-update — preconditions (skipped, nothing fetched)"
 fresh; refs "$C2" "$C2"
@@ -300,12 +315,18 @@ expect "rebuild started during the build" 0 skipped rebuild-in-progress
   || bad "rebuild during build: profile untouched" "$(readlink "$ROOT/nix/var/nix/profiles/system")"
 
 fresh; refs "$C2" "$C2"
-mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"; echo $$ >"$ROOT/var/run/rh7-fleet-update.lock/pid"
+mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"; echo "$$ $(date +%s)" >"$ROOT/var/run/rh7-fleet-update.lock/pid"
 run_fu
 check "another run holds the lock: exit 0" "$RC" "0"
 [[ ! -e "$STATE" ]] && good "lock-held: state left to the holder" || bad "lock-held: state left to the holder" "$(cat "$STATE")"
 grep -q 'skipped (lock-held)' <<<"$OUT" && good "lock-held: logged" || bad "lock-held: logged" "$OUT"
-check "lock-held: foreign lock left alone" "$(cat "$ROOT/var/run/rh7-fleet-update.lock/pid")" "$$"
+check "lock-held: foreign lock left alone" "$(cut -d' ' -f1 "$ROOT/var/run/rh7-fleet-update.lock/pid")" "$$"
+
+fresh; refs "$C2" "$C2"
+mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"
+echo "$$ $(( $(date +%s) - 7 * 3600 ))" >"$ROOT/var/run/rh7-fleet-update.lock/pid"
+run_fu
+expect "live pid but lock older than any bounded run (pid reuse)" 0 applied null
 
 bash -c 'exit 0' & dead_pid=$!; wait "$dead_pid"
 fresh; refs "$C2" "$C2"

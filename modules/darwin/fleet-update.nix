@@ -11,7 +11,9 @@
 #   - carries a signature that verifies against the PINNED key below (GitHub's
 #     web-flow key, which signs every PR-merge commit on main);
 #   - is already in `main` (a branch can never carry unreviewed code);
-#   - fast-forwards from the last applied commit (no rewinds).
+#   - fast-forwards from the last applied commit — on a host's first run, from
+#     the commit the running generation was built from (configurationRevision,
+#     set by mkMac) — so a lagging channel never rolls a host back.
 # It builds darwinConfigurations.<flakeAttr>.system, sets the system profile
 # and runs the generation's `activate` as root. Result -> /var/lib/
 # rh7-fleet-update/state.json (collected into the daily audit as

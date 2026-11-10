@@ -52,6 +52,11 @@
               enable = autoUpdate != null;
               flakeAttr = hostname;
             } // nixpkgs.lib.optionalAttrs (autoUpdate != null) { channel = autoUpdate; };
+            # The rewind floor for an auto-updated host's FIRST unattended run:
+            # the daemon refuses any channel tip that does not descend from the
+            # commit the running generation was built from.
+            system.configurationRevision =
+              nixpkgs.lib.mkIf (autoUpdate != null) (self.rev or self.dirtyRev or null);
           }
           role
           home-manager.darwinModules.home-manager

@@ -22,6 +22,8 @@
 #                       - be ancestor-or-equal of origin/main
 #                                                    -> refused / not-in-main
 #                       - be descendant-or-equal of the last applied commit
+#                         (first run: of the running generation's
+#                         configurationRevision)
 #                                                    -> refused / not-fast-forward
 #   4. no-op          T already applied and the system is still that generation
 #   5. build          darwinConfigurations.<attr>.system, <attr> baked in by
@@ -134,6 +136,16 @@ system_is_out() {
   [[ -n "$want" && "$a" == "$want" && "$b" == "$want" ]]
 }
 
+# Commit the running generation was built from (system.configurationRevision,
+# set by mkMac for auto-updated hosts), or empty. "-dirty" builds count as
+# their HEAD commit.
+installed_revision() {
+  local rev
+  rev=$(jq -r '.configurationRevision // ""' "$CURRENT_SYSTEM/darwin-version.json" 2>/dev/null) || return 0
+  rev=${rev%-dirty}
+  if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "$rev"; fi
+}
+
 # ── State file ───────────────────────────────────────────────────────────────
 # PREV_* carry fields forward between runs; read once, at start. A file that
 # is not EXACTLY the contract (the same rules the
@@ -239,41 +251,55 @@ finish() {
 }
 
 # ── Lock ─────────────────────────────────────────────────────────────────────
+# $LOCK_DIR/pid holds "<pid> <epoch-at-acquire>". A lock is live only while
+# that pid exists AND it is younger than LOCK_MAX_AGE: every step is bounded by
+# a timeout (worst case well under 5 h), so an older lock is stale even if its
+# pid was since reused by an unrelated process.
+LOCK_MAX_AGE=$((6 * 3600))
+
 release_lock() {
-  if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" == "$$" ]]; then
+  local owner
+  owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  if [[ "${owner%% *}" == "$$" ]]; then
     rm -rf "$LOCK_DIR"
   fi
+}
+
+write_lock_owner() {
+  echo "$$ $(date +%s)" >"$LOCK_DIR/pid"
+  trap release_lock EXIT
 }
 
 acquire_lock() {
   mkdir -p "$(dirname "$LOCK_DIR")"
   if mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "$$" >"$LOCK_DIR/pid"
-    trap release_lock EXIT
+    write_lock_owner
     return 0
   fi
-  local pid
-  pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-  # No pid yet = the holder is between mkdir and writing it: treat as held.
-  if [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null; then
+  local owner pid started
+  owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  read -r pid started <<<"$owner" || true
+  # No owner yet = the holder is between mkdir and writing it: treat as held.
+  [[ -n "${pid:-}" ]] || return 1
+  if kill -0 "$pid" 2>/dev/null && [[ "${started:-}" =~ ^[0-9]+$ ]] \
+     && (( $(date +%s) - started < LOCK_MAX_AGE )); then
     return 1
   fi
   # Stale lock. Take it over under a second mkdir mutex and RE-CHECK inside it:
-  # two runs that both saw the dead pid must not both remove-and-recreate (the
+  # two runs that both saw it stale must not both remove-and-recreate (the
   # second would delete the first's fresh lock and both would activate).
   mkdir "$LOCK_DIR.takeover" 2>/dev/null || return 1
-  if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" != "$pid" ]]; then
+  if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" != "$owner" ]]; then
     rmdir "$LOCK_DIR.takeover"
     return 1
   fi
-  log "removing stale lock left by pid $pid"
+  log "removing stale lock ($owner)"
   rm -rf "$LOCK_DIR"
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     rmdir "$LOCK_DIR.takeover"
     return 1
   fi
-  echo "$$" >"$LOCK_DIR/pid"
-  trap release_lock EXIT
+  write_lock_owner
   rmdir "$LOCK_DIR.takeover"
 }
 
@@ -502,9 +528,18 @@ main() {
     *) finish refused signature-invalid ;;
   esac
   is_ancestor "$TARGET" refs/remotes/origin/main || finish refused not-in-main
-  if [[ -n "$PREV_APPLIED" ]]; then
-    if ! g cat-file -e "$PREV_APPLIED^{commit}" 2>/dev/null || ! is_ancestor "$PREV_APPLIED" "$TARGET"; then
-      log "channel tip $TARGET does not descend from applied $PREV_APPLIED"
+  # No rewinds. The floor is the last commit this daemon applied; on a host's
+  # FIRST run (no state yet) it is the commit the running generation was built
+  # from, so a lagging channel can never roll a freshly enrolled host back —
+  # possibly to a revision that predates (and would uninstall) this daemon.
+  local floor="$PREV_APPLIED" floor_src="applied commit"
+  if [[ -z "$floor" ]]; then
+    floor=$(installed_revision); floor_src="installed generation's revision"
+    [[ -n "$floor" ]] || log "warning: no applied commit and no configurationRevision in $CURRENT_SYSTEM — no rewind floor for this first run"
+  fi
+  if [[ -n "$floor" ]]; then
+    if ! g cat-file -e "$floor^{commit}" 2>/dev/null || ! is_ancestor "$floor" "$TARGET"; then
+      log "channel tip $TARGET does not descend from the $floor_src $floor"
       finish refused not-fast-forward
     fi
   fi
