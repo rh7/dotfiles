@@ -6,32 +6,56 @@ Role-based module composition — each machine is a thin config that selects a r
 
 ## Machines
 
+`flake.nix` is the source of truth; this table mirrors it. Every `mkMac` host
+gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
+
 | Config | Machine | Role | Extras |
 |--------|---------|------|--------|
-| `m5-air` | MacBook Air M5 | workstation | — |
-| `rouven-air-m3` | MacBook Air M3 | workstation | — |
-| `rouven-pro-m4` | MacBook Pro M4 | workstation | — |
-| `rouvens-mac-mini` | Mac Mini M4 | workstation | smart-home |
-| `rouvens-mac-studio` | Mac Studio M3 Ultra | workstation | ai-inference |
-| `nixos-vm` | UTM VM | workstation (linux) | — |
-| `thinkpad` | ThinkPad x86 | workstation (linux) | — |
-| `linux` | OrbStack VM | standalone Home Manager | — |
+| `m5-air` | MacBook Air M5 | workstation | `macbook.nix` |
+| `rouven-m5-pro` | MacBook Pro M5 (user `rouven`) | workstation | `macbook.nix`, `weekly-update.nix` (staged) |
+| `rouven-air-m2` | MacBook Air M2 | workstation | `macbook.nix` |
+| `rouven-air-m3` | MacBook Air M3 | workstation | `macbook.nix` |
+| `rouven-pro-m4` | MacBook Pro M4 | workstation | `macbook.nix` |
+| `rouvens-mac-mini` → `rouvens-mac-mini-m4` | Mac mini M4 (office) | workstation | `mac-mini-office.nix`, smart-home |
+| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain/secrets/audit only; Homebrew disabled) | `mac-studio.nix`, `fleet-audit.nix` |
+| `Kassie-M5-Air13` | MacBook Air M5 (user `kassie`) | personal | `macbook.nix`; `needsSecrets = false` |
+| `nixos-vm` | UTM VM (aarch64) | workstation-linux (NixOS) | `vm.nix` |
+| `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
+| `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
+| `omarchy` | Omarchy 4 guest (Arch ARM in UTM) | standalone Home Manager (CLI only) | `omarchy.nix` |
+
+The Mac mini's attr and hostname become `rouvens-mac-mini-m4` (the live
+machine's name) with `chore/326-315-flake-hygiene`; until that merges the flake
+attr is `rouvens-mac-mini`. The same PR imports `fleet-audit.nix` for every
+`mkMac` host — on `main` today only the Studio imports it.
 
 ## Quick Start (new Mac)
 
+The fleet standard is the **official Nix installer**
+(`sh <(curl -L https://nixos.org/nix/install) --daemon`), not Determinate.
+`scripts/setup.sh` installs it for you. On macOS it must run from a **GUI
+session** (Terminal.app locally or via Screen Sharing — not SSH): headless-only
+Macs block the `/etc/fstab` write the Nix APFS volume needs.
+
 ```bash
-# 1. Install Nix (Determinate)
-curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+# Interactive: Xcode CLI → hostname → official Nix → dotfiles build →
+# 1Password → gh auth → Tailscale → fleet registration → daily audit schedule
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/setup.sh | bash
 
-# 2. Clone this repo
-git clone https://github.com/rh7/dotfiles.git ~/dotfiles
-
-# 3. Apply (replace MACHINE with your config name)
-cd ~/dotfiles
-sudo darwin-rebuild switch --flake .#MACHINE
+# or, from a clone
+git clone https://github.com/rh7/dotfiles.git ~/dotfiles && ~/dotfiles/scripts/setup.sh
 ```
 
-Or use the bootstrap script: `bash bootstrap.sh`
+Pick the hostname that matches a `flake.nix` attr — the rebuild selects the
+configuration by hostname. For a host that needs secrets, enrol its age key
+first or the first activation cannot decrypt — see
+[Secrets](docs/device-guide.md#secrets-sops-nix). Migrating a Mac that already
+has apps and settings? Read
+[Before migrating an existing Mac](docs/device-guide.md#before-migrating-an-existing-mac)
+first.
+
+The repo-root `bootstrap.sh` is legacy: it still installs **Determinate** Nix.
+Don't use it for fleet Macs.
 
 ## Making Changes
 
@@ -73,7 +97,7 @@ package list — and say so.
 ## Daily Usage
 
 ```bash
-nrs                               # rebuild: pull → audit drift → build → preview diff → confirm → switch
+nrs                               # rebuild: sync checkout → audit drift → build → preview diff → confirm → switch
 nrs-raw                           # escape hatch: sudo darwin-rebuild switch --flake ~/dotfiles#$(hostname)
 ./scripts/rebuild.sh --plan-only  # what's pending? no build, no activation, no root
 nup                               # update flake inputs
@@ -122,11 +146,19 @@ OMP_COORDINATOR_ROOT="$HOME/repo-management" \
 ```
 
 `nrs` is `./scripts/rebuild.sh` (`nrsg` still works as an older name for it).
-It pulls latest, runs the drift audit (advisory; only prompts when risky `+`
-drift is detected), shows an `nvd` diff of the package closure, and asks for
+It runs the drift audit (advisory; only prompts when risky `+` drift is
+detected), shows an `nvd` diff of the package closure, and asks for
 confirmation before activation. It also holds a single sudo authentication open
 for the whole run, so `brew bundle`'s root-requiring casks reuse it rather than
 re-prompting once per cask — see `modules/darwin/sudo-rebuild.nix`.
+
+**Only merged config gets activated.** With `fix/312-rebuild-merged-only`,
+`rebuild.sh` fetches and refuses to activate unless `~/dotfiles` is on `main`,
+has a clean tracked tree, and `HEAD == origin/main` — so a machine can no longer
+be built from a stale or half-edited checkout while every audit reports it
+compliant. To test a branch on one machine deliberately, pass
+`--allow-unmerged` (it warns loudly). Before that PR merges, `rebuild.sh` only
+runs `git pull --ff-only` on a clean tree and builds whatever is checked out.
 
 **`nrs-raw` skips all of that** and switches directly. Reach for it only when
 `rebuild.sh` is itself the thing that is broken.
@@ -140,9 +172,11 @@ every run.
 
 A rebuild asks for **one** Touch ID, after showing what it will upgrade — by
 default only a curated critical list (browsers, passwords, VPN, messengers);
-`--upgrade=all` for everything, `--no-upgrade` for nothing. A
-weekly LaunchAgent keeps declared Homebrew formulae current on its own. Neither
-covers macOS system updates or `flake.lock` — those stay manual, on purpose.
+`--upgrade=all` for everything, `--no-upgrade` for nothing. On
+`rouven-m5-pro` only (staged in `flake.nix`), a weekly LaunchAgent
+(`weekly-update.nix`) keeps declared Homebrew formulae current on its own.
+Neither covers macOS system updates or `flake.lock` — those stay manual, on
+purpose.
 See **[Software Updates](docs/software-updates.md)** for the full model, the
 sudo tradeoff it rests on, and the app-naming traps that have bitten this repo
 (there are two unrelated apps called Session, and two different TripMode
@@ -152,7 +186,7 @@ builds).
 
 ```
 flake.nix                              # Device registry — all machines defined here
-bootstrap.sh                           # Interactive new-Mac setup
+bootstrap.sh                           # Legacy new-Mac setup (installs Determinate Nix) — use scripts/setup.sh
 
 modules/
   common.nix                           # CLI tools + git (Home Manager, all platforms)
@@ -174,6 +208,7 @@ modules/
     development.nix                    #   nodejs, python, rust, git-lfs, pre-commit
     editor.nix                         #   Zed editor config (shared across all machines)
     docker.nix                         #   docker-compose (Linux only)
+    fleet-audit.nix                    #   daily collector-runner schedule (launchd / systemd timer)
 
   nixos/
     system.nix                         # NixOS system base (boot, networking, users, cron)
@@ -187,7 +222,8 @@ modules/
   roles/                               # Composable role bundles
     workstation-mac.nix                #   imports all darwin profiles
     workstation-linux.nix              #   imports desktop + all nixos profiles
-    ai-inference.nix                   #   lm-studio (Mac Studio)
+    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit only, Homebrew disabled
+    ai-inference.nix                   #   lm-studio (not imported by any host today)
     smart-home.nix                     #   sensibo, sonos, homey (Mac Mini)
     personal-mac.nix                   #   lighter setup for non-developers
 
@@ -261,26 +297,37 @@ once per app (each native app has its own cookie jar).
 ## Device Management
 
 See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, including:
-- Setting up a **brand new** device (one command)
-- Onboarding an **existing** device (audit first, then deploy)
-- Comparing devices and finding gaps
+- Setting up a **brand new** device (`scripts/setup.sh`)
+- **Before migrating an existing Mac** — the checklist
+- Onboarding an **existing** device (audit first, then rebuild)
+- Secrets onboarding (age key → `sops-add-host.sh` on an existing recipient)
 - Config service API reference
 
 ### Quick Reference
 
 ```bash
-./scripts/device setup             # new device: backup → rebuild → secrets → register
-./scripts/device audit             # existing device: collect inventory first
-./scripts/device update            # daily: pull → rebuild
-./scripts/device status            # fleet overview
-./scripts/device heartbeat --install  # install 5-min monitoring cron
+./scripts/device audit             # interactive audit menu; --local / --save / --run
+./scripts/device status            # this device + fleet overview
+./scripts/device update            # rebuild via rebuild.sh, then register
+./scripts/device secrets           # run setup-secrets.sh (age key + decrypt check)
+./scripts/collector-runner.sh --install   # daily audit schedule on a Mac not yet under nix
+curl -fsSL config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ```
+
+There is no heartbeat any more: connectivity comes from the **daily audit**.
+On nix-managed hosts that schedule is declared by `fleet-audit.nix`
+(LaunchAgent `com.rh7.collector-runner`, the integrity-gated pull runner);
+elsewhere `collector-runner.sh --install` installs the same runner. The
+`enroll` short link runs a first audit and installs a direct daily audit
+(`com.rh7.audit` LaunchAgent / cron) for devices without a clone.
 
 ### Config drift audit
 
 `scripts/audit-config-drift.sh` compares actual machine state to the declared
-nix-darwin config — catches manually-installed apps, dock changes, MAS apps,
-and macOS defaults that have drifted from the flake.
+nix-darwin config — catches manually-installed casks/apps, dock changes, MAS
+apps, and macOS defaults that have drifted from the flake. It does **not** check
+Homebrew formulae yet (dotfiles#11), which is why `homebrew.onActivation.cleanup`
+stays `"none"` until it does.
 
 **Runs automatically** as Step 2 of `./scripts/rebuild.sh`, so you don't
 normally need to invoke it directly. Standalone usage:
@@ -307,9 +354,7 @@ silently.
 One drift entry is **expected and permanent**: the `tripmode` cask shows as
 installed-but-not-declared on `rouven-m5-pro`. Declaring it would hang
 activation on every other Mac — see
-[Software Updates → Traps](docs/software-updates.md#traps). Homebrew formulae
-installed as *dependencies* (e.g. `bash` for `direnv`) are not reported as
-drift; they are not yours to declare.
+[Software Updates → Traps](docs/software-updates.md#traps).
 
 The `--snapshot` / `--diff` pair captures things the audit can't enumerate up
 front (mouse speed, custom keyboard shortcuts, hidden defaults). Useful when
