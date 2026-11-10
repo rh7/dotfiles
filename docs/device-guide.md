@@ -65,8 +65,12 @@ cannot complete its first activation until its age key is a recipient of
 `secrets/secrets.yaml`. With `fix/310-sops-onboarding`, `setup.sh` stops before
 activation on such a host and prints the device's public key plus the exact
 `sops-add-host.sh` command to run on an existing recipient — follow
-[Secrets](#secrets-sops-nix), then re-run `setup.sh`. `Kassie-M5-Air13`
-(`needsSecrets = false`, personal role) skips this.
+[Secrets](#secrets-sops-nix), then re-run `setup.sh`. **Until that PR merges,
+`setup.sh` does not stop:** it activates, treats the decryption failure as
+non-fatal and still prints *Setup Complete*. Take the `Age key` it prints at
+the end through the manual recipient step in [Secrets](#secrets-sops-nix),
+then `./scripts/rebuild.sh`. `Kassie-M5-Air13` (`needsSecrets = false`,
+personal role) skips this.
 
 ### Step 2: Verify
 
@@ -109,6 +113,19 @@ Studio or `m5-air`. This flow arrives with **`fix/310-sops-onboarding`**
 3. **Merge** the PR.
 4. **On the device:** re-run `./scripts/setup-secrets.sh` (it should now
    decrypt), then `./scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
+
+**Until `fix/310-sops-onboarding` merges** (on `main` today `setup-secrets.sh`
+reports success without adding anything — rh-device-management#310), do the
+recipient step by hand on the Mac Studio or `m5-air`, in a branch/worktree:
+
+1. Get the device's public key: `age-keygen -y ~/.config/sops/age/keys.txt` on
+   the device (also printed as `Age key` at the end of `setup.sh`).
+2. In `.sops.yaml`, add `- &<hostname> <age1…>` under `keys:` and `*<hostname>`
+   to the `age: [ … ]` list of the `secrets/secrets.yaml` creation rule.
+3. `export SOPS_AGE_KEY_FILE=$HOME/.config/sops/age/keys.txt` then
+   `sops updatekeys secrets/secrets.yaml` — editing `.sops.yaml` alone does not
+   re-encrypt anything.
+4. Commit both files, PR, merge; then `./scripts/rebuild.sh` on the device.
 
 Manual `sops` on macOS needs the key path, because sops' macOS default is under
 `~/Library/Application Support`:
@@ -156,7 +173,9 @@ has apps, settings and data. `$CS` as above.
       `system.defaults.dock.persistent-apps`, which replaces the **whole** Dock
       on activation. Anything not declared there disappears from it.
 - [ ] **Secrets recipient added** for `needsSecrets` hosts — see
-      [Secrets](#secrets-sops-nix); `./scripts/setup-secrets.sh` must decrypt.
+      [Secrets](#secrets-sops-nix); with `fix/310-sops-onboarding`,
+      `./scripts/setup-secrets.sh` must report that it can decrypt (before it,
+      use the manual recipient step there).
 - [ ] **Activate with `./scripts/rebuild.sh`** (build → drift audit → `nvd`
       diff → confirm), not `nrs-raw` / a raw `darwin-rebuild switch`. With
       `fix/312-rebuild-merged-only` it only activates a clean `main` equal to
@@ -300,15 +319,21 @@ The backup captures what a nix rollback does not:
 ### Step 7: Post-deploy
 
 ```bash
-./scripts/device register   # refresh the registry row (role, age key, Tailscale IP)
+./scripts/audit-device.sh --run   # fresh audit + registration (keeps the device's assigned role)
 ./scripts/device status
 ```
+
+Don't use `./scripts/device register` for this: it posts the hard-coded role
+`workstation`, overwriting whatever role the registry holds for a
+non-workstation host (`Kassie-M5-Air13`, the Studio). The audit path reads the
+registered role back first and re-posts it.
 
 The daily audit keeps the device's connectivity current — there is no
 heartbeat. With `chore/326-315-flake-hygiene` every `mkMac` host declares it via
 `modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
-daily 08:17); until then, and on Macs not under nix, run
-`./scripts/collector-runner.sh --install` once (it also retires a legacy
+daily 08:17). On `main` today only the Studio imports it, so on **any** host
+without a `com.rh7.collector-runner` agent (`launchctl list | grep collector`)
+run `./scripts/collector-runner.sh --install` once (it also retires a legacy
 `com.rh7.audit` agent). Non-nix devices without a clone enrol with
 `curl -fsSL config.rh7labs.com/enroll | bash` (first audit + a direct daily
 audit schedule; append `-s -- --status` to check only, `-s -- --role <role>`
@@ -335,7 +360,7 @@ All commands are run from `~/dotfiles`:
 | `audit --save` | Save audit to `~/dotfiles-backups/audit/` |
 | `backup` | Backup current system state (Homebrew, dock, defaults, dotfiles) |
 | `backup /path` | Backup to custom location |
-| `register` | `POST /api/devices/register` with OS, Tailscale IP, age pubkey |
+| `register` | `POST /api/devices/register` with OS, Tailscale IP, age pubkey. **Caveat:** hard-codes role `workstation` — `setup` and `update` call it too, so on non-workstation hosts (`Kassie-M5-Air13`, the Studio) prefer `rebuild.sh` + `audit-device.sh --run` |
 | `secrets` | Run `setup-secrets.sh` |
 | `sync` / `sync --install` | Legacy auto-sync (cron every 30 min); superseded by the daily audit schedule |
 | `fleet` | Fleet-wide status from the config service (`--detail`, `--stale`) |
@@ -437,7 +462,7 @@ curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
 # 6. Work through "Before migrating an existing Mac" (escrow, Time Machine,
 #    retirement verdict, secrets recipient), then deploy
 ./scripts/device backup     # safety net
-./scripts/setup-secrets.sh  # needsSecrets hosts: must decrypt first
+./scripts/setup-secrets.sh  # needsSecrets hosts, with fix/310: must decrypt first
 ./scripts/rebuild.sh        # build → drift audit → nvd diff → confirm → switch
 
 # 7. Daily audit schedule (until fleet-audit.nix covers this host)

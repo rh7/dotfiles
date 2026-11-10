@@ -47,10 +47,13 @@ git clone https://github.com/rh7/dotfiles.git ~/dotfiles && ~/dotfiles/scripts/s
 ```
 
 Pick the hostname that matches a `flake.nix` attr — the rebuild selects the
-configuration by hostname. For a host that needs secrets, enrol its age key
-first or the first activation cannot decrypt — see
-[Secrets](docs/device-guide.md#secrets-sops-nix). Migrating a Mac that already
-has apps and settings? Read
+configuration by hostname. **Secrets hosts** (`needsSecrets = true`, every Mac
+except `Kassie-M5-Air13`) cannot decrypt on first activation until the new age
+key is a recipient. Until `fix/310-sops-onboarding` merges, `setup.sh` does not
+stop for this: it activates anyway, treats the failure as non-fatal and still
+prints *Setup Complete* — do the manual recipient step in
+[Secrets](docs/device-guide.md#secrets-sops-nix) and rebuild before trusting
+the machine. Migrating a Mac that already has apps and settings? Read
 [Before migrating an existing Mac](docs/device-guide.md#before-migrating-an-existing-mac)
 first.
 
@@ -308,9 +311,9 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ```bash
 ./scripts/device audit             # interactive audit menu; --local / --save / --run
 ./scripts/device status            # this device + fleet overview
-./scripts/device update            # rebuild via rebuild.sh, then register
-./scripts/device secrets           # run setup-secrets.sh (age key + decrypt check)
-./scripts/collector-runner.sh --install   # daily audit schedule on a Mac not yet under nix
+./scripts/rebuild.sh               # rebuild (= nrs)
+./scripts/device secrets           # run setup-secrets.sh
+./scripts/collector-runner.sh --install   # daily audit on any host without com.rh7.collector-runner
 curl -fsSL config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ```
 
