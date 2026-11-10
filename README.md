@@ -349,17 +349,19 @@ normally need to invoke it directly. Standalone usage:
 ./scripts/audit-config-drift.sh --diff       # diff current state vs baseline
 ```
 
-The audit distinguishes two kinds of drift:
+The audit distinguishes three kinds of drift:
 
-- **`+` (risky)** — present locally but not declared. `switch` will overwrite
-  these (manual dock pins, brew-installed-but-not-declared apps, MAS apps the
-  flake doesn't know about). Fold them into the flake first if you want them
-  to survive future rebuilds.
+- **`+` (risky)** — local state `switch` will overwrite (e.g. manual Dock pins,
+  changed defaults). Fold it into the flake first if you want it to survive
+  future rebuilds.
 - **`-` (benign)** — declared but not yet present locally. `switch` will just
   apply them — no manual changes at risk.
+- **`·` (informational)** — installed but not declared (casks, MAS apps,
+  unmanaged `/Applications` entries). With `cleanup = "none"` activation keeps
+  them; review them when adopting apps into the flake.
 
-`rebuild.sh` only prompts when risky drift is detected; benign drift proceeds
-silently.
+`rebuild.sh` only prompts when risky drift is detected; benign and
+informational drift proceed silently.
 
 One drift entry is **expected and permanent**: the `tripmode` cask shows as
 installed-but-not-declared on `rouven-m5-pro`. Declaring it would hang

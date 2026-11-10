@@ -90,7 +90,7 @@ activation on such a host and prints the device's public key plus the exact
 `setup.sh` does not stop:** it activates, treats the decryption failure as
 non-fatal and still prints *Setup Complete*. Take the `Age key` it prints at
 the end through the manual recipient step in [Secrets](#secrets-sops-nix),
-then `./scripts/rebuild.sh`. `Kassie-M5-Air13` (`needsSecrets = false`,
+then `~/dotfiles/scripts/rebuild.sh`. `Kassie-M5-Air13` (`needsSecrets = false`,
 personal role) skips this.
 
 ### Step 2: Verify
@@ -99,7 +99,7 @@ Open a **new** terminal to get the full shell config, then:
 
 ```bash
 type nrs                     # ~/dotfiles/scripts/rebuild.sh
-./scripts/device status      # device info, age key, config service + fleet overview
+~/dotfiles/scripts/device status   # device info, age key, config service + fleet overview
 launchctl list | grep com.rh7.collector-runner   # daily audit scheduled
 ```
 
@@ -114,7 +114,7 @@ recipient in `.sops.yaml`: `m5-air` (admin), the Mac Studio, `rouven-m5-pro` or
 `thinkpad`. This flow arrives with **`fix/310-sops-onboarding`**
 (`scripts/sops-add-host.sh` does not exist on `main` before that PR merges).
 
-1. **On the device:** `./scripts/setup-secrets.sh` (or `./scripts/device secrets`).
+1. **On the device:** `~/dotfiles/scripts/setup-secrets.sh` (or `~/dotfiles/scripts/device secrets`).
    It generates the age key if missing, registers its public key with the
    config service, and verifies the device can decrypt `secrets/secrets.yaml`.
    If it cannot yet, it exits **non-zero** and prints the public key and the
@@ -135,8 +135,8 @@ recipient in `.sops.yaml`: `m5-air` (admin), the Mac Studio, `rouven-m5-pro` or
 3. **Merge** the PR.
 4. **On the device:** `git -C ~/dotfiles pull --ff-only` (the merged
    re-encryption isn't in the local checkout yet), re-run
-   `./scripts/setup-secrets.sh` (it should now decrypt), then
-   `./scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
+   `~/dotfiles/scripts/setup-secrets.sh` (it should now decrypt), then
+   `~/dotfiles/scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
 
 **Until `fix/310-sops-onboarding` merges, don't run `setup-secrets.sh` /
 `device secrets`.** On `main` it never runs `sops updatekeys`, reports success
@@ -160,7 +160,7 @@ hand on an existing recipient, in a branch/worktree:
    `sops updatekeys secrets/secrets.yaml` — editing `.sops.yaml` alone does not
    re-encrypt anything.
 4. Commit both files, PR, merge; then on the device
-   `git -C ~/dotfiles pull --ff-only && ./scripts/rebuild.sh`.
+   `git -C ~/dotfiles pull --ff-only && ~/dotfiles/scripts/rebuild.sh`.
 
 Manual `sops` on macOS needs the key path, because sops' macOS default is under
 `~/Library/Application Support`:
@@ -204,7 +204,8 @@ has apps, settings and data. `$CS` as above.
       installed but not brew-declared; `unmanaged_casks` / `unmanaged_formulas`
       list Homebrew installs no profile declares. Apps outside the catalogue
       appear in neither — also go through the audit's `applications` list
-      (`curl -s $CS/api/audit/$(hostname -s)`) and the `+` lines of
+      (`curl -s $CS/api/audit/$(hostname -s)`) and the drift audit's
+      informational `·` lines (undeclared casks/apps) from
       `./scripts/audit-config-drift.sh`. Add the keepers to the right
       `modules/darwin/profiles/*.nix` (or the host's `configurations/macos/*.nix`),
       PR, merge.
@@ -215,7 +216,7 @@ has apps, settings and data. `$CS` as above.
       [Secrets](#secrets-sops-nix); with `fix/310-sops-onboarding`,
       `./scripts/setup-secrets.sh` must report that it can decrypt (before it,
       use the manual recipient step there).
-- [ ] **Activate with `./scripts/rebuild.sh`** (build → drift audit → `nvd`
+- [ ] **Activate with `./scripts/rebuild.sh`** (drift audit → build → `nvd`
       diff → confirm), not `nrs-raw` / a raw `darwin-rebuild switch`. With
       `fix/312-rebuild-merged-only` it only activates a clean `main` equal to
       `origin/main`; `--allow-unmerged` deliberately tests a branch.
@@ -350,7 +351,7 @@ Work through [Before migrating an existing Mac](#before-migrating-an-existing-ma
 
 ```bash
 ./scripts/device backup     # safety net
-./scripts/rebuild.sh        # build → drift audit → nvd diff → confirm → switch
+./scripts/rebuild.sh        # drift audit → build → nvd diff → confirm → switch
 ```
 
 The backup is a reference snapshot, not a full rollback:
@@ -520,7 +521,7 @@ curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
 ./scripts/device backup     # safety net
 # needsSecrets hosts: recipient added first (see Secrets; once fix/310 merges,
 # ./scripts/setup-secrets.sh confirms the device can decrypt)
-./scripts/rebuild.sh        # build → drift audit → nvd diff → confirm → switch
+./scripts/rebuild.sh        # drift audit → build → nvd diff → confirm → switch
 
 # 7. Daily audit schedule (until fleet-audit.nix covers this host)
 ./scripts/collector-runner.sh --install
