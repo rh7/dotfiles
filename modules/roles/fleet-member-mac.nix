@@ -24,7 +24,7 @@
   #     mac-studio-services plists reference nix profile paths;
   #   - zsh/session config (~/.zshrc is a store symlink);
   #   - sops-nix secrets wiring (via needsSecrets in mkMac);
-  #   - the fleet-audit schedule (via extraHomeModules in flake.nix).
+  #   - the fleet-audit schedule (imported by mkMac for every Mac in flake.nix).
   #
   # What it deliberately DROPS, and who owns it instead:
   #   - Homebrew casks/brews/taps + activation-time upgrades → brew is

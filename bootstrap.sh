@@ -37,7 +37,7 @@ echo "Available configs:"
 echo "  m5-air              MacBook Air M5"
 echo "  rouven-air-m3       MacBook Air M3"
 echo "  rouven-pro-m4       MacBook Pro M4"
-echo "  rouvens-mac-mini    Mac Mini (office)"
+echo "  rouvens-mac-mini-m4 Mac Mini (office)"
 echo "  rouvens-mac-studio  Mac Studio (AI lab)"
 echo ""
 read -rp "Which config? " MACHINE
