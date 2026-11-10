@@ -412,7 +412,7 @@ curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/fleet-fix
 |---|---|---|---|
 | `doctor` | this host's open action items → fix id, then each fix id's plan | nothing (read-only) | — |
 | `backup` | at-risk repos (re-checked live) with the git commands to push to a `backup/<host>-<date>` branch; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
-| `age-key` | whether `~/.config/sops/age/keys.txt` exists | runs `setup-secrets.sh` (generate + register); prints `sops-add-host.sh <host>` for an existing recipient | recipient host |
+| `age-key` | whether `~/.config/sops/age/keys.txt` exists | runs `setup-secrets.sh` (generate + register); prints `sops-add-host.sh <host>` for an existing recipient | a clone, recipient host |
 | `audit` | collector-runner schedule + last audit age | `collector-runner.sh --install` (reloads the nix-declared agent where one exists) + one gated audit | — |
 | `firewall` | macOS application firewall state; `rouvens-mac-studio` is exempt (#93) unless `--force` | `sudo socketfilterfw --setglobalstate on`, re-verify; if the CLI no-ops (macOS 15+), opens System Settings and re-verifies | sudo, GUI |
 | `filevault` | `fdesetup status` | `sudo fdesetup enable` (interactive) + reminder to store the recovery key in 1Password | sudo |
@@ -425,8 +425,9 @@ curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/fleet-fix
 1Password (`--yes` answers for you). Exit codes: `0` nothing to fix, `1` items
 remain (or `--apply` incomplete), `2` error (e.g. config service unreachable),
 `64` usage. It reuses `scripts/lib/config-service.sh` (pin → probe resolver),
-`setup-secrets.sh` and `collector-runner.sh`; run clone-free it fetches those
-from raw `main`.
+`setup-secrets.sh` and `collector-runner.sh`; run clone-free it fetches the
+resolver and `collector-runner.sh` from raw `main`. `age-key --apply` and `drift`
+need a clone (they evaluate the flake / secrets file) and say so.
 
 ---
 

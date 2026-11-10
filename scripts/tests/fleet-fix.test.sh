@@ -46,7 +46,7 @@ stub sysctl         'echo "total = 2048.00M  used = ${FAKE_SWAP_MB:-100}.00M  fr
 stub free           'echo "Swap: 2048 100 1948"'
 stub launchctl      '[ "$1" = print ] && exit "${LAUNCHCTL_LOADED:-1}"; exit 0'
 stub open           'exit 0'
-stub tmutil         'echo "tmutil: No destinations configured."'
+stub tmutil         '[ "${TM_FAIL:-0}" = 1 ] && { echo "tmutil: backupd not responding"; exit 1; }; echo "tmutil: No destinations configured."'
 stub defaults       'exit 1'
 stub docker         'exit 1'
 stub crontab        'exit 1'
@@ -258,6 +258,11 @@ has "backup still reports local Time Machine state" "Time Machine: no destinatio
 reset; ffpipe FLEET_FIX_RAW_BASE="file://$TEST_ROOT/nowhere" -- doctor
 check "clone-free, helpers unfetchable, no ~/dotfiles -> exit 2" "$RC" 2
 has "says why" "could not fetch helpers"
+
+echo "== a tmutil failure is unknown, never a false OK =="
+reset; ff MOCK_ONLINE=0 TM_FAIL=1 -- backup
+has "tmutil error -> MANUAL unknown" "Time Machine: status unknown (tmutil exit 1"
+hasnt "never reported configured" "destination configured"
 
 echo "== --apply resources: only GC + brew cleanup =="
 reset; ff -- resources --apply

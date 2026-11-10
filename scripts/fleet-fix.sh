@@ -10,6 +10,7 @@
 #   backup           backup blockers: repos to push, secrets to escrow, Time Machine,
 #                    iCloud Desktop & Documents (report-only: --apply changes nothing)
 #   age-key          sops age key via setup-secrets.sh + the recipient-side step
+#                    (--apply needs a dotfiles clone: it evaluates the flake)
 #   audit            install/repair the collector-runner schedule, run one audit
 #   firewall         macOS application firewall (rouvens-mac-studio is exempt, #93)
 #   filevault        macOS FileVault (on Linux: same as disk-encryption)
@@ -282,16 +283,18 @@ backup_repo() { # live re-check of one at-risk repo from the audit
 }
 
 backup_local_darwin() {
-  local tm
-  tm="$(tmutil destinationinfo 2>&1)"
-  case "$tm" in
-    *"No destinations"*|"")
+  local tm rc
+  tm="$(tmutil destinationinfo 2>&1)"; rc=$?
+  case "$rc:$tm" in
+    *"No destinations"*)
       st_manual "Time Machine: no destination configured — add an ENCRYPTED external disk (needs GUI)" \
         "open 'x-apple.systempreferences:com.apple.Time-Machine-Settings.extension'"
       info "System Settings → General → Time Machine → Add Backup Disk → tick 'Encrypt Backup'"
       info "CLI alternative (no encryption choice): sudo tmutil setdestination -a /Volumes/<Disk> && sudo tmutil enable" ;;
-    *) st_ok "Time Machine: destination configured"
-       info "$(printf '%s' "$tm" | grep -m1 -E '^Name' || true)" ;;
+    0:*Name*)
+      st_ok "Time Machine: destination configured"
+      info "$(printf '%s' "$tm" | grep -m1 -E '^Name' || true)" ;;
+    *) st_manual "Time Machine: status unknown (tmutil exit $rc: ${tm%%$'\n'*})" "tmutil destinationinfo" ;;
   esac
   local desk docs
   desk="$(defaults read com.apple.finder FXICloudDriveDesktop 2>/dev/null)"
@@ -467,13 +470,13 @@ fix_audit() {
     [ $((need + stale)) -gt 0 ] && info "--apply runs: collector-runner.sh --install (reloads the nix-declared agent where one exists), then one gated audit"
     return 0
   fi
-  if [ "$need" -eq 1 ]; then
-    if run_runner --install && sched="$(schedule_state)"; then st_ok "collector scheduled: $sched"
-    else st_fix "collector-runner --install did not leave a schedule" "$(fix_cmd audit) --apply"; fi
-  fi
-  case "$age" in
-    [0-9]*) [ "$age" -le "$STALE_AUDIT_HOURS" ] && [ "$need" -eq 0 ] && return 0 ;;
-  esac
+  local fresh=0
+  case "$age" in [0-9]*) [ "$age" -le "$STALE_AUDIT_HOURS" ] && fresh=1 ;; esac
+  [ "$need" -eq 0 ] && [ "$fresh" -eq 1 ] && return 0
+  # A stale audit with a registered schedule may mean the schedule points at a
+  # missing/stale runner, so the repair always re-runs --install (idempotent).
+  if run_runner --install && sched="$(schedule_state)"; then st_ok "collector scheduled: $sched"
+  else st_fix "collector-runner --install did not leave a schedule" "$(fix_cmd audit) --apply"; fi
   if run_runner; then
     age="$(audit_age_hours)"
     case "$age" in
