@@ -7,6 +7,7 @@
 #   rebuild.sh --build-only # just build, don't switch
 #   rebuild.sh --upgrade=all  # upgrade every declared outdated package
 #   rebuild.sh --no-upgrade   # install/switch only, upgrade nothing
+#   rebuild.sh --allow-unmerged  # build what is on disk, even if not origin/main
 #
 # This script avoids blind sudo by showing exactly what will change
 # before asking for root confirmation.
@@ -24,6 +25,9 @@ FORCE_MAS=false
 #   all      — everything declared and outdated
 #   none     — nothing; activation still installs missing packages
 UPGRADE_MODE=critical
+# Build/activate a checkout that is NOT origin/main (branch, dirty, ahead,
+# offline). See sync_dotfiles_checkout for why the default refuses.
+ALLOW_UNMERGED=false
 FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
 
 # ── Colors ──
@@ -98,9 +102,10 @@ while [[ $# -gt 0 ]]; do
     --upgrade=*)     UPGRADE_MODE="${1#--upgrade=}"; shift ;;
     --upgrade)       UPGRADE_MODE="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
     --no-upgrade)    UPGRADE_MODE=none; shift ;;
+    --allow-unmerged) ALLOW_UNMERGED=true; shift ;;
     --flake)         FLAKE_REF="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--flake REF]"
+      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--allow-unmerged] [--flake REF]"
       echo ""
       echo "  --yes, -y      Auto-confirm (skip interactive approval). Skips"
       echo "                 App Store upgrades unless --upgrade-mas is given,"
@@ -117,6 +122,12 @@ while [[ $# -gt 0 ]]; do
       echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
       echo "                 activation, no upgrades, no root. Does refresh brew"
       echo "                 metadata (network + Homebrew repo state)."
+      echo "  --allow-unmerged"
+      echo "                 Build/activate the checkout as it is on disk even"
+      echo "                 when it is not clean main at origin/main (feature"
+      echo "                 branch, local edits, unpushed commits, or offline)."
+      echo "                 The machine then runs UNMERGED config, and the drift"
+      echo "                 audit compares against it. Default: refuse."
       echo "  --flake REF    Override flake reference (default: ~/dotfiles#\$HOSTNAME)"
       echo ""
       echo "Logs: every run is mirrored to \$REBUILD_LOG_DIR (default:"
@@ -487,16 +498,107 @@ echo -e "${BOLD}${CYAN}│       $HOSTNAME ($OS)${NC}"
 echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}"
 echo ""
 
-# ── Step 1: Pull latest dotfiles ──
-if [[ -d "$DOTFILES_DIR/.git" ]]; then
-  info "Pulling latest dotfiles..."
-  cd "$DOTFILES_DIR"
-  if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
-    git pull --ff-only 2>/dev/null && ok "Dotfiles updated" || warn "Pull failed (non-fatal)"
+# ── Step 1: Sync the dotfiles checkout to origin/main ──
+# Refuses unless the checkout is faithfully the MERGED config: on `main`, no
+# uncommitted changes to tracked files, and HEAD == origin/main after a fetch.
+# Returns nonzero (caller exits) on refusal; 0 to proceed.
+#
+# WHY (rh7/rh-device-management#312): this step used to `git pull` only on a
+# clean tree ("Dotfiles have local changes — skipping pull") and would happily
+# pull a FEATURE branch if one was checked out, then build and activate whatever
+# was on disk. The Studio sat on a stale feature branch, 8 commits behind main
+# with a dirty tree, for weeks — and because the drift audit compares the
+# machine against that same checkout, every signal reported it compliant.
+# Same guard as rh-device-management's service.sh deploy (#164): every
+# successful run must genuinely mean "this machine runs origin/main".
+#
+# Fast-forward is attempted only when it is provably safe (on main, clean,
+# strictly behind). AHEAD needs its own check: `merge --ff-only` says "Already
+# up to date" (exit 0) when origin/main is an ancestor of HEAD, so unpushed or
+# unmerged commits would sail through a merge-only guard.
+#
+# Untracked files are ignored: they cannot change what the flake evaluates
+# (flakes only see tracked files) and `result` symlinks etc. are routine.
+sync_dotfiles_checkout() {
+  local dir="$DOTFILES_DIR" branch="" head="" remote="" dirty="" n
+  local problems=() fixes=()
+
+  info "Syncing dotfiles with origin/main..."
+  if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+    problems+=("$dir is not a git checkout — cannot prove it matches origin/main")
+    fixes+=("clone it: git clone https://github.com/rh7/dotfiles.git \"$dir\"")
+  elif ! git -C "$dir" fetch --quiet origin 2>&1 \
+       || ! remote=$(git -C "$dir" rev-parse --verify --quiet 'origin/main^{commit}'); then
+    problems+=("could not fetch origin/main (offline, or auth failure) — cannot prove the checkout is the merged config")
+    fixes+=("retry when online, or re-run with --allow-unmerged to build the checkout as it is on disk")
   else
-    warn "Dotfiles have local changes — skipping pull"
+    branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
+    dirty=$(git -C "$dir" status --porcelain --untracked-files=no)
+    head=$(git -C "$dir" rev-parse HEAD)
+
+    if [[ "$branch" == main && -z "$dirty" && "$head" != "$remote" ]] \
+       && git -C "$dir" merge-base --is-ancestor "$head" "$remote"; then
+      if git -C "$dir" merge --ff-only --quiet "$remote"; then
+        ok "Fast-forwarded main ${head:0:8} → ${remote:0:8}"
+        head=$(git -C "$dir" rev-parse HEAD)
+      else
+        warn "Fast-forward to origin/main failed"
+      fi
+    fi
+
+    if [[ -z "$branch" ]]; then
+      problems+=("detached HEAD at ${head:0:8}, not branch main")
+      fixes+=("git -C \"$dir\" checkout main")
+    elif [[ "$branch" != main ]]; then
+      problems+=("on branch '$branch', not main — unmerged config")
+      fixes+=("merge it via PR, then: git -C \"$dir\" checkout main")
+    fi
+    if [[ -n "$dirty" ]]; then
+      problems+=("uncommitted changes to tracked files:")
+      while IFS= read -r n; do problems+=("    $n"); done <<<"$dirty"
+      fixes+=("commit them on a branch and open a PR, or discard: git -C \"$dir\" stash")
+    fi
+    if [[ "$head" != "$remote" ]]; then
+      if git -C "$dir" merge-base --is-ancestor "$remote" "$head"; then
+        n=$(git -C "$dir" rev-list --count "$remote..$head")
+        problems+=("HEAD ${head:0:8} is AHEAD of origin/main ${remote:0:8} by $n commit(s) — not merged")
+      elif git -C "$dir" merge-base --is-ancestor "$head" "$remote"; then
+        n=$(git -C "$dir" rev-list --count "$head..$remote")
+        problems+=("HEAD ${head:0:8} is $n commit(s) BEHIND origin/main ${remote:0:8} and could not be fast-forwarded")
+      else
+        problems+=("HEAD ${head:0:8} has DIVERGED from origin/main ${remote:0:8}")
+      fi
+      fixes+=("push any commits you need to a branch + PR, then: git -C \"$dir\" checkout main && git -C \"$dir\" reset --hard origin/main")
+    fi
   fi
-fi
+
+  if [[ ${#problems[@]} -eq 0 ]]; then
+    ok "Dotfiles at origin/main ${remote:0:8} (clean)"
+    return 0
+  fi
+
+  local p
+  if $ALLOW_UNMERGED; then
+    warn "${BOLD}--allow-unmerged: building the checkout AS IT IS ON DISK.${NC}"
+    for p in "${problems[@]}"; do warn "  $p"; done
+    warn "This machine will run UNMERGED config, and the drift audit will"
+    warn "compare against that same checkout — it cannot flag the difference."
+    warn "Re-run without --allow-unmerged from clean main once merged."
+    echo ""
+    return 0
+  fi
+
+  err "Refusing to build: the dotfiles checkout is not the merged config (origin/main)."
+  for p in "${problems[@]}"; do err "  $p"; done
+  err "Fix:"
+  for p in "${fixes[@]}"; do err "  $p"; done
+  err "To deliberately build/activate it anyway (testing a branch, offline):"
+  err "  rebuild.sh --allow-unmerged"
+  return 1
+}
+
+sync_dotfiles_checkout || exit 1
+cd "$DOTFILES_DIR"
 
 # ── Step 2: Audit drift ──
 # Ensure Nix is in PATH (audit needs `nix eval`, build needs it too).
