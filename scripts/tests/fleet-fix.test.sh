@@ -69,7 +69,7 @@ code=200; body=""
 case "$url" in
   */api/health)               body='{"status":"ok","service":"config-service"}' ;;
   */api/fleet/health)         body="$(cat "$FIX_DIR/health.json")" ;;
-  */api/fleet/backup/*)       body="$(cat "$FIX_DIR/backup.json")" ;;
+  */api/fleet/backup/*)       [ "${BACKUP_DOWN:-0}" = 1 ] && exit 22; body="$(cat "$FIX_DIR/${BACKUP_FIXTURE:-backup.json}")" ;;
   */api/fleet/retirement/*)   code=403; body='{"error":"admin only"}' ;;
   */api/audit/*)              body="$(cat "$FIX_DIR/audit.json")" ;;
   *) code=404 ;;
@@ -103,6 +103,10 @@ cat >"$FIX_DIR/backup.json" <<'JSON'
           {"path":"~/code","why":"source code","status":"protected"},
           {"path":"~/.config","why":"tool configuration","status":"unprotected"}],
  "at_risk_repos":[{"path":"~/code/gone","dirty":3,"unpushed":1,"branch":"main"}]}
+JSON
+cat >"$FIX_DIR/backup-repo.json" <<'JSON'
+{"hostname":"test-mac","audited_at":"2026-11-01 00:00:00","audit_age_hours":200,"paths":[],
+ "at_risk_repos":[{"path":"~/code/my repo","dirty":0,"unpushed":1,"branch":"main"}]}
 JSON
 "$REAL_PY" -c 'import datetime; t=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=300); print("{\"hostname\":\"test-mac\",\"audited_at\":\"%s\"}" % t.strftime("%Y-%m-%d %H:%M:%S"))' >"$FIX_DIR/audit.json"
 
@@ -187,6 +191,30 @@ has "firewall dry-run names the command" "--setglobalstate on"
 ff -- resources; check "resources dry-run (92%) exits 1" "$RC" 1; has "dead store paths counted" "2 dead store paths"
 ff -- audit;     has "stale audit detected via the API" "last audit is 300h old"
 
+echo "== doctor --apply stays read-only =="
+reset; ffpipe FAKE_SWAP_MB=3000 -- doctor --apply --yes
+mk="$(grep -E 'setglobalstate|fdesetup enable|nix-collect-garbage --delete|brew cleanup|launchctl (bootstrap|bootout)|^open |^sudo' "$CALLS" | grep -v '^sudo -n true$' || true)"
+check "doctor --apply ran no mutating command" "$mk" ""
+has "says --apply is ignored" "doctor is read-only; --apply ignored"
+
+echo "== doctor propagates a plan error (backup endpoint down) as exit 2 =="
+reset; ffpipe BACKUP_DOWN=1 -- doctor
+check "plan error -> exit 2" "$RC" 2
+
+echo "== backup re-checks EVERY local branch, quotes paths =="
+reset
+R="$TEST_ROOT/home/code/my repo"; G=(git -c user.name=t -c user.email=t@t -c init.defaultBranch=main)
+rm -rf "${TEST_ROOT:?}/remote.git"
+"${G[@]}" init -q --bare "$TEST_ROOT/remote.git"
+"${G[@]}" init -q "$R" && "${G[@]}" -C "$R" commit -q --allow-empty -m one \
+  && "${G[@]}" -C "$R" remote add origin "$TEST_ROOT/remote.git" && "${G[@]}" -C "$R" push -q origin main 2>/dev/null \
+  && "${G[@]}" -C "$R" switch -q -c feature && "${G[@]}" -C "$R" commit -q --allow-empty -m two \
+  && "${G[@]}" -C "$R" switch -q main
+ff BACKUP_FIXTURE=backup-repo.json -- backup
+# shellcheck disable=SC2088  # literal "~/" as printed
+has "unpushed feature branch is caught though HEAD is pushed" "~/code/my repo: 1 commit(s) on local branches no remote has"
+has "path is shell-quoted in the command" "git -C $TEST_ROOT/home/code/my\\ repo push origin 'refs/heads/*:refs/heads/backup/test-mac-"
+
 echo "== --apply firewall: right command, verified =="
 reset; ff FW_CLI_WORKS=1 -- firewall --apply --yes
 check "apply exits 0 once verified on" "$RC" 0
@@ -251,10 +279,15 @@ has "shows the log tail" "last-log-line"
 has "prints the root dry-run command" "sudo rh7-fleet-update --dry-run"
 check "did not run it without cached sudo" "$(grep -c 'rh7-fleet-update --dry-run' "$CALLS")" 0
 reset; mkdir -p "$TEST_ROOT/fu/var/lib/rh7-fleet-update"
-printf '{"last_result": "applied"}\n' >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
+recent="$("$REAL_PY" -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+printf '{"last_result": "applied", "last_success_at": "%s"}\n' "$recent" >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
 ff SUDO_N_EXIT=0 -- fleet-update
 check "cached sudo: dry-run runs non-interactively" "$(called "sudo -n rh7-fleet-update --dry-run" && echo y)" y
-check "applied + ok dry-run -> exit 0" "$RC" 0
+check "applied, recent success, ok dry-run -> exit 0" "$RC" 0
+printf '{"last_result": "no-op", "last_success_at": "2020-01-01T00:00:00Z"}\n' >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
+ff SUDO_N_EXIT=0 -- fleet-update
+check "old last_success_at stays unresolved (stale)" "$RC" 1
+has "says how stale" "last successful fleet update"
 
 echo
 echo "passed: $pass   failed: $fail"

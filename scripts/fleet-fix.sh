@@ -44,6 +44,7 @@ SFW="${FLEET_FIX_SOCKETFILTERFW:-/usr/libexec/ApplicationFirewall/socketfilterfw
 FU_ROOT="${FLEET_FIX_FLEET_UPDATE_ROOT:-}"
 FU_STATE="$FU_ROOT/var/lib/rh7-fleet-update/state.json"
 FU_LOG="$FU_ROOT/var/log/rh7-fleet-update.log"
+FU_STALE_HOURS=72       # = config-service FLEET_UPDATE_STALE_HOURS
 AGE_KEY_FILE="$HOME/.config/sops/age/keys.txt"
 RUNNER_LABEL="com.rh7.collector-runner"
 STALE_AUDIT_HOURS=168   # = config-service src/audit-age.ts
@@ -206,7 +207,9 @@ fix_id_for() {
 }
 
 cmd_doctor() {
+  # Read-only even when called with --apply: plans run in dry-run mode.
   [ "$APPLY" -eq 1 ] && info "doctor is read-only; --apply ignored (run each fix id with --apply)"
+  APPLY=0
   section "fleet-fix doctor — $HOST_LC ($OS)"
   have_python || { err "python3 is required for doctor (macOS: xcode-select --install)"; return 2; }
   resolve_cs || { cs_offline_msg; return 2; }
@@ -235,31 +238,36 @@ PY
       case " $ids " in *" $fid "*) ;; *) ids="$ids $fid" ;; esac
     fi
   done <"$FF_TMP/items"
+  local prc=0
   for fid in $ids; do
     section "plan: $fid"
-    run_fix "$fid"
+    run_fix "$fid" || { [ $? -eq 2 ] && prc=2; }
   done
-  return 0
+  return "$prc"
 }
 
 # ── backup ───────────────────────────────────────────────────────────────────
 backup_repo() { # live re-check of one at-risk repo from the audit
-  local path="$1" adirty="$2" aunp="$3" branch="$4" p dirty unp stamp
-  p="$(untilde "$path")"; stamp="backup/$HOST_LC-$(date +%Y%m%d)"
+  local path="$1" adirty="$2" aunp="$3" branch="$4" p q dirty unp ns
+  p="$(untilde "$path")"; q="$(printf '%q' "$p")"
+  # New refs under a per-host namespace: never pushes onto an existing branch.
+  ns="refs/heads/backup/$HOST_LC-$(date +%Y%m%d)"
   if [ ! -d "$p" ] || ! have_git; then
     st_manual "$path: audit saw $adirty dirty, $aunp unpushed (branch $branch) — cannot re-check here"
     return
   fi
   dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$p" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-  unp="$(GIT_OPTIONAL_LOCKS=0 git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null)" || unp="no-upstream"
+  # Same measure as the collector (audit-device.sh): commits on ANY local branch
+  # that no remote-tracking ref contains — not just HEAD vs its upstream.
+  unp="$(GIT_OPTIONAL_LOCKS=0 git -C "$p" rev-list --count --branches --not --remotes 2>/dev/null)" || unp="?"
   if [ "$dirty" = "0" ] && [ "$unp" = "0" ]; then
-    st_ok "$path: clean and pushed now (audit is older) — refresh with: $(fix_cmd audit) --apply"
+    st_ok "$path: clean, every local branch is on a remote (audit is older) — refresh with: $(fix_cmd audit) --apply"
   elif [ "$dirty" != "0" ]; then
-    st_manual "$path: $dirty uncommitted change(s), ${unp} unpushed — commit to a backup branch and push it" \
-      "git -C $path switch -c $stamp && git -C $path add -A && git -C $path commit -m 'wip: backup from $HOST_LC' && git -C $path push -u origin HEAD"
+    st_manual "$path: $dirty uncommitted change(s), $unp unpushed commit(s) — commit on a wip branch, push every branch to a backup namespace" \
+      "git -C $q switch -c wip-backup-$(date +%Y%m%d) && git -C $q add -A && git -C $q commit -m 'wip: backup from $HOST_LC' && git -C $q push origin 'refs/heads/*:$ns/*'"
   else
-    st_manual "$path: $unp commit(s) not on any remote (branch $branch) — push them to a backup branch (never straight to main)" \
-      "git -C $path push origin HEAD:refs/heads/$stamp"
+    st_manual "$path: $unp commit(s) on local branches no remote has — push every branch to a backup namespace (never onto main)" \
+      "git -C $q push origin 'refs/heads/*:$ns/*'"
   fi
 }
 
@@ -501,10 +509,12 @@ fix_firewall() {
   fi
   if [ "$(fw_state)" = "on" ]; then st_ok "application firewall enabled (verified)"; return 0; fi
   # macOS 15+/26: the CLI can silently no-op under TCC/MDM — hand off to the pane.
-  info "still off — opening System Settings → Network → Firewall; switch it on there"
-  open "x-apple.systempreferences:com.apple.Network-Settings.extension?Firewall" 2>/dev/null \
-    || open "x-apple.systempreferences:com.apple.preference.security?Firewall" 2>/dev/null
-  confirm "Turned the Firewall toggle on? (re-verifies)" || true
+  info "still off — the CLI can no-op on macOS 15+ (TCC/MDM); the System Settings toggle works"
+  if confirm "Open System Settings → Network → Firewall to switch it on?"; then
+    open "x-apple.systempreferences:com.apple.Network-Settings.extension?Firewall" 2>/dev/null \
+      || open "x-apple.systempreferences:com.apple.preference.security?Firewall" 2>/dev/null
+    confirm "Turned the Firewall toggle on? (re-verifies)" || true
+  fi
   if [ "$(fw_state)" = "on" ]; then st_ok "application firewall enabled (verified)"
   else st_fix "application firewall is still OFF" "System Settings → Network → Firewall → On"; fi
 }
@@ -620,6 +630,20 @@ fix_drift() {
 }
 
 # ── fleet-update ─────────────────────────────────────────────────────────────
+fu_success_age_hours() { # prints hours, "never", or nothing (unreadable)
+  have_python || return 0
+  python3 - "$FU_STATE" <<'PY' 2>/dev/null
+import json, sys, datetime
+s = json.load(open(sys.argv[1])).get("last_success_at")
+if not s:
+    print("never"); sys.exit()
+t = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+if t.tzinfo is None:
+    t = t.replace(tzinfo=datetime.timezone.utc)
+print(int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() // 3600))
+PY
+}
+
 fix_fleet_update() {
   if [ "$OS" != "Darwin" ]; then st_ok "fleet-update is nix-darwin only — not applicable on $OS"; return 0; fi
   if ! command -v rh7-fleet-update >/dev/null 2>&1 && [ ! -e "$FU_STATE" ]; then
@@ -632,8 +656,15 @@ fix_fleet_update() {
   if [ -r "$FU_STATE" ]; then
     sed 's/^/           /' "$FU_STATE"; echo
     case "$(tr -d ' \n' <"$FU_STATE")" in
-      *'"last_result":"applied"'*|*'"last_result":"no-op"'*|*'"last_result":"skipped"'*) st_ok "last run succeeded or was skipped" ;;
       *'"last_result":"refused"'*) st_manual "last run REFUSED a commit (trust check) — treat as a security event; inspect the log" ;;
+      *'"last_result":"applied"'*|*'"last_result":"no-op"'*|*'"last_result":"skipped"'*)
+        local sage; sage="$(fu_success_age_hours)"
+        case "$sage" in
+          never) st_manual "no successful fleet update ever recorded — read the log below" ;;
+          [0-9]*) if [ "$sage" -gt "$FU_STALE_HOURS" ]; then st_manual "last successful fleet update ${sage}h ago (> ${FU_STALE_HOURS}h) — check power/sleep schedule and the log"
+                  else st_ok "last run ok; last success ${sage}h ago"; fi ;;
+          *) st_manual "last run ok, but last_success_at is unreadable — inspect state.json above" ;;
+        esac ;;
       *) st_manual "last run failed — read the log below; fix the build/activation in rh7/dotfiles" ;;
     esac
   elif [ -e "$FU_STATE" ]; then st_manual "state.json not readable" "sudo cat $FU_STATE"
