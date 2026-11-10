@@ -22,8 +22,8 @@
 #                       - be ancestor-or-equal of origin/main
 #                                                    -> refused / not-in-main
 #                       - be descendant-or-equal of the last applied commit
-#                         (first run: of the running generation's
-#                         configurationRevision)
+#                         AND of the running generation's
+#                         configurationRevision (first run, manual rebuilds)
 #                                                    -> refused / not-fast-forward
 #   4. no-op          T already applied and the system is still that generation
 #   5. build          darwinConfigurations.<attr>.system, <attr> baked in by
@@ -528,21 +528,24 @@ main() {
     *) finish refused signature-invalid ;;
   esac
   is_ancestor "$TARGET" refs/remotes/origin/main || finish refused not-in-main
-  # No rewinds. The floor is the last commit this daemon applied; on a host's
-  # FIRST run (no state yet) it is the commit the running generation was built
-  # from, so a lagging channel can never roll a freshly enrolled host back —
-  # possibly to a revision that predates (and would uninstall) this daemon.
-  local floor="$PREV_APPLIED" floor_src="applied commit"
-  if [[ -z "$floor" ]]; then
-    floor=$(installed_revision); floor_src="installed generation's revision"
-    [[ -n "$floor" ]] || log "warning: no applied commit and no configurationRevision in $CURRENT_SYSTEM — no rewind floor for this first run"
-  fi
-  if [[ -n "$floor" ]]; then
+  # No rewinds. T must descend from BOTH the last commit this daemon applied
+  # and the commit the running generation was built from. The second floor
+  # covers a host's first run (no state yet: a lagging channel must not roll
+  # it back, possibly to before this daemon existed) and a manual rebuild.sh
+  # from a newer main (the night after must not undo it). A running revision
+  # the checkout does not know (built from an unmerged local commit) refuses
+  # until the channel contains it.
+  local floor installed checked=0
+  installed=$(installed_revision)
+  for floor in "$PREV_APPLIED" "$installed"; do
+    [[ -n "$floor" ]] || continue
+    checked=1
     if ! g cat-file -e "$floor^{commit}" 2>/dev/null || ! is_ancestor "$floor" "$TARGET"; then
-      log "channel tip $TARGET does not descend from the $floor_src $floor"
+      log "channel tip $TARGET does not descend from $floor (applied=${PREV_APPLIED:-none} running=${installed:-unknown})"
       finish refused not-fast-forward
     fi
-  fi
+  done
+  [[ $checked -eq 1 ]] || log "warning: no applied commit and no configurationRevision in $CURRENT_SYSTEM — no rewind floor for this run"
 
   if [[ "$TARGET" == "$PREV_APPLIED" && -n "$PREV_GENERATION" \
         && "$(current_generation)" == "$PREV_GENERATION" ]] && system_is_current; then

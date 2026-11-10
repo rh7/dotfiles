@@ -293,6 +293,12 @@ check "first run behind: nothing built" "$(builds)" "0"
 fresh; refs "$C2" "$C2"; installed "$C1-dirty"
 run_fu
 expect "first run: channel ahead of a -dirty installed revision" 0 applied null
+fresh; refs "$C2" "$C1"
+run_fu
+installed "$C2"   # a human rebuilt from newer main after the daemon applied C1
+run_fu
+expect "manual rebuild ahead of the channel is not undone" 3 refused not-fast-forward
+check "manual rebuild: only the daemon's own run built" "$(builds)" "1"
 
 echo ""
 echo "fleet-update — preconditions (skipped, nothing fetched)"
