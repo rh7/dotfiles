@@ -104,8 +104,6 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_TERMINAL_PROMPT=0
 g() { git -C "$CHECKOUT" "$@"; }
 
-is_sha40() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
-
 # Generation number of the system profile (system-N-link), or empty.
 current_generation() {
   local target
@@ -125,10 +123,45 @@ system_is_current() {
   [[ -n "$a" && "$a" == "$b" ]]
 }
 
+# system_is_out <out> — the profile AND /run/current-system are exactly <out>
+# (not merely equal to each other: a manual rebuild finishing in between would
+# make them agree on ITS generation).
+system_is_out() {
+  local want a b
+  want=$(readlink -f "$1" 2>/dev/null) || return 1
+  a=$(readlink -f "$CURRENT_SYSTEM" 2>/dev/null) || return 1
+  b=$(readlink -f "$SYSTEM_PROFILE" 2>/dev/null) || return 1
+  [[ -n "$want" && "$a" == "$want" && "$b" == "$want" ]]
+}
+
 # ── State file ───────────────────────────────────────────────────────────────
-# PREV_* carry fields forward between runs. Read at start (fail closed on a
-# corrupt file: rewinding protection depends on applied_commit) and re-read
-# just before writing.
+# PREV_* carry fields forward between runs; read once, at start. A file that
+# is not EXACTLY the contract (the same rules the
+# audit collector applies) fails closed: rewinding protection depends on
+# applied_commit, and a bad field carried forward would leave the audit
+# reporting state-unreadable forever.
+STATE_CONTRACT='
+  def iso: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+  def sha: type == "string" and test("^[0-9a-f]{40}$");
+  def reasons: {
+    "applied": [null], "no-op": [null],
+    "skipped": ["on-battery", "lock-held", "rebuild-in-progress"],
+    "failed": ["fetch-failed", "build-failed", "activation-failed", "brew-failed", "unknown"],
+    "refused": ["signature-invalid", "signer-key-expired", "not-fast-forward", "not-in-main"] };
+  type == "object"
+  and (keys == ["applied_commit", "channel", "consecutive_failures", "enabled", "generation",
+                "last_result", "last_run_at", "last_success_at", "reason", "schema",
+                "target_commit"])
+  and .schema == 1 and .enabled == true
+  and (.channel | IN("main", "fleet/stable"))
+  and (.last_run_at | iso)
+  and (.last_result | IN("applied", "no-op", "skipped", "failed", "refused"))
+  and (.reason as $r | reasons[.last_result] | index([$r]) != null)
+  and (.target_commit == null or (.target_commit | sha))
+  and (.applied_commit == null or (.applied_commit | sha))
+  and (.last_success_at == null or (.last_success_at | iso))
+  and (.generation == null or (.generation | type == "number" and . >= 0 and floor == .))
+  and (.consecutive_failures | type == "number" and . >= 0 and floor == .)'
 PREV_APPLIED=""
 PREV_SUCCESS=""
 PREV_GENERATION=""
@@ -137,23 +170,11 @@ PREV_FAILURES=0
 read_state() {
   PREV_APPLIED=""; PREV_SUCCESS=""; PREV_GENERATION=""; PREV_FAILURES=0
   [[ -e "$STATE_FILE" ]] || return 0
-  jq -e '
-    type == "object" and .schema == 1
-    and ((.applied_commit | type) as $t | $t == "string" or $t == "null")
-    and ((.last_success_at | type) as $t | $t == "string" or $t == "null")
-    and ((.generation | type) as $t | $t == "number" or $t == "null")
-    and ((.consecutive_failures | type) == "number")' "$STATE_FILE" >/dev/null 2>&1 || return 1
-  local applied generation failures
-  applied=$(jq -r '.applied_commit // ""' "$STATE_FILE")
-  generation=$(jq -r '(.generation // "") | tostring' "$STATE_FILE")
-  failures=$(jq -r '.consecutive_failures | tostring' "$STATE_FILE")
-  if [[ -n "$applied" ]] && ! is_sha40 "$applied"; then return 1; fi
-  [[ -z "$generation" || "$generation" =~ ^[0-9]+$ ]] || return 1
-  [[ "$failures" =~ ^[0-9]+$ ]] || return 1
-  PREV_APPLIED="$applied"
-  PREV_SUCCESS=$(jq -r '.last_success_at // ""' "$STATE_FILE")
-  PREV_GENERATION="$generation"
-  PREV_FAILURES="$failures"
+  jq -e "$STATE_CONTRACT" "$STATE_FILE" >/dev/null 2>&1 || return 1
+  PREV_APPLIED=$(jq -r '.applied_commit // ""' "$STATE_FILE") || return 1
+  PREV_SUCCESS=$(jq -r '.last_success_at // ""' "$STATE_FILE") || return 1
+  PREV_GENERATION=$(jq -r '(.generation // "") | tostring' "$STATE_FILE") || return 1
+  PREV_FAILURES=$(jq -r '.consecutive_failures | tostring' "$STATE_FILE") || return 1
 }
 
 # write_state <result> <reason|""> <target|""> <applied|""> <success|""> <generation|""> <failures>
@@ -188,8 +209,8 @@ finish() {
     log "dry-run result: ${result}${reason:+ ($reason)}${TARGET:+ target=$TARGET} — state not written"
     case "$result" in failed) exit 1 ;; refused) exit 3 ;; *) exit 0 ;; esac
   fi
-  # Re-read: the lock holder is the only writer, but the file is the truth.
-  read_state || true
+  # The lock holder is the only writer (a lock-held run never gets here), so
+  # the values read at start are current.
   applied="$PREV_APPLIED"; success="$PREV_SUCCESS"
   generation="$PREV_GENERATION"; failures="$PREV_FAILURES"
   case "$result" in
@@ -277,27 +298,44 @@ sync_checkout() {
 # ── Trust ────────────────────────────────────────────────────────────────────
 # verify_signature <commit> — 0 good, 1 invalid, 2 signer key expired.
 # The keyring is a throwaway GNUPGHOME holding ONLY the pinned key, so no key
-# in root's or anyone's keyring can vouch for a commit.
+# in root's or anyone's keyring can vouch for a commit; the signing primary
+# key's fingerprint is additionally checked against the pinned file's.
 verify_signature() {
-  local commit="$1" gnupghome status rc=0
-  gnupghome=$(mktemp -d "${TMPDIR:-/tmp}/rh7fu-gpg.XXXXXX")
-  chmod 0700 "$gnupghome"
+  local commit="$1" gnupghome="" status rc=0 pinned signers fpr
+  # Fail closed: an empty GNUPGHOME would silently fall back to root's keyring.
+  gnupghome=$(mktemp -d "${TMPDIR:-/tmp}/rh7fu-gpg.XXXXXX") || gnupghome=""
+  if [[ -z "$gnupghome" || ! -d "$gnupghome" ]] || ! chmod 0700 "$gnupghome"; then
+    log "could not create an isolated GNUPGHOME — refusing"
+    [[ -n "$gnupghome" ]] && rm -rf "$gnupghome"
+    return 1
+  fi
   if ! GNUPGHOME="$gnupghome" gpg --batch --quiet --no-autostart --import "$SIGNER_KEY" >/dev/null 2>&1; then
     log "could not import the pinned signer key $SIGNER_KEY"
     rm -rf "$gnupghome"
     return 1
   fi
+  pinned=$(GNUPGHOME="$gnupghome" gpg --batch --with-colons --list-keys 2>/dev/null \
+    | awk -F: '/^pub:/ {p = 1; next} /^fpr:/ && p {print $10; p = 0} /^sub:/ {p = 0}') || pinned=""
   status=$(GNUPGHOME="$gnupghome" g -c gpg.format=openpgp -c gpg.program=gpg \
     verify-commit --raw "$commit" 2>&1) || rc=$?
   GNUPGHOME="$gnupghome" gpgconf --kill all >/dev/null 2>&1 || true
   rm -rf "$gnupghome"
+  if [[ -z "$pinned" ]]; then
+    log "pinned signer key file $SIGNER_KEY holds no usable key — refusing"
+    return 1
+  fi
   # Decide on gpg's status lines, not on git's exit code alone: git (2.55)
   # exits 0 for a good signature by an EXPIRED key (EXPKEYSIG + VALIDSIG).
-  # Accept only GOODSIG + VALIDSIG with no expiry/revocation/bad marker.
-  if [[ $rc -eq 0 ]] \
+  # Accept only GOODSIG + VALIDSIG with no expiry/revocation/bad marker, made
+  # by (a subkey of) a pinned primary key — VALIDSIG field 12 is the primary
+  # key fingerprint.
+  signers=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" {print $12}' <<<"$status")
+  if [[ $rc -eq 0 && -n "$signers" ]] \
      && grep -q '^\[GNUPG:\] GOODSIG ' <<<"$status" \
-     && grep -q '^\[GNUPG:\] VALIDSIG ' <<<"$status" \
      && ! grep -qE '^\[GNUPG:\] (EXPKEYSIG|KEYEXPIRED|EXPSIG|REVKEYSIG|KEYREVOKED|BADSIG|ERRSIG) ' <<<"$status"; then
+    for fpr in $signers; do
+      grep -qxF "$fpr" <<<"$pinned" || { log "signer $fpr is not a pinned key"; return 1; }
+    done
     return 0
   fi
   printf '%s\n' "$status" | sed 's/^/  verify-commit: /' >&2
@@ -358,8 +396,8 @@ activate_system() {
     return 1
   fi
   rm -f "$act_log"
-  if ! system_is_current; then
-    log "activation exited 0 but $CURRENT_SYSTEM does not point at $out"
+  if ! system_is_out "$out"; then
+    log "activation exited 0 but the profile / $CURRENT_SYSTEM are not $out"
     echo activation-failed; return 1
   fi
 }

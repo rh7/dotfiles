@@ -151,6 +151,15 @@ if [[ -n "\${STUB_BREW_FAIL:-}" ]]; then
 fi
 echo "\\\`brew bundle\\\` complete! 3 Brewfile dependencies now installed."
 if [[ -n "\${STUB_ACTIVATE_FAIL:-}" ]]; then echo "postActivation: boom"; exit 1; fi
+if [[ -n "\${STUB_RACE:-}" ]]; then
+  # A manual rebuild switched profile + current-system to ITS generation
+  # while this activation ran; both links agree, neither is ours.
+  mkdir -p "$STUB_STORE/manual"
+  ln -sfn "$STUB_STORE/manual" "$FLEET_UPDATE_ROOT/nix/var/nix/profiles/system-99-link"
+  ln -sfn system-99-link "$FLEET_UPDATE_ROOT/nix/var/nix/profiles/system"
+  ln -sfn "$STUB_STORE/manual" "$FLEET_UPDATE_ROOT/run/current-system"
+  exit 0
+fi
 ln -sfn "$out" "$FLEET_UPDATE_ROOT/run/current-system"
 ACT
 chmod +x "$out/activate"
@@ -316,6 +325,15 @@ fresh; refs "$C2" "$C2"
 STUB_ACTIVATE_FAIL=1 run_fu
 expect "activation fails after brew" 1 failed activation-failed
 
+fresh; refs "$C2" "$C2"
+STUB_RACE=1 run_fu
+expect "manual rebuild replaced the system mid-activation" 1 failed activation-failed
+check "race: applied_commit not claimed" "$(field applied_commit)" "null"
+
+fresh; refs "$C2" "$C2"
+TMPDIR="$W/does-not-exist" run_fu
+expect "isolated GNUPGHOME cannot be created" 3 refused signature-invalid
+
 fresh; refs "$C2"   # no fleet/stable branch yet (before the owner bootstraps it)
 run_fu
 expect "channel branch missing" 1 failed fetch-failed
@@ -327,6 +345,14 @@ run_fu
 check "corrupt state: exit 1" "$RC" "1"
 check "corrupt state: file left for the audit to flag" "$(cat "$STATE")" "$before"
 check "corrupt state: no build" "$(builds)" "0"
+
+fresh; refs "$C2" "$C2"
+run_fu
+jq '.last_success_at = "garbage"' "$STATE" >"$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+before=$(cat "$STATE")
+run_fu
+check "state outside the contract: exit 1" "$RC" "1"
+check "state outside the contract: file left untouched" "$(cat "$STATE")" "$before"
 
 echo ""
 echo "fleet-update — canary channel, dry-run"
