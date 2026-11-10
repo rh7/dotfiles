@@ -170,7 +170,7 @@ KNOWN_PROFILES=(
   "rouven-air-m2|workstation|MacBook Air M2|rouvenheck"
   "rouven-air-m3|workstation|MacBook Air M3|rouvenheck"
   "rouven-pro-m4|workstation|MacBook Pro M4|rouvenheck"
-  "rouvens-mac-mini|smart-home|Mac Mini (office)|rouvenheck"
+  "rouvens-mac-mini-m4|smart-home|Mac Mini (office)|rouvenheck"
   "rouvens-mac-studio|ai-inference|Mac Studio|rouvenheck"
   "Kassie-M5-Air13|personal|Kassie's MacBook Air M5|kassie"
 )

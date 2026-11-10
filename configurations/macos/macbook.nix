@@ -17,7 +17,7 @@
     # "adobe-creative-cloud"  # manual install recommended (license)
 
     # ── Personal ──
-    "vlc"
+    # vlc — declared in modules/darwin/profiles/media.nix (every MacBook role imports it)
 
   ];
 
@@ -39,7 +39,7 @@
   # ── MacBook Mac App Store apps (mas_install helper from modules/darwin/mas.nix) ──
   # QR Scanner re-added after a stale-checkout rebuild (cleanup="uninstall")
   # removed it; cleanup="none" now prevents recurrence. ID from the uninstall log.
-  # (Crypto Pro is already declared in finance.nix + workstation-mac.nix.)
+  # (Crypto Pro is declared in workstation-mac.nix; modules/darwin/profiles/finance.nix is unimported.)
   system.activationScripts.postActivation.text = ''
     mas_install 1225393668 "QR Scanner"
   '';

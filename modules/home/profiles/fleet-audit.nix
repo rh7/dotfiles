@@ -16,17 +16,21 @@
 # (that reverts #83 — collection changes would then need a fleet rebuild). Only
 # the thin runner is on disk; the logic it pulls stays central.
 #
-# WIRING (staged, per the coverage caveat below): import this FIRST from a host's
-# `extraHomeModules` in flake.nix to validate on one or two hosts (e.g. the
-# Studio, m5-air), then promote to modules/common.nix's `imports` list to apply
-# to every mkMac / mkNixOS / mkLinux host.
+# WIRING: imported by flake.nix's mkMac helper for EVERY darwinConfiguration
+# (promoted from the Studio's extraHomeModules, rh-device-management #315).
+# Deliberately NOT in modules/common.nix, so mkNixOS / mkLinux hosts do not get
+# it: a systemd --user timer only fires with an active or lingering session (see
+# the Linux CAVEAT below), so on headless Linux it would look installed while
+# never running. Wire it per Linux host only once that host has linger or a
+# system-level timer. The runner path follows home.homeDirectory, so it is
+# correct for non-default usernames (e.g. /Users/rouven, /Users/kassie).
 #
-# COVERAGE (honest bound): only takes effect on hosts that are actually
-# nix-darwin/NixOS-managed AND rebuilt. Determinate-Nix Macs (e.g. m5-air today),
-# appliances/phones/routers, and offline/stale hosts are NOT covered by this —
-# they keep the imperative pull-runner (com.rh7.collector-runner via
-# `collector-runner.sh --install`) or the no-clone curl path. This module does
-# not retroactively cover the fleet; coverage grows as hosts are migrated/rebuilt.
+# COVERAGE (honest bound): only takes effect on Macs that are actually
+# nix-darwin-managed AND rebuilt since this landed. Linux hosts, appliances/
+# phones/routers, not-yet-migrated Macs and offline/stale hosts are NOT covered
+# by this — they keep the imperative pull-runner (com.rh7.collector-runner via
+# `collector-runner.sh --install`) or the no-clone curl path. On a migrated Mac
+# the declarative agent supersedes the imperative one (same Label, see below).
 { pkgs, lib, config, ... }:
 
 let

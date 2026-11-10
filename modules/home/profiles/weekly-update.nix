@@ -51,9 +51,9 @@
 # different upgrade set than the running system declares. Changing that is a
 # repo-wide architectural decision, deliberately out of scope here.
 #
-# WIRING (staged, per the same convention fleet-audit.nix documents): imported
-# from a single host's `extraHomeModules` in flake.nix first. Promote to
-# modules/common.nix once it has proven itself over a few weeks.
+# WIRING (staged): imported from a single host's `extraHomeModules` in flake.nix
+# first. Promote to mkMac's home imports (as fleet-audit.nix was, #315) once it
+# has proven itself over a few weeks.
 #
 # COVERAGE (honest bound): a user LaunchAgent runs only while the user is
 # logged in. If the Mac is asleep at the scheduled moment launchd runs the job

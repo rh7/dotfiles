@@ -53,6 +53,10 @@
               imports = [
                 ./configurations/macos/home.nix  # user config (imports profiles)
                 ./modules/common.nix             # CLI tools + git + shell
+                # Declarative daily fleet audit (com.rh7.collector-runner).
+                # Darwin-only on purpose: mkNixOS/mkLinux hosts don't get it
+                # (systemd --user timers need linger — see the module header).
+                ./modules/home/profiles/fleet-audit.nix
               ] ++ extraHomeModules;
             };
             networking.hostName = hostname;
@@ -150,8 +154,8 @@
       };
 
       # ── Mac Mini (workstation + smart home) ──
-      "rouvens-mac-mini" = mkMac {
-        hostname = "rouvens-mac-mini";
+      "rouvens-mac-mini-m4" = mkMac {
+        hostname = "rouvens-mac-mini-m4";
         extraModules = [
           ./configurations/macos/mac-mini-office.nix
           ./modules/roles/smart-home.nix
@@ -167,9 +171,6 @@
         role = ./modules/roles/fleet-member-mac.nix;
         extraModules = [
           ./configurations/macos/mac-studio.nix
-        ];
-        extraHomeModules = [
-          ./modules/home/profiles/fleet-audit.nix
         ];
       };
 
