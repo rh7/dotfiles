@@ -29,6 +29,9 @@
       needsSecrets ? true,
       extraModules ? [],
       extraHomeModules ? [],
+      # Unattended nightly updates (modules/darwin/fleet-update.nix):
+      # null = off, or the channel to follow — "main" (canary) | "fleet/stable".
+      autoUpdate ? null,
     }:
       nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
@@ -41,6 +44,15 @@
           ./modules/darwin/homebrew.nix
           ./modules/darwin/mas.nix
           ./modules/darwin/xcode-license.nix
+          ./modules/darwin/fleet-update.nix
+          {
+            # The attr to build is baked in here, never derived at runtime.
+            # Every darwinConfigurations attr below equals its hostname.
+            services.rh7.fleetUpdate = {
+              enable = autoUpdate != null;
+              flakeAttr = hostname;
+            } // nixpkgs.lib.optionalAttrs (autoUpdate != null) { channel = autoUpdate; };
+          }
           role
           home-manager.darwinModules.home-manager
           {
@@ -122,12 +134,14 @@
       # ── MacBooks (all use workstation role) ──
       "m5-air" = mkMac {
         hostname = "m5-air";
+        autoUpdate = "main";  # canary
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
       "rouven-m5-pro" = mkMac {
         hostname = "rouven-m5-pro";
         username = "rouven";
+        autoUpdate = "main";  # canary
         extraModules = [ ./configurations/macos/macbook.nix ];
         # Staged rollout — validate the weekly updater here for a few weeks
         # before promoting it to modules/common.nix for the whole fleet.
@@ -136,16 +150,19 @@
 
       "rouven-air-m2" = mkMac {
         hostname = "rouven-air-m2";
+        autoUpdate = "fleet/stable";
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
       "rouven-air-m3" = mkMac {
         hostname = "rouven-air-m3";
+        autoUpdate = "fleet/stable";
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
       "rouven-pro-m4" = mkMac {
         hostname = "rouven-pro-m4";
+        autoUpdate = "fleet/stable";
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
 
@@ -177,6 +194,7 @@
       "Kassie-M5-Air13" = mkMac {
         hostname = "Kassie-M5-Air13";
         username = "kassie";
+        autoUpdate = "fleet/stable";
         role = ./modules/roles/personal-mac.nix;
         needsSecrets = false;
         extraModules = [ ./configurations/macos/macbook.nix ];
