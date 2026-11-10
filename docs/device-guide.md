@@ -346,3 +346,32 @@ A: Add an entry in `flake.nix` under `darwinConfigurations` (Mac) or `nixosConfi
 
 **Q: How do I add an app that has no Homebrew cask and isn't on the App Store?**
 A: If the vendor ships a stable direct-download URL, install it from `postActivation` in the relevant profile. See the **Dia browser** installer in `modules/darwin/profiles/core.nix` for the reference pattern: guard on the installed `.app` so the download only runs once per machine, mount the DMG read-only with `hdiutil -nobrowse`, copy the app out with `ditto`, `chown` it to `config.system.primaryUser`, and clear the quarantine xattr. Two gotchas that will bite you: (1) `postActivation` runs under `set -e`, so wrap the whole thing as `install_foo || true` or a single failure aborts the entire `switch`; (2) the nixpkgs **GNU** `mktemp` is on the activation PATH and rejects a bare `-t foo` template — call the system `/usr/bin/mktemp` (and other system tools) by absolute path. For apps that need GUI auth and *can't* be scripted (e.g. ExpressVPN), fall back to a `[ -d /Applications/Foo.app ] || echo "[WARN] …"` reminder instead.
+
+---
+
+## Before wiping a Mac
+
+`scripts/pre-wipe-check.sh` is a read-only pre-erase report. Run it on the Mac
+you are about to wipe; you don't need a clone:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/pre-wipe-check.sh | bash
+# no macOS privacy prompts (skips Desktop/Documents/Downloads/Pictures, iCloud Drive, containers, Mail, Messages):
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/pre-wipe-check.sh | bash -s -- --skip-protected
+```
+
+It prints a markdown report and saves it to `~/pre-wipe-<host>-<YYYYmmdd-HHMM>.md`:
+RED (lost on erase), AMBER (check by hand) and GREEN counts, then a
+`safe to wipe: no / check / likely` line. The report covers:
+
+- the control plane's `GET /api/fleet/retirement/<host>` verdict (admin-gated)
+- every app and where to reinstall it from, plus a Brewfile and `mas` ids
+- data that exists only on this Mac: home folders, Photos, Messages, app data,
+  VMs, git repos with unpushed work, and secrets (names only)
+- Time Machine, Find My and browser sync status
+- an ordered checklist, ending with `DELETE /api/devices/<host>`
+
+Exit status is `0` (no RED), `1` (RED present) or `2` (script error). It never
+uses sudo or uploads anything, and the report is the only file it writes. To
+escrow secrets, use `scripts/escrow-secrets-1password.sh` in
+rh7/rh-device-management.
