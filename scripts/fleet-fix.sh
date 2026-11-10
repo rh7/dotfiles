@@ -260,14 +260,24 @@ backup_repo() { # live re-check of one at-risk repo from the audit
   # Same measure as the collector (audit-device.sh): commits on ANY local branch
   # that no remote-tracking ref contains — not just HEAD vs its upstream.
   unp="$(GIT_OPTIONAL_LOCKS=0 git -C "$p" rev-list --count --branches --not --remotes 2>/dev/null)" || unp="?"
+  # Push to origin, else the repo's first remote; with none, say so instead of
+  # printing a push that cannot work (the collector counts remote-less repos too).
+  local remote
+  remote="$(git -C "$p" remote 2>/dev/null | grep -qx origin && echo origin || git -C "$p" remote 2>/dev/null | head -1)"
   if [ "$dirty" = "0" ] && [ "$unp" = "0" ]; then
     st_ok "$path: clean, every local branch is on a remote (audit is older) — refresh with: $(fix_cmd audit) --apply"
+    return
+  fi
+  if [ -z "$remote" ]; then
+    st_manual "$path: $dirty uncommitted change(s), $unp commit(s), and NO git remote — create a private remote first (or rely on Time Machine)" \
+      "gh repo create $(basename "$p" | tr ' ' '-') --private --source $q --remote origin && git -C $q push origin 'refs/heads/*:refs/heads/*'"
+    [ "$dirty" != "0" ] && info "then commit the $dirty uncommitted change(s): git -C $q add -A && git -C $q commit -m 'wip' && git -C $q push origin HEAD"
   elif [ "$dirty" != "0" ]; then
     st_manual "$path: $dirty uncommitted change(s), $unp unpushed commit(s) — commit on a wip branch, push every branch to a backup namespace" \
-      "git -C $q switch -c wip-backup-$(date +%Y%m%d) && git -C $q add -A && git -C $q commit -m 'wip: backup from $HOST_LC' && git -C $q push origin 'refs/heads/*:$ns/*'"
+      "git -C $q switch -c wip-backup-$(date +%Y%m%d) && git -C $q add -A && git -C $q commit -m 'wip: backup from $HOST_LC' && git -C $q push $remote 'refs/heads/*:$ns/*'"
   else
     st_manual "$path: $unp commit(s) on local branches no remote has — push every branch to a backup namespace (never onto main)" \
-      "git -C $q push origin 'refs/heads/*:$ns/*'"
+      "git -C $q push $remote 'refs/heads/*:$ns/*'"
   fi
 }
 
@@ -591,10 +601,10 @@ fix_resources() {
   if [ -z "$pct" ]; then st_manual "could not read disk usage" "df -h /"
   elif [ "$pct" -gt "$DISK_PCT_WARN" ]; then
     if [ "$APPLY" -eq 0 ]; then
-      st_fix "disk / is ${pct}% full (> ${DISK_PCT_WARN}%)" "$(fix_cmd resources) --apply"
+      st_fix "disk is ${pct}% full (> ${DISK_PCT_WARN}%)" "$(fix_cmd resources) --apply"
       info "--apply runs: nix-collect-garbage --delete-older-than 30d; brew cleanup  (never touches user data)"
     fi
-  else st_ok "disk / is ${pct}% full"; fi
+  else st_ok "disk is ${pct}% full"; fi
   if [ -n "$swap" ] && [ "$swap" -gt "$SWAP_MB_WARN" ]; then
     st_manual "swap in use: ${swap} MB — find and restart/close the heavy workload (or add RAM)" "ps -Ao rss,pid,comm | sort -rn | head -5"
     ps -Ao rss,comm 2>/dev/null | sort -rn | awk 'NR<=5 {printf "             %6d MB  %s\n", $1/1024, $2}'
@@ -607,8 +617,8 @@ fix_resources() {
     info "system generations are root's: sudo nix-collect-garbage --delete-older-than 30d (not run)"
     pct="$(disk_pct)"
     if [ -n "$pct" ] && [ "$pct" -gt "$DISK_PCT_WARN" ]; then
-      st_fix "disk / still ${pct}% full after cleanup — remove data by hand (see space users above)"
-    else st_ok "disk / now ${pct}% full"; fi
+      st_fix "disk still ${pct}% full after cleanup — remove data by hand (see space users above)"
+    else st_ok "disk now ${pct}% full"; fi
   fi
 }
 

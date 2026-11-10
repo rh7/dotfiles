@@ -106,7 +106,8 @@ cat >"$FIX_DIR/backup.json" <<'JSON'
 JSON
 cat >"$FIX_DIR/backup-repo.json" <<'JSON'
 {"hostname":"test-mac","audited_at":"2026-11-01 00:00:00","audit_age_hours":200,"paths":[],
- "at_risk_repos":[{"path":"~/code/my repo","dirty":0,"unpushed":1,"branch":"main"}]}
+ "at_risk_repos":[{"path":"~/code/my repo","dirty":0,"unpushed":1,"branch":"main"},
+                  {"path":"~/code/lonely","dirty":0,"unpushed":1,"branch":"main","has_remote":false}]}
 JSON
 "$REAL_PY" -c 'import datetime; t=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=300); print("{\"hostname\":\"test-mac\",\"audited_at\":\"%s\"}" % t.strftime("%Y-%m-%d %H:%M:%S"))' >"$FIX_DIR/audit.json"
 
@@ -210,10 +211,13 @@ rm -rf "${TEST_ROOT:?}/remote.git"
   && "${G[@]}" -C "$R" remote add origin "$TEST_ROOT/remote.git" && "${G[@]}" -C "$R" push -q origin main 2>/dev/null \
   && "${G[@]}" -C "$R" switch -q -c feature && "${G[@]}" -C "$R" commit -q --allow-empty -m two \
   && "${G[@]}" -C "$R" switch -q main
+"${G[@]}" init -q "$TEST_ROOT/home/code/lonely" && "${G[@]}" -C "$TEST_ROOT/home/code/lonely" commit -q --allow-empty -m solo
 ff BACKUP_FIXTURE=backup-repo.json -- backup
 # shellcheck disable=SC2088  # literal "~/" as printed
 has "unpushed feature branch is caught though HEAD is pushed" "~/code/my repo: 1 commit(s) on local branches no remote has"
 has "path is shell-quoted in the command" "git -C $TEST_ROOT/home/code/my\\ repo push origin 'refs/heads/*:refs/heads/backup/test-mac-"
+has "remote-less repo: create a remote, no push to a missing origin" "NO git remote — create a private remote first"
+has "remote-less repo: gh repo create command" "gh repo create lonely --private --source $TEST_ROOT/home/code/lonely"
 
 echo "== --apply firewall: right command, verified =="
 reset; ff FW_CLI_WORKS=1 -- firewall --apply --yes
