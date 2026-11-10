@@ -56,12 +56,12 @@ do_rebuild() {
   if [[ "$OS" == "Linux" ]] && ! command -v nixos-rebuild &>/dev/null; then
     # rebuild.sh does not run on this path, so apply its checkout guard here:
     # sync to origin/main and refuse a branch/dirty/ahead checkout (#312).
+    # No bypass flag here: the refusal names the raw command to run instead.
     local hm_ref
     hm_ref="$DOTFILES_DIR#$(whoami)@$HOSTNAME"
     # shellcheck source=lib/dotfiles-checkout.sh
     source "$DOTFILES_DIR/scripts/lib/dotfiles-checkout.sh"
-    sync_dotfiles_checkout false \
-      "home-manager switch --flake \"$hm_ref\" (run it directly)" "$hm_ref" || exit 1
+    sync_dotfiles_checkout false "home-manager switch --flake \"$hm_ref\"" "$hm_ref" || exit 1
     home-manager switch --flake "$hm_ref"
     ok "System rebuilt"
     return

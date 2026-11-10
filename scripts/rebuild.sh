@@ -502,6 +502,7 @@ echo ""
 # Refuses to build/activate unless the checkout is clean `main` at origin/main
 # (fast-forwarding it when that is safe), or --allow-unmerged is given. See
 # scripts/lib/dotfiles-checkout.sh for why (rh7/rh-device-management#312).
+# --plan-only builds and activates nothing, so for it a refusal is advisory.
 CHECKOUT_LIB="$DOTFILES_DIR/scripts/lib/dotfiles-checkout.sh"
 if [[ ! -r "$CHECKOUT_LIB" ]]; then
   err "Helper not found at $CHECKOUT_LIB"
@@ -509,7 +510,12 @@ if [[ ! -r "$CHECKOUT_LIB" ]]; then
 fi
 # shellcheck source=lib/dotfiles-checkout.sh
 source "$CHECKOUT_LIB"
-sync_dotfiles_checkout "$ALLOW_UNMERGED" "rebuild.sh --allow-unmerged" "$FLAKE_REF" || exit 1
+if ! sync_dotfiles_checkout "$ALLOW_UNMERGED" "rebuild.sh --allow-unmerged" "$FLAKE_REF"; then
+  $PLAN_ONLY || exit 1
+  warn "--plan-only builds and activates nothing, so continuing — but this plan"
+  warn "is for the checkout above, NOT origin/main. A real rebuild would refuse."
+  echo ""
+fi
 cd "$DOTFILES_DIR"
 
 # ── Step 2: Audit drift ──
