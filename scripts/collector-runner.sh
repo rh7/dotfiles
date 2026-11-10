@@ -258,6 +258,17 @@ resolve_self() {
 }
 
 install_schedule() {
+  # Every nix-darwin Mac declares this agent through home-manager
+  # (modules/home/profiles/fleet-audit.nix, imported by mkMac — rh-device-management
+  # #315). Overwriting it with the imperative plist would silently swap the
+  # declared, store-pinned agent for an unmanaged one until the next rebuild
+  # (setup.sh calls --install right after activation). So when the ACTIVE
+  # home-manager generation ships this label, leave it alone.
+  local hm_plist="$HOME/.local/state/home-manager/gcroots/current-home/LaunchAgents/${LABEL}.plist"
+  if [ "$OS" = "Darwin" ] && [ -f "$hm_plist" ]; then
+    log "$LABEL is declared by the active home-manager generation — keeping the nix-managed agent (no imperative install)"
+    return 0
+  fi
   local self; self="$(resolve_self)" || { log "cannot resolve runner path for schedule — aborting install"; return 1; }
   if [ "$OS" = "Darwin" ]; then
     local hour=8 minute=$(( RANDOM % 30 )) tmp_plist domain bootstrap_output
