@@ -317,12 +317,19 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 curl -fsSL https://config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ```
 
-There is no heartbeat any more: connectivity comes from the **daily audit**.
-On nix-managed hosts that schedule is declared by `fleet-audit.nix`
-(LaunchAgent `com.rh7.collector-runner`, the integrity-gated pull runner);
-elsewhere `collector-runner.sh --install` installs the same runner. The
-`enroll` short link runs a first audit and installs a direct daily audit
-(`com.rh7.audit` LaunchAgent / cron) for devices without a clone.
+Connectivity comes from the **daily audit**, not a heartbeat. Hosts that import
+`fleet-audit.nix` get it declaratively (LaunchAgent `com.rh7.collector-runner`,
+the integrity-gated pull runner) — on `main` only the Studio; with
+`chore/326-315-flake-hygiene` every `mkMac` host. Everything else (other Macs
+until then, NixOS, standalone Home Manager) needs `collector-runner.sh
+--install` once. The `enroll` short link runs a first audit and installs a
+direct daily audit (`com.rh7.audit` LaunchAgent / cron) for devices without a
+clone.
+
+One legacy heartbeat path survives: the `device sync --install` cron runs
+`heartbeat.sh` every 30 minutes, which posts role `workstation`. Remove it with
+`./scripts/device sync --uninstall` wherever it is installed (`crontab -l |
+grep auto-sync`).
 
 ### Config drift audit
 

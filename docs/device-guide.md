@@ -201,9 +201,12 @@ has apps, settings and data. `$CS` as above.
       `fix/312-rebuild-merged-only` it only activates a clean `main` equal to
       `origin/main`; `--allow-unmerged` deliberately tests a branch.
 - [ ] **Know the rollback:** `sudo darwin-rebuild --rollback` returns to the
-      previous nix-darwin generation, but **Homebrew installs and `defaults`
-      writes are not rolled back** — restore those from the `device backup`
-      snapshot (Brewfile, `dock.plist`) or Time Machine.
+      previous nix-darwin generation, but **Homebrew installs/upgrades and
+      `defaults` writes are not rolled back**. Undo Homebrew changes by hand
+      (`brew uninstall`, or reinstall an older version) or from Time Machine —
+      the `device backup` Brewfile is an inventory, not a rollback: `brew
+      bundle` neither removes new packages nor downgrades. `dock.plist` from the
+      backup restores the Dock.
 
 Homebrew `cleanup` stays `"none"` (see FAQ) until the drift audit covers
 formulae (dotfiles#11), so activation never uninstalls anything.
@@ -331,8 +334,8 @@ Work through [Before migrating an existing Mac](#before-migrating-an-existing-ma
 ./scripts/rebuild.sh        # build → drift audit → nvd diff → confirm → switch
 ```
 
-The backup captures what a nix rollback does not:
-- `~/dotfiles-backups/<timestamp>/Brewfile` → `brew bundle install --file=...`
+The backup is a reference snapshot, not a full rollback:
+- `~/dotfiles-backups/<timestamp>/Brewfile` → inventory of what was installed (`brew bundle install --file=...` reinstalls missing entries; it does not remove or downgrade)
 - `~/dotfiles-backups/<timestamp>/dock.plist` → `defaults import com.apple.dock ... && killall Dock`
 - Shell configs, git config, etc.
 
@@ -348,8 +351,10 @@ Don't use `./scripts/device register` for this: it posts the hard-coded role
 non-workstation host (`Kassie-M5-Air13`, the Studio). The audit path reads the
 registered role back first and re-posts it.
 
-The daily audit keeps the device's connectivity current — there is no
-heartbeat. With `chore/326-315-flake-hygiene` every `mkMac` host declares it via
+The daily audit keeps the device's connectivity current (if `crontab -l` still
+shows the legacy `auto-sync.sh` heartbeat cron, remove it with
+`./scripts/device sync --uninstall`). With `chore/326-315-flake-hygiene` every
+`mkMac` host declares the schedule via
 `modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
 daily 08:17). On `main` today only the Studio imports it, so on **any** host
 without a `com.rh7.collector-runner` agent (`launchctl list | grep collector`)
@@ -383,7 +388,7 @@ All commands are run from `~/dotfiles`:
 | `backup /path` | Backup to custom location |
 | `register` | `POST /api/devices/register` with OS, Tailscale IP, age pubkey. **Caveat:** hard-codes role `workstation` — `setup` and `update` call it too, so on non-workstation hosts (`Kassie-M5-Air13`, the Studio) prefer `rebuild.sh` + `audit-device.sh --run` |
 | `secrets` | Run `setup-secrets.sh` |
-| `sync` / `sync --install` | Legacy auto-sync (cron every 30 min); superseded by the daily audit schedule |
+| `sync` / `sync --install` / `sync --uninstall` | Legacy auto-sync cron (every 30 min). Still runs `heartbeat.sh`, which posts role `workstation` — uninstall it; the daily audit replaces it |
 | `fleet` | Fleet-wide status from the config service (`--detail`, `--stale`) |
 | `heartbeat` | Retired — prints a warning and runs `audit-device.sh` instead |
 
