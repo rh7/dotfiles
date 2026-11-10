@@ -162,10 +162,11 @@ run_build() { # run_build <nix-rc> [flake-ref-suffix]  -> sets BOUT, BRC, BREBUI
     RESULT_LINK="${DOTFILES_DIR}/result"
     DARWIN_REBUILD=""
     build_darwin_system 2>&1; rc=$?
-    echo "RC=$rc"; echo "DARWIN_REBUILD=$DARWIN_REBUILD"
+    echo "RC=$rc"; echo "DARWIN_REBUILD=$DARWIN_REBUILD"; echo "FLAKE_REF=$FLAKE_REF"
   )"
   BRC="$(sed -n 's/^RC=//p' <<<"$BOUT")"
   BREBUILD="$(sed -n 's/^DARWIN_REBUILD=//p' <<<"$BOUT")"
+  BFLAKE="$(sed -n 's/^FLAKE_REF=//p' <<<"$BOUT")"
   BARGS="$(cat "$BUILD_ROOT/nix-args" 2>/dev/null)"
 }
 
@@ -202,6 +203,9 @@ else
     grep -q "#darwinConfigurations.fresh-mac.system" <<<"$BARGS" \
       && good "flake ref '…${frag}' defaults to this host" \
       || bad "flake ref '…${frag}' defaults to this host" "nix args: $BARGS"
+    [[ "$BFLAKE" == "$BUILD_ROOT/dotfiles#fresh-mac" ]] \
+      && good "flake ref '…${frag}' is pinned for activation too" \
+      || bad "flake ref '…${frag}' is pinned for activation too" "FLAKE_REF='$BFLAKE'"
   done
 
   run_build 1
