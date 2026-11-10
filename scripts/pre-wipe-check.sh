@@ -130,13 +130,21 @@ cask_token_guess() {
 # classify_app PATH BUNDLE_ID RECEIPT(0|1|2) IN_CASK(0|1)
 #   → nix | mas | apple | brew | setapp | manual
 # RECEIPT: 1 = Contents/_MASReceipt, 2 = iOS/iPadOS wrapper (App Store only).
+# Only apps that ship WITH macOS count as "apple" (skipped). Apple-authored
+# downloads — Xcode from developer.apple.com, Safari Technology Preview — must
+# be reinstalled like anything else, so they fall through to cask/manual.
 classify_app() {
   case "$1" in
     */"Nix Apps"/*|*/"Home Manager Apps"/*|/nix/store/*) echo nix; return ;;
   esac
   case "$3" in 1|2) echo mas; return ;; esac
-  case "$2" in com.apple.*) echo apple; return ;; esac
   [ "$4" = 1 ] && { echo brew; return; }
+  case "$2" in
+    com.apple.*)
+      case "$1" in
+        /System/*|/Applications/Safari.app|/Applications/Utilities/*) echo apple; return ;;
+      esac ;;
+  esac
   case "$1" in */Setapp/*) echo setapp; return ;; esac
   case "$2" in *-setapp|*.setapp) echo setapp; return ;; esac
   echo manual
@@ -158,10 +166,23 @@ home_entry_kind() {
   esac
 }
 
-# home_entry_level KIND KB DD_SYNCED(0|1) HAS_REPOS(0|1) NAME → "LEVEL<TAB>note"
+# home_entry_level KIND KB DD_SYNCED(0|1) HAS_REPOS(0|1) NAME [DENIED(0|1)]
+#   → "LEVEL<TAB>note"
 # LEVEL is RED, AMBER, GREEN, REPO (folded into one finding) or NONE (table
-# note only).
+# note only). A partly unreadable folder only has a lower-bound size, so it is
+# never allowed to read as harmless (NONE/REPO): it becomes AMBER instead.
 home_entry_level() {
+  local r
+  r="$(_home_level_by_size "$@")"
+  if [ "${6:-0}" = 1 ]; then
+    case "$1" in cache|secret) ;;
+      *) case "${r%%$'\t'*}" in NONE|REPO) r="AMBER"$'\t'"partly unreadable: the size is a lower bound, check it by hand" ;; esac ;;
+    esac
+  fi
+  printf '%s\n' "$r"
+}
+
+_home_level_by_size() {
   local kind="$1" kb="$2" synced="$3" repos="$4" name="$5"
   if [ "$kb" = "?" ]; then
     printf 'AMBER\tcheck it by hand\n'; return
@@ -728,13 +749,22 @@ section_apps() {
 
 # ── data collection (non-protected) ────────────────────────────────────────
 
+# The walk reports what it could NOT see, so a timeout or an unreadable
+# subtree can never read as "no repos here".
+WALK_TIMED_OUT=0; WALK_UNREADABLE=""
 collect_git_walk() { # collect_git_walk ROOT MAXDEPTH — appends to REPOS / ENV_FILES
-  local root="$1" depth="$2" out line
+  local root="$1" depth="$2" out line rc p
+  local -a top=()
+  # Home-level prunes apply only to the $HOME walk; the protected step walks
+  # Desktop/Documents/Downloads as roots of their own.
+  if [ "$root" = "$HOME" ]; then
+    top=(-path "$HOME/Library" -o -path "$HOME/.Trash" -o -path "$HOME/Desktop" -o -path "$HOME/Documents"
+         -o -path "$HOME/Downloads" -o -path "$HOME/Pictures" -o -path "$HOME/Music" -o -path "$HOME/Movies"
+         -o -path "$HOME/Applications" -o)
+  fi
   out="$(run_timeout "$FIND_TIMEOUT" find "$root" -xdev -maxdepth "$depth" \
-    \( -path "$HOME/Library" -o -path "$HOME/.Trash" -o -path "$HOME/Desktop" -o -path "$HOME/Documents" \
-       -o -path "$HOME/Downloads" -o -path "$HOME/Pictures" -o -path "$HOME/Music" -o -path "$HOME/Movies" \
-       -o -path "$HOME/Applications" \
-       -o -name node_modules -o -name .cache -o -name .npm -o -name .cargo -o -name .rustup -o -name .gradle \
+    \( ${top[@]+"${top[@]}"} \
+       -name node_modules -o -name .cache -o -name .npm -o -name .cargo -o -name .rustup -o -name .gradle \
        -o -name .m2 -o -name .pnpm-store -o -name .bun -o -name .nvm -o -name .pyenv -o -name .rbenv \
        -o -name .ollama -o -name .lmstudio -o -name .vscode -o -name .cursor -o -name .orbstack -o -name .docker \
        -o -name .colima -o -name .lima -o -name .venv -o -name venv -o -name Pods -o -name DerivedData \
@@ -742,11 +772,16 @@ collect_git_walk() { # collect_git_walk ROOT MAXDEPTH — appends to REPOS / ENV
        -o -name 'Creative Cloud Files*' -o -name '*.photoslibrary' -o -name '*.app' \) -prune \
     -o -name .git -print -prune \
     -o -type f \( -name .env -o -name '.env.*' \) ! -name '*.example' ! -name '*.sample' ! -name '*.template' ! -name '*.dist' -print \
-    2>/dev/null)"
+    2>&1)"
+  rc=$?
+  [ "$rc" = 124 ] && WALK_TIMED_OUT=1
   while IFS= read -r line; do
     case "$line" in
+      "find: "*)
+        p="${line#find: }"; p="${p%: *}"
+        WALK_UNREADABLE+="$p"$'\n' ;;
       */.git) REPOS+="${line%/.git}"$'\n' ;;
-      ?*) ENV_FILES+="$line"$'\n' ;;
+      /*) ENV_FILES+="$line"$'\n' ;;
     esac
   done < <(printf '%s\n' "$out")
 }
@@ -915,7 +950,7 @@ section_local_data() {
     if [ "$name" = Pictures ] && [ "$kb" != "?" ]; then
       judge_kb=$((kb - pic_lib_kb)); [ "$judge_kb" -lt 0 ] && judge_kb=0
     fi
-    lvl="$(home_entry_level "$kind" "$judge_kb" "$DD_SYNCED" "$has" "$name")"
+    lvl="$(home_entry_level "$kind" "$judge_kb" "$DD_SYNCED" "$has" "$name" "$den")"
     note="${lvl#*$'\t'}"; lvl="${lvl%%$'\t'*}"
     [ "$name" = Pictures ] && [ "$pic_lib_kb" -gt 0 ] && note="$note (excl. Photos libraries)"
     dlabel="$(size_label "$kb" "$den")"
@@ -1072,6 +1107,18 @@ section_git() {
   blank
   local nrepos at=0 r out dirty unpushed noremote stashes common shared pass rows="" seen=$'\n'
   nrepos="$(printf '%s' "$REPOS" | grep -c . )"
+  if [ "$WALK_TIMED_OUT" = 1 ]; then
+    finding AMBER "Repo discovery hit its ${FIND_TIMEOUT}s limit — repositories may be missing from this list; check your code folders by hand."
+  fi
+  if [ -n "$WALK_UNREADABLE" ]; then
+    local nun shown_un="" u i=0
+    nun="$(printf '%s' "$WALK_UNREADABLE" | grep -c .)"
+    while IFS= read -r u; do
+      [ -n "$u" ] || continue; i=$((i + 1)); [ "$i" -le 5 ] || break
+      shown_un+="\`$(tilde_path "$u")\` "
+    done < <(printf '%s' "$WALK_UNREADABLE")
+    finding AMBER "Repo discovery could not read $nun folder(s), so repos inside them were not checked: ${shown_un% }$( [ "$nun" -gt 5 ] && printf ' …')"
+  fi
   if [ "$nrepos" -eq 0 ]; then
     emit "- no repositories found under ~ (depth 5; Library, caches, node_modules, cloud roots pruned)"; blank; return
   fi
