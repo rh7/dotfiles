@@ -133,8 +133,10 @@ recipient in `.sops.yaml`: `m5-air` (admin), the Mac Studio, `rouven-m5-pro` or
    device printed (registration is unauthenticated, so never skip that check);
    non-interactive runs must pass the key.
 3. **Merge** the PR.
-4. **On the device:** re-run `./scripts/setup-secrets.sh` (it should now
-   decrypt), then `./scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
+4. **On the device:** `git -C ~/dotfiles pull --ff-only` (the merged
+   re-encryption isn't in the local checkout yet), re-run
+   `./scripts/setup-secrets.sh` (it should now decrypt), then
+   `./scripts/rebuild.sh` (or re-run `setup.sh` on a fresh Mac).
 
 **Until `fix/310-sops-onboarding` merges, don't run `setup-secrets.sh` /
 `device secrets`.** On `main` it never runs `sops updatekeys`, reports success
@@ -142,14 +144,23 @@ regardless, and if it does manage to edit `.sops.yaml` it commits and pushes
 that straight to `main` (rh-device-management#310). Do the recipient step by
 hand on an existing recipient, in a branch/worktree:
 
-1. Get the device's public key: `age-keygen -y ~/.config/sops/age/keys.txt` on
-   the device (also printed as `Age key` at the end of `setup.sh`).
+1. On the device, make sure it has a key and print the public half (`setup.sh`
+   generates one; on a Mac you haven't run it on, create it here):
+
+   ```bash
+   mkdir -p ~/.config/sops/age
+   [ -f ~/.config/sops/age/keys.txt ] || \
+     nix shell nixpkgs#age -c age-keygen -o ~/.config/sops/age/keys.txt
+   chmod 600 ~/.config/sops/age/keys.txt
+   nix shell nixpkgs#age -c age-keygen -y ~/.config/sops/age/keys.txt
+   ```
 2. In `.sops.yaml`, add `- &<hostname> <age1…>` under `keys:` and `*<hostname>`
    to the `age: [ … ]` list of the `secrets/secrets.yaml` creation rule.
 3. `export SOPS_AGE_KEY_FILE=$HOME/.config/sops/age/keys.txt` then
    `sops updatekeys secrets/secrets.yaml` — editing `.sops.yaml` alone does not
    re-encrypt anything.
-4. Commit both files, PR, merge; then `./scripts/rebuild.sh` on the device.
+4. Commit both files, PR, merge; then on the device
+   `git -C ~/dotfiles pull --ff-only && ./scripts/rebuild.sh`.
 
 Manual `sops` on macOS needs the key path, because sops' macOS default is under
 `~/Library/Application Support`:
@@ -352,6 +363,15 @@ The backup is a reference snapshot, not a full rollback:
 ```bash
 ./scripts/audit-device.sh --run   # fresh audit + registration (keeps the device's assigned role)
 ./scripts/device status
+```
+
+If this device's first upload came from this onboarding (Step 2), the registry
+created it with role `unknown`, and audits keep that role. Set the real one
+(admin-gated, from an admin tailnet identity):
+
+```bash
+curl -s -X PATCH -H 'content-type: application/json' \
+  -d '{"role":"workstation"}' $CS/api/devices/$(hostname -s)
 ```
 
 Don't use `./scripts/device register` for this: it posts the hard-coded role
