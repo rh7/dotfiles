@@ -1,0 +1,154 @@
+name: update flake.lock
+
+# Weekly flake.lock refresh as a PR the OWNER merges. Never auto-merged: a lock
+# bump changes what every Mac activates, and devices only auto-apply merged
+# history (main → canaries → fleet/stable), so the merge is the human gate.
+#
+# The job runs `nix flake update`, evaluates every darwinConfiguration against
+# the NEW lock, then force-pushes branch `bot/flake-lock` (bot-owned — it is
+# regenerated from main every run; do not push fixes to it) and opens or
+# updates one PR with an input old→new table.
+#
+# Why the eval runs HERE and not via flake-check.yml: pushes and PRs made with
+# the workflow's GITHUB_TOKEN do not trigger other workflows, so flake-check
+# would never run on the bot PR. The job runs the same script
+# (scripts/ci/eval-darwin-configs.sh) and reports the result on the PR head as a
+# commit status, `flake-lock-bot / eval darwinConfigurations`. A failed eval
+# still opens/updates the PR (so the breakage is visible) and fails this run.
+#
+# Token: secrets.FLAKE_LOCK_BOT_TOKEN when set (fine-grained PAT or GitHub App
+# token with contents + pull-requests write; its PRs DO trigger flake-check),
+# else GITHUB_TOKEN. With GITHUB_TOKEN, the repo setting Settings → Actions →
+# General → "Allow GitHub Actions to create and approve pull requests" must be
+# on, or PR creation fails — this run then fails loudly, it does not go quiet.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: update-flake-lock
+  cancel-in-progress: false
+
+env:
+  BOT_BRANCH: bot/flake-lock
+  STATUS_CONTEXT: flake-lock-bot / eval darwinConfigurations
+
+jobs:
+  update:
+    name: nix flake update → PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+          token: ${{ secrets.FLAKE_LOCK_BOT_TOKEN || github.token }}
+
+      - name: Install Nix (official installer)
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: nix flake update
+        id: update
+        run: |
+          set -euo pipefail
+          cp flake.lock "$RUNNER_TEMP/old.lock"
+          nix flake update
+          if cmp -s flake.lock "$RUNNER_TEMP/old.lock"; then
+            echo "flake.lock unchanged — nothing to propose"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          bash scripts/ci/flake-lock-diff.sh "$RUNNER_TEMP/old.lock" flake.lock > "$RUNNER_TEMP/diff.md"
+          cat "$RUNNER_TEMP/diff.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Evaluate every darwinConfiguration against the new lock
+        id: eval
+        if: steps.update.outputs.changed == 'true'
+        continue-on-error: true
+        run: bash scripts/ci/eval-darwin-configs.sh
+
+      - name: Commit and push ${{ env.BOT_BRANCH }}
+        id: push
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BOT_BRANCH"
+          git add flake.lock
+          git commit -m "chore(flake): update flake.lock ($(date -u +%F))" \
+            -m "Automated weekly \`nix flake update\` by .github/workflows/update-flake-lock.yml."
+          git push --force origin "$BOT_BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FLAKE_LOCK_BOT_TOKEN || github.token }}
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$EVAL_OUTCOME" = "success" ]; then
+            eval_line="✅ every darwinConfiguration evaluates against the new lock ([run]($RUN_URL))."
+          else
+            eval_line="❌ **darwinConfiguration evaluation FAILED** against the new lock ([run]($RUN_URL)). Do not merge."
+          fi
+          {
+            echo "Weekly \`nix flake update\`. **Owner merges — never auto-merged.**"
+            echo
+            echo "$eval_line"
+            echo
+            echo "### Inputs"
+            echo
+            cat "$RUNNER_TEMP/diff.md"
+            echo
+            echo "---"
+            echo "Branch \`$BOT_BRANCH\` is regenerated from \`main\` on every run (force-pushed): do not push fixes to it."
+            echo "If this PR came from GITHUB_TOKEN, \`flake check\` / \`shell tests\` do not run on it automatically;"
+            echo "the eval above is reported as the \`$STATUS_CONTEXT\` status. Close + reopen the PR to run the regular checks."
+          } > "$RUNNER_TEMP/body.md"
+
+          title="chore(flake): weekly flake.lock update ($(date -u +%F))"
+          pr=$(gh pr list --head "$BOT_BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            echo "updated PR #$pr"
+          elif ! gh pr create --head "$BOT_BRANCH" --base main --title "$title" --body-file "$RUNNER_TEMP/body.md"; then
+            echo "::error::could not open the PR. With GITHUB_TOKEN, enable Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests', or set secrets.FLAKE_LOCK_BOT_TOKEN."
+            exit 1
+          fi
+
+      - name: Report eval as a commit status on the PR head
+        if: ${{ !cancelled() && steps.update.outputs.changed == 'true' && steps.push.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.push.outputs.sha }}
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$EVAL_OUTCOME" = "success" ]; then
+            state=success; desc="all darwinConfigurations evaluate"
+          else
+            state=failure; desc="darwinConfiguration eval failed"
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context="$STATUS_CONTEXT" \
+            -f description="$desc" -f target_url="$RUN_URL" >/dev/null
+
+      - name: Fail the run if the new lock does not evaluate
+        if: ${{ !cancelled() && steps.update.outputs.changed == 'true' && steps.eval.outcome != 'success' }}
+        run: |
+          echo "::error::darwinConfiguration evaluation failed against the updated flake.lock"
+          exit 1

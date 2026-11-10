@@ -9,6 +9,7 @@
     ../darwin/profiles/ai-tools.nix
     ../darwin/profiles/media.nix
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
+    ../darwin/software-update.nix   # macOS update policy (client Macs only)
   ];
 
   # Personal-specific apps (not in shared profiles)
