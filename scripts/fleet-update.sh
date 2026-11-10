@@ -247,19 +247,34 @@ release_lock() {
 
 acquire_lock() {
   mkdir -p "$(dirname "$LOCK_DIR")"
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "$$" >"$LOCK_DIR/pid"
+    trap release_lock EXIT
+    return 0
+  fi
+  local pid
+  pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  # No pid yet = the holder is between mkdir and writing it: treat as held.
+  if [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  # Stale lock. Take it over under a second mkdir mutex and RE-CHECK inside it:
+  # two runs that both saw the dead pid must not both remove-and-recreate (the
+  # second would delete the first's fresh lock and both would activate).
+  mkdir "$LOCK_DIR.takeover" 2>/dev/null || return 1
+  if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" != "$pid" ]]; then
+    rmdir "$LOCK_DIR.takeover"
+    return 1
+  fi
+  log "removing stale lock left by pid $pid"
+  rm -rf "$LOCK_DIR"
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    local pid
-    pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-    # No pid yet = the holder is between mkdir and writing it: treat as held.
-    if [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null; then
-      return 1
-    fi
-    log "removing stale lock left by pid $pid"
-    rm -rf "$LOCK_DIR"
-    mkdir "$LOCK_DIR" 2>/dev/null || return 1
+    rmdir "$LOCK_DIR.takeover"
+    return 1
   fi
   echo "$$" >"$LOCK_DIR/pid"
   trap release_lock EXIT
+  rmdir "$LOCK_DIR.takeover"
 }
 
 # ── Preconditions ────────────────────────────────────────────────────────────

@@ -307,6 +307,22 @@ check "another run holds the lock: exit 0" "$RC" "0"
 grep -q 'skipped (lock-held)' <<<"$OUT" && good "lock-held: logged" || bad "lock-held: logged" "$OUT"
 check "lock-held: foreign lock left alone" "$(cat "$ROOT/var/run/rh7-fleet-update.lock/pid")" "$$"
 
+bash -c 'exit 0' & dead_pid=$!; wait "$dead_pid"
+fresh; refs "$C2" "$C2"
+mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"; echo "$dead_pid" >"$ROOT/var/run/rh7-fleet-update.lock/pid"
+run_fu
+expect "stale lock (dead pid) is taken over" 0 applied null
+[[ ! -e "$ROOT/var/run/rh7-fleet-update.lock" && ! -e "$ROOT/var/run/rh7-fleet-update.lock.takeover" ]] \
+  && good "stale lock: released afterwards" || bad "stale lock: released afterwards" "$(ls "$ROOT/var/run")"
+
+fresh; refs "$C2" "$C2"
+mkdir -p "$ROOT/var/run/rh7-fleet-update.lock" "$ROOT/var/run/rh7-fleet-update.lock.takeover"
+echo "$dead_pid" >"$ROOT/var/run/rh7-fleet-update.lock/pid"
+run_fu
+check "stale lock mid-takeover by another run: exit 0" "$RC" "0"
+[[ ! -e "$STATE" ]] && good "mid-takeover: treated as held (no state, no build)" \
+  || bad "mid-takeover: treated as held (no state, no build)" "$(cat "$STATE")"
+
 echo ""
 echo "fleet-update — failures"
 fresh; refs "$C2" "$C2"
