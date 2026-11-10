@@ -7,6 +7,7 @@
 #   rebuild.sh --build-only # just build, don't switch
 #   rebuild.sh --upgrade=all  # upgrade every declared outdated package
 #   rebuild.sh --no-upgrade   # install/switch only, upgrade nothing
+#   rebuild.sh --allow-unmerged  # build what is on disk, even if not origin/main
 #
 # This script avoids blind sudo by showing exactly what will change
 # before asking for root confirmation.
@@ -24,6 +25,9 @@ FORCE_MAS=false
 #   all      — everything declared and outdated
 #   none     — nothing; activation still installs missing packages
 UPGRADE_MODE=critical
+# Build/activate a checkout that is NOT origin/main (branch, dirty, ahead,
+# offline). See scripts/lib/dotfiles-checkout.sh for why the default refuses.
+ALLOW_UNMERGED=false
 FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
 
 # ── Colors ──
@@ -98,9 +102,10 @@ while [[ $# -gt 0 ]]; do
     --upgrade=*)     UPGRADE_MODE="${1#--upgrade=}"; shift ;;
     --upgrade)       UPGRADE_MODE="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
     --no-upgrade)    UPGRADE_MODE=none; shift ;;
+    --allow-unmerged) ALLOW_UNMERGED=true; shift ;;
     --flake)         FLAKE_REF="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--flake REF]"
+      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--allow-unmerged] [--flake REF]"
       echo ""
       echo "  --yes, -y      Auto-confirm (skip interactive approval). Skips"
       echo "                 App Store upgrades unless --upgrade-mas is given,"
@@ -117,6 +122,12 @@ while [[ $# -gt 0 ]]; do
       echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
       echo "                 activation, no upgrades, no root. Does refresh brew"
       echo "                 metadata (network + Homebrew repo state)."
+      echo "  --allow-unmerged"
+      echo "                 Build/activate the checkout as it is on disk even"
+      echo "                 when it is not clean main at origin/main (feature"
+      echo "                 branch, local edits, unpushed commits, or offline)."
+      echo "                 The machine then runs UNMERGED config, and the drift"
+      echo "                 audit compares against it. Default: refuse."
       echo "  --flake REF    Override flake reference (default: ~/dotfiles#\$HOSTNAME)"
       echo ""
       echo "Logs: every run is mirrored to \$REBUILD_LOG_DIR (default:"
@@ -487,16 +498,25 @@ echo -e "${BOLD}${CYAN}│       $HOSTNAME ($OS)${NC}"
 echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}"
 echo ""
 
-# ── Step 1: Pull latest dotfiles ──
-if [[ -d "$DOTFILES_DIR/.git" ]]; then
-  info "Pulling latest dotfiles..."
-  cd "$DOTFILES_DIR"
-  if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
-    git pull --ff-only 2>/dev/null && ok "Dotfiles updated" || warn "Pull failed (non-fatal)"
-  else
-    warn "Dotfiles have local changes — skipping pull"
-  fi
+# ── Step 1: Sync the dotfiles checkout to origin/main ──
+# Refuses to build/activate unless the checkout is clean `main` at origin/main
+# (fast-forwarding it when that is safe), or --allow-unmerged is given. See
+# scripts/lib/dotfiles-checkout.sh for why (rh7/rh-device-management#312).
+# --plan-only builds and activates nothing, so for it a refusal is advisory.
+CHECKOUT_LIB="$DOTFILES_DIR/scripts/lib/dotfiles-checkout.sh"
+if [[ ! -r "$CHECKOUT_LIB" ]]; then
+  err "Helper not found at $CHECKOUT_LIB"
+  exit 1
 fi
+# shellcheck source=lib/dotfiles-checkout.sh
+source "$CHECKOUT_LIB"
+if ! sync_dotfiles_checkout "$ALLOW_UNMERGED" "rebuild.sh --allow-unmerged" "$FLAKE_REF"; then
+  $PLAN_ONLY || exit 1
+  warn "--plan-only builds and activates nothing, so continuing — but this plan"
+  warn "is for the checkout above, NOT origin/main. A real rebuild would refuse."
+  echo ""
+fi
+cd "$DOTFILES_DIR"
 
 # ── Step 2: Audit drift ──
 # Ensure Nix is in PATH (audit needs `nix eval`, build needs it too).

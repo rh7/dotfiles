@@ -3,8 +3,7 @@
 #
 # Usage:
 #   ./scripts/device setup              # first-time: rebuild + secrets + register
-#   ./scripts/device update             # pull + rebuild (daily use; same guard as nrs)
-#   ./scripts/device update --full      # pull + flake update + rebuild
+#   ./scripts/device update             # rebuild origin/main (daily use; same guard as nrs)
 #   ./scripts/device status             # show device info + config service status
 #   ./scripts/device register           # register/heartbeat with config service
 #   ./scripts/device secrets            # setup or edit secrets
@@ -55,7 +54,15 @@ find_config_service() {
 do_rebuild() {
   info "Rebuilding for $HOSTNAME..."
   if [[ "$OS" == "Linux" ]] && ! command -v nixos-rebuild &>/dev/null; then
-    home-manager switch --flake "$DOTFILES_DIR#$(whoami)@$HOSTNAME"
+    # rebuild.sh does not run on this path, so apply its checkout guard here:
+    # sync to origin/main and refuse a branch/dirty/ahead checkout (#312).
+    # No bypass flag here: the refusal names the raw command to run instead.
+    local hm_ref
+    hm_ref="$DOTFILES_DIR#$(whoami)@$HOSTNAME"
+    # shellcheck source=lib/dotfiles-checkout.sh
+    source "$DOTFILES_DIR/scripts/lib/dotfiles-checkout.sh"
+    sync_dotfiles_checkout false "home-manager switch --flake \"$hm_ref\"" "$hm_ref" || exit 1
+    home-manager switch --flake "$hm_ref"
     ok "System rebuilt"
     return
   fi
@@ -117,14 +124,10 @@ cmd_setup() {
   info "Backing up current system state..."
   bash "$DOTFILES_DIR/scripts/backup-system.sh"
 
-  # Pull
-  info "Pulling latest dotfiles..."
-  git -C "$DOTFILES_DIR" pull --ff-only || warn "Pull failed"
-
-  # Flake update
-  info "Updating flake inputs..."
-  nix flake update "$DOTFILES_DIR"
-  ok "Flake updated"
+  # No pull and no `nix flake update` here: rebuild.sh syncs the checkout to
+  # origin/main itself and refuses anything else (rh7/rh-device-management#312).
+  # A local flake update would leave flake.lock dirty — unmerged config — and
+  # the guard would (correctly) refuse to activate it.
 
   # Rebuild
   do_rebuild
@@ -145,23 +148,21 @@ cmd_setup() {
 }
 
 cmd_update() {
-  local full=false
-  [[ "${1:-}" == "--full" ]] && full=true
+  # --full used to run `nix flake update` and activate the result: a machine
+  # running a lock file nobody merged. Input bumps are config changes and go
+  # through review like any other (rh7/rh-device-management#312).
+  if [[ "${1:-}" == "--full" ]]; then
+    err "'update --full' was removed: flake input updates are config changes."
+    err "Run 'nup' on a branch, open a PR, merge it, then './scripts/device update'."
+    exit 1
+  fi
 
   echo ""
   echo -e "${BOLD}=== Updating $HOSTNAME ===${NC}"
   echo ""
 
-  # Pull
-  info "Pulling latest dotfiles..."
-  git -C "$DOTFILES_DIR" pull --ff-only || warn "Pull failed"
-
-  # Flake update (only with --full)
-  if $full; then
-    info "Updating flake inputs..."
-    nix flake update "$DOTFILES_DIR"
-    ok "Flake updated"
-  fi
+  # rebuild.sh fetches and fast-forwards to origin/main, and refuses a
+  # branch/dirty/ahead checkout — no separate pull here.
 
   # Rebuild
   do_rebuild
@@ -331,8 +332,7 @@ case "${1:-help}" in
     echo ""
     echo "Commands:"
     echo "  setup              First-time setup (backup + rebuild + secrets + register)"
-    echo "  update             Pull + rebuild (daily use)"
-    echo "  update --full      Pull + flake update + rebuild"
+    echo "  update             Rebuild at origin/main (daily use)"
     echo "  status             Show device info + fleet overview"
     echo "  register           Register device with config service"
     echo "  secrets            Setup or re-run secrets configuration"
