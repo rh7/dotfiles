@@ -34,7 +34,14 @@ stub() { # stub NAME BODY — argv logged first
   chmod +x "$BIN/$1"
 }
 stub hostname 'echo "${FAKE_HOST:-Test-Mac.local}"'
-stub curl     'echo "${CURL_CODE:-401}"'
+# curl: the rest-server probe answers CURL_CODE; the config service answers
+# its health check when CS_UP is set and the approved list from APPROVED_BODY.
+stub curl     'url=""; for a in "$@"; do case "$a" in http*) url="$a" ;; esac; done
+case "$url" in
+  */api/health) [ -n "${CS_UP:-}" ] || exit 7; printf "{\"status\":\"ok\",\"service\":\"config-service\"}"; exit 0 ;;
+  */backup-paths) [ -n "${CS_UP:-}" ] && [ -n "${APPROVED_BODY:-}" ] || exit 22; printf "%s" "$APPROVED_BODY"; exit 0 ;;
+esac
+echo "${CURL_CODE:-401}"'
 stub pmset    'printf "%b\n" "${PMSET_OUT:-Now drawing from '"'"'AC Power'"'"'}"'
 # restic: backup prints a summary; RESTIC_MODE shapes the failure.
 cat >"$BIN/restic" <<STUB
@@ -90,7 +97,8 @@ check "exit 0" "$RC" 0
 check "last_result" "$(st .last_result)" '"not-configured"'
 check "configured false" "$(st .configured)" false
 check "restic never called" "$(called 'restic ')" 0
-check "contract keys present" "$(st 'keys_unsorted')" '["schema","enabled","configured","last_run_at","last_result","reason","last_snapshot_time","snapshot_id","files_new","bytes_added","paths","repo_host"]'
+check "contract keys present" "$(st 'keys_unsorted')" '["schema","enabled","configured","last_run_at","last_result","reason","last_snapshot_time","snapshot_id","files_new","bytes_added","paths","repo_host","approved_paths","skipped_paths","approved_source"]'
+check "nothing fetched before setup: approved fields empty" "$(st '[.approved_paths,.skipped_paths,.approved_source]')" '[[],[],null]'
 check "schema 1, enabled, repo_host" "$(st '[.schema,.enabled,.repo_host]')" '[1,true,"studio"]'
 
 echo "== ok run: only existing paths, status per contract =="
@@ -258,6 +266,50 @@ check "restore command shown" "$(grep -c 'restore latest --host other-mac --targ
 check "no password printed" "$(grep -c 'pw2' <<<"$OUT")" 0
 reset; configure; rb -- run; rb -- status
 check "status shows result" "$(grep -c 'last run: .* — ok' <<<"$OUT")" 1
+
+echo "== approved paths: fetched, validated, merged, cached =="
+CS=(CONFIG_SERVICE_URL=http://cs CS_UP=1)
+reset; configure; mkdir -p "$H/Proton" "$H/test" "$H/code/p" "$H/Library/Caches/x" "$H/Dropbox/a" "$T/outside"
+ln -s "$T/outside" "$H/out"; ln -s "$H/Library/Caches" "$H/cachelink"
+BODY='{"hostname":"test-mac","updated_at":"2026-11-11T00:00:00Z","paths":["~/Proton","~/../etc","~/Library/Caches/x","~/library/CACHES/x","~/.TRASH/x","~/library/cloudstorage/x","~/LIBRARY/Mobile Documents/x","~/DROPBOX (Personal)/x","~/Dropbox/a","~/nope","~/code/p","/etc","~/","~/test/","~/Proton","~/Proton//","~/out","~/cachelink","~/.Trash","~/Library/Mobile Documents/x","~/a\nb","~/a\u0000b","~/./Proton"]}'
+rb "${CS[@]}" APPROVED_BODY="$BODY" -- run
+check "exit 0" "$RC" 0
+check "approved_source control-plane" "$(st .approved_source)" '"control-plane"'
+check "approved: valid ones, trailing slashes normalized, deduped" "$(st .approved_paths)" '["~/Proton","~/code/p","~/test"]'
+check "skipped with reasons (forbidden roots matched case-insensitively)" "$(st '[.skipped_paths[] | "\(.path)=\(.reason)"] | join(" ")')" \
+  '"~/../etc=dot-segment ~/Library/Caches/x=excluded-location ~/library/CACHES/x=excluded-location ~/.TRASH/x=excluded-location ~/library/cloudstorage/x=excluded-location ~/LIBRARY/Mobile Documents/x=excluded-location ~/DROPBOX (Personal)/x=excluded-location ~/Dropbox/a=excluded-location ~/nope=not-found /etc=not-home-relative ~=home-root ~/out=outside-home ~/cachelink=excluded-location ~/.Trash=excluded-location ~/Library/Mobile Documents/x=excluded-location \"~/a\\nb\"=control-character \"~/a\\u0000b\"=control-character ~/./Proton=dot-segment"'
+check "merged with module paths; ~/code/p not given twice" "$(grep -cF -- "-- $H/.ssh $H/.config $H/code $H/Proton $H/test |" "$CALLS")" 1
+check "status paths include the approved ones" "$(st .paths)" '["~/.ssh","~/.config","~/code","~/Proton","~/test"]'
+check "fetched from the resolver's service, 10s cap" "$(called 'curl -fsS --connect-timeout 5 --max-time 10 http://cs/api/fleet/data/test-mac/backup-paths')" 1
+check "last good list cached 0600" "$(ls -l "$H/.local/state/rh7-restic/approved-paths.json" | cut -c1-10)" "-rw-------"
+
+echo "== approved paths: fetch failure falls back to the cached list =="
+: >"$CALLS"; rb CONFIG_SERVICE_URL=http://cs -- run
+check "approved_source cache" "$(st .approved_source)" '"cache"'
+check "same approved paths from the cache" "$(st .approved_paths)" '["~/Proton","~/code/p","~/test"]'
+check "still backed up" "$(grep -cF -- "$H/Proton $H/test |" "$CALLS")" 1
+check "log says the cache was used" "$(grep -c 'using the last good list' <<<"$OUT")" 1
+rmdir "$H/test"; rb CONFIG_SERVICE_URL=http://cs -- run
+check "cached entry re-validated: vanished folder skipped" "$(st '[.approved_paths, [.skipped_paths[] | select(.path == "~/test") | .reason]]')" '[["~/Proton","~/code/p"],["not-found"]]'
+rb "${CS[@]}" APPROVED_BODY='{"hostname":"other-mac","paths":["~/code"]}' -- run
+check "a list for another host is refused (cache used)" "$(st .approved_source)" '"cache"'
+rb "${CS[@]}" APPROVED_BODY='<html>oops</html>' -- run
+check "a non-JSON answer is refused (cache used)" "$(st .approved_source)" '"cache"'
+rb CURL_CODE=000 -- run
+check "offline run carries the approved fields forward" "$(st '[.last_result,.approved_source,.approved_paths]')" '["skipped","cache",["~/Proton","~/code/p"]]'
+rm -f "$H/.local/state/rh7-restic/approved-paths.json"; : >"$CALLS"
+rb CONFIG_SERVICE_URL=http://cs -- run
+check "no service, no cache: module paths only" "$(st '[.approved_source,.approved_paths,.skipped_paths]')" '["none",[],[]]'
+check "restic got the module paths only" "$(grep -cF -- "-- $H/.ssh $H/.config $H/code |" "$CALLS")" 1
+rb "${CS[@]}" APPROVED_BODY='{"hostname":"test-mac","paths":[]}' -- run
+check "an emptied list stops the extra backups" "$(st '[.approved_source,.approved_paths]')" '["control-plane",[]]'
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$H/locked"; chmod 000 "$H/locked"
+  rb "${CS[@]}" APPROVED_BODY='{"hostname":"test-mac","paths":["~/locked"]}' -- run
+  check "unlistable folder refused up front (no failed run)" "$(st '[.last_result,.skipped_paths[0].reason]')" '["ok","permission-denied"]'
+  chmod 755 "$H/locked"
+fi
+rm -rf "$T/outside"
 
 echo "== audit-device.sh: rh7-restic entry in backup_posture =="
 # The Python body has its own column-0 braces: cut at the heredoc terminator.

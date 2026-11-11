@@ -385,7 +385,8 @@ shows the legacy `auto-sync.sh` heartbeat cron, remove it with
 `./scripts/device sync --uninstall`). With `chore/326-315-flake-hygiene` every
 `mkMac` host declares the schedule via
 `modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
-daily 08:17). On `main` today only the Studio imports it, so on **any** host
+daily 08:17, started through `/usr/local/libexec/rh7-fleet-launcher audit` — see
+[Full Disk Access](#full-disk-access-optional-per-mac)). On `main` today only the Studio imports it, so on **any** host
 without a `com.rh7.collector-runner` agent (`launchctl list | grep collector`)
 run `./scripts/collector-runner.sh --install` once (it also retires a legacy
 `com.rh7.audit` agent). Non-nix devices without a clone enrol with
@@ -482,21 +483,94 @@ Studio is unreachable) or `not-configured`. The daily audit reports it as the
 `restic` entry of `backup_posture.programmatic` (with the backed-up `paths`), so
 the config service credits exactly those folders; `fleet-fix.sh backup` shows it.
 
+**Owner-approved paths.** Folders the owner marks *Back up* in the dashboard's
+data view (see [Data inventory](#data-inventory)) reach the device dynamically:
+every run asks `GET /api/fleet/data/<host>/backup-paths` (10 s cap, the fleet's
+one config-service resolver), validates each path on the device and adds the
+survivors to the module paths — no rebuild. A path must be `~/…`, contain no
+control characters or `.`/`..` segments, not be `~` itself, not be under
+`~/Library/Caches`, `~/.Trash`, `~/Library/CloudStorage`,
+`~/Library/Mobile Documents` or `~/Dropbox*` (case-insensitively — APFS is), must
+exist, resolve inside the home and be readable by the job; trailing slashes are
+ignored. Anything else is skipped and reported, never fatal. If the control
+plane is unreachable the last good list
+(`~/.local/state/rh7-restic/approved-paths.json`) is used. `status.json` carries
+`approved_paths`, `skipped_paths` (`{path, reason}`) and `approved_source`
+(`control-plane` / `cache` / `none`); `fleet-fix.sh backup` lists them.
+
 **~/Desktop, ~/Documents, ~/Downloads are not in the defaults.** macOS privacy
 protection (TCC) stops a launchd job from reading them (and iCloud Drive /
 external volumes) without Full Disk Access; iCloud Desktop & Documents already
-replicates the first two. To include one anyway: add it to `paths`, rebuild,
-then System Settings → Privacy & Security → Full Disk Access → `+` → ⇧⌘G →
-`/usr/local/libexec/rh7-restic-launcher`, and
-`launchctl kickstart -k gui/$(id -u)/org.rh7.restic-backup`. Grant that file —
-not Terminal, not the wrapper script, not restic: it is a small fixed binary the
-module installs once, so the grant survives rebuilds (the module header has the
-details). A missing grant shows up as `permission-denied`, and the unreadable
-folder is left out of `paths`.
+replicates the first two. The job runs through
+`/usr/local/libexec/rh7-fleet-launcher restic`; to include a protected folder,
+grant that launcher Full Disk Access ([below](#full-disk-access-optional-per-mac)),
+then add the folder to `paths` or approve it on the dashboard. Without the
+grant an approved protected folder is skipped up front (`permission-denied` in
+`skipped_paths`) instead of failing the run; a protected path in `paths` still
+fails the run as `permission-denied` and is left out of `paths`.
 
 Changing the backup script: run `bash scripts/tests/restic-backup.test.sh`
 (stubs; CI runs it) and `bash scripts/tests/restic-backup-e2e.sh` (real restic
 and rest-server from the flake's nixpkgs on 127.0.0.1; needs nix).
+
+---
+
+## Data inventory
+
+The daily audit's `data_inventory` section answers *what important data is on
+this Mac that nothing backs up?* for the account it runs as. The config service
+shows it per device (admin-gated) so the owner can decide per item: **Back up**
+(added to that device's restic job on its next run, see above), **Ignore**, or
+**Delete later** (a to-do — nothing is ever deleted automatically).
+
+Items: each top-level home folder (not `~/Library`, `~/.Trash` or cloud roots),
+Photos libraries, `~/Library/Messages`, `~/Library/Mail`, app data of 100 MB+
+under Application Support / Containers / Group Containers, wallet data folders
+(size only, never opened), and git repos with work that exists only here. Each
+carries `category`, `size_bytes`, `files`, `newest_mtime`, `coverage`
+(`icloud`, `dropbox`, `cloud-storage`, `git-remote`, restic with a snapshot
+< 48 h, Time Machine backup < 48 h and the path not excluded) and `status`:
+`covered`, `unprotected`, `reinstallable` (`~/.ollama`, toolchains, editor
+extensions, caches, Dropbox's own `~/.dropbox` state, WhatsApp) or
+`not-inspected`. Plus `largest_files`: the 20 largest files over 500 MB
+(caches, cloud roots and Photos library internals skipped). Names and sizes
+only, never contents.
+
+The classification rules (`DATA_CLASS_RULES`, wallets, browsers) are one block
+shared verbatim by `audit-device.sh` and `pre-wipe-check.sh`;
+`scripts/tests/data-inventory.test.sh` fails if the copies drift.
+
+Cost: one 90 s budget with a per-folder `du` cap; sizes are cached in
+`~/.local/state/rh7-audit/data-inventory-cache.json` and reused for a week
+unless the folder's mtime changed, so once warm a daily run spends seconds.
+`budget_exhausted: true` means some sizes are missing or stale (they fill in
+over the next runs). Photos libraries are always listed and count as covered
+only when the iCloud account reports iCloud Photos on — otherwise
+`unprotected`, note *iCloud Photos not confirmed*.
+
+### Full Disk Access (optional, per Mac)
+
+Without it the audit never opens macOS-protected folders (Desktop, Documents,
+Downloads, Pictures/Photos, Movies, Music, Messages, Mail, app containers) —
+they are reported `not-inspected` with no size, and
+`data_inventory.protected_access` is `denied` (Desktop/Documents still show as
+`covered` when iCloud Desktop & Documents is on). To let the scheduled audit
+**and** restic see them, grant FDA once to the one fleet launcher both jobs run
+through (`modules/darwin/fleet-launcher.nix`):
+
+1. System Settings → Privacy & Security → Full Disk Access → `+` → ⇧⌘G →
+   `/usr/local/libexec/rh7-fleet-launcher` → Open, switch it on.
+2. `launchctl kickstart -k gui/$(id -u)/com.rh7.collector-runner` — the audit
+   then reports `protected_access: "granted"` (restic:
+   `launchctl kickstart -k gui/$(id -u)/org.rh7.restic-backup`).
+
+Grant that file — not Terminal, not a wrapper script, not restic/bash: it is a
+small fixed binary copied there once and only replaced when the module bumps
+its version, so the grant survives rebuilds. It accepts only a job name
+(`audit`, `restic`) and rebuilds the environment, so a plist cannot steer what
+runs under the grant; the module header lists the residual trust.
+`--include-protected` on a one-off interactive audit still works without the
+grant (macOS may prompt; `protected_access` is then `partial`).
 
 ---
 

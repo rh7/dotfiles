@@ -25,6 +25,15 @@
 # system-level timer. The runner path follows home.homeDirectory, so it is
 # correct for non-default usernames (e.g. /Users/rouven, /Users/kassie).
 #
+# FULL DISK ACCESS (optional, per Mac): on macOS the agent starts
+# `/usr/local/libexec/rh7-fleet-launcher audit` (modules/darwin/fleet-launcher.nix,
+# which mkMac imports for every Mac alongside this module), not a script: the
+# launcher is the one stable binary an FDA grant can attach to, shared with
+# the restic job. It runs the system wrapper `rh7-fleet-audit` — the runner
+# baked in by store path with the PATH below — under a rebuilt environment.
+# Without the grant the audit behaves as before and its data_inventory reports
+# the protected folders `not-inspected`; with it they are measured.
+#
 # COVERAGE (honest bound): only takes effect on Macs that are actually
 # nix-darwin-managed AND rebuilt since this landed. Linux hosts, appliances/
 # phones/routers, not-yet-migrated Macs and offline/stale hosts are NOT covered
@@ -37,10 +46,12 @@ let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   homeDir = config.home.homeDirectory;
 
-  # The runner lives in the same ~/dotfiles checkout nix rebuilds from, so on any
-  # nix-managed host it is already on disk at a stable path — no clone bootstrap
-  # is needed here (that is the no-clone curl path's concern, #119).
+  # Linux: the runner lives in the same ~/dotfiles checkout nix rebuilds from,
+  # so it is already on disk at a stable path — no clone bootstrap is needed
+  # here (that is the no-clone curl path's concern, #119). macOS runs the
+  # store copy behind the fleet launcher instead (see FULL DISK ACCESS).
   runner = "${homeDir}/dotfiles/scripts/collector-runner.sh";
+  launcher = "/usr/local/libexec/rh7-fleet-launcher";
 
   # Fixed daily time. NOTE: a per-host minute stagger can't be derived in this
   # layer — the hostname is NOT threaded into home-manager (mkMac/mkNixOS pass no
@@ -53,15 +64,12 @@ let
   hh = lib.fixedWidthString 2 "0" (toString hour);
   mm = lib.fixedWidthString 2 "0" (toString minute);
 
-  # Load-bearing PATH: collector-runner itself needs bash/curl/python3/shasum;
-  # the audit it execs shells out to brew/docker/tailscale/mas (macOS) or the
-  # system profile (Linux). Provide the tools from nix + the platform app paths.
+  # Load-bearing PATH (Linux; on macOS the rh7-fleet-audit wrapper in
+  # fleet-launcher.nix sets its own): collector-runner itself needs
+  # bash/curl/python3/shasum; the audit it execs shells out to the system
+  # profile. Provide the tools from nix + the system profile.
   toolPath = lib.makeBinPath [ pkgs.bash pkgs.curl pkgs.python3 pkgs.coreutils ];
-  appPath =
-    if isDarwin
-    then "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    else "/run/current-system/sw/bin:/usr/bin:/bin";
-  fullPath = "${toolPath}:${appPath}";
+  fullPath = "${toolPath}:/run/current-system/sw/bin:/usr/bin:/bin";
 in
 {
   # ── macOS: user LaunchAgent ─────────────────────────────────────────────
@@ -74,12 +82,13 @@ in
     enable = true;
     config = {
       Label = "com.rh7.collector-runner";
-      ProgramArguments = [ "/bin/bash" "-lc" "bash ${runner}" ]; # runner defaults to --run
+      # The launcher rebuilds the environment (fixed PATH, HOME from the
+      # password database); rh7-fleet-audit sets the tool PATH itself.
+      ProgramArguments = [ launcher "audit" ]; # runner defaults to --run
       StartCalendarInterval = { Hour = hour; Minute = minute; };
       RunAtLoad = false; # don't audit on every login/rebuild; setup.sh does the first audit
       StandardOutPath = "/tmp/com.rh7.collector-runner.out.log";
       StandardErrorPath = "/tmp/com.rh7.collector-runner.err.log";
-      EnvironmentVariables = { PATH = fullPath; };
     };
   };
 

@@ -79,6 +79,135 @@ STUDIO_HOST=rouvens-mac-studio   # fleet restic REST server (rh-device-managemen
 RESTIC_PORT=8000
 STUDIO_FREE_NOTE="433 GB free on 2026-11-11"
 
+# >>> BEGIN SHARED DATA CLASSIFICATION >>>
+# What a folder on a Mac IS, for deciding whether its loss matters. This block is
+# duplicated VERBATIM in scripts/pre-wipe-check.sh (bash 3.2, reads it through
+# data_class_rule) and scripts/audit-device.sh (its data_inventory Python reads
+# the same variables from the environment), and
+# scripts/tests/data-inventory.test.sh fails if the two copies drift.
+#
+# It cannot be a sourced library or a Python module: both scripts are
+# distributed as SINGLE SELF-CONTAINED FILES (the collector as one
+# `git show <ref>:scripts/audit-device.sh` blob, pre-wipe-check via
+# `curl … | bash`), so a sibling file never reaches the device. Plain data in a
+# shell variable is the one format both a bash 3.2 `case` and Python's fnmatch
+# read the same way. Same pattern as the shared config-service resolver.
+#
+# DATA_CLASS_RULES rows: scope|pattern|kind|category|status|note — first match
+# wins, pattern is a shell glob (no `|`, no brackets).
+#   scope    home = a top-level entry of $HOME; appdata = an entry of
+#            ~/Library/Application Support, Containers or Group Containers
+#   kind     pre-wipe-check's own judgement. home: skip dd standard music cloud
+#            secret vm cache other; appdata: RED AMBER VM NONE, or - (no flag)
+#   category data_inventory category; for kind=cloud the coverage token
+#            (icloud, dropbox, cloud-storage) of everything under that root
+#   status   data_inventory status: reinstallable / unprotected, or skip and
+#            cloud (not an item: excluded from the inventory)
+# Not listed = kind other, category user-data (home) / app-data, unprotected.
+DATA_CLASS_RULES='home|Library|skip|-|skip|
+home|.Trash|skip|-|skip|
+home|Applications|skip|-|skip|
+home|.DS_Store|skip|-|skip|
+home|.CFUserTextEncoding|skip|-|skip|
+home|.localized|skip|-|skip|
+home|Desktop|dd|user-data|unprotected|
+home|Documents|dd|user-data|unprotected|
+home|Downloads|standard|downloads|unprotected|Downloads is never synced by iCloud
+home|Movies|standard|user-data|unprotected|
+home|Pictures|standard|user-data|unprotected|Photos libraries are listed separately
+home|Public|standard|user-data|unprotected|
+home|Sites|standard|user-data|unprotected|
+home|Music|music|user-data|unprotected|purchases re-download; imported music does not
+home|iCloud Drive (Archive)*|other|user-data|unprotected|local copy left when iCloud Drive was turned off
+home|Dropbox|cloud|dropbox|cloud|
+home|Dropbox (*|cloud|dropbox|cloud|
+home|OneDrive|cloud|cloud-storage|cloud|
+home|OneDrive*|cloud|cloud-storage|cloud|
+home|Google Drive|cloud|cloud-storage|cloud|
+home|Google Drive (*|cloud|cloud-storage|cloud|
+home|Creative Cloud Files*|cloud|cloud-storage|cloud|
+home|Box|cloud|cloud-storage|cloud|
+home|Box Sync|cloud|cloud-storage|cloud|
+home|iCloud Drive|cloud|icloud|cloud|
+home|.ssh|secret|user-data|unprotected|credentials: escrow private keys
+home|.gnupg|secret|user-data|unprotected|credentials: escrow secret keys
+home|.aws|secret|user-data|unprotected|credentials
+home|.kube|secret|user-data|unprotected|credentials
+home|.netrc|secret|user-data|unprotected|credentials
+home|.git-credentials|secret|user-data|unprotected|credentials
+home|.password-store|secret|user-data|unprotected|credentials
+home|.orbstack|vm|app-data|unprotected|VM/container disks are local only (images re-pull)
+home|OrbStack|vm|app-data|unprotected|VM/container disks are local only (images re-pull)
+home|.lima|vm|app-data|unprotected|VM disks are local only
+home|.colima|vm|app-data|unprotected|VM disks are local only
+home|.docker|vm|app-data|unprotected|container config and contexts
+home|.vagrant.d|vm|app-data|unprotected|VM boxes re-download; VM disks do not
+home|Parallels|vm|app-data|unprotected|VM disks are local only
+home|Virtual Machines|vm|app-data|unprotected|VM disks are local only
+home|Virtual Machines.localized|vm|app-data|unprotected|VM disks are local only
+home|VirtualBox VMs|vm|app-data|unprotected|VM disks are local only
+home|.dropbox|cache|app-data|reinstallable|Dropbox internal state (sync database, cache); re-created when Dropbox signs in
+home|.dropbox-dist|cache|tooling|reinstallable|Dropbox app binaries
+home|.dropbox-master|cache|app-data|reinstallable|Dropbox internal state
+home|.cache|cache|cache|reinstallable|
+home|.npm|cache|cache|reinstallable|
+home|.pnpm-store|cache|cache|reinstallable|
+home|.yarn|cache|cache|reinstallable|
+home|.node-gyp|cache|cache|reinstallable|
+home|.gradle|cache|cache|reinstallable|
+home|.m2|cache|cache|reinstallable|
+home|.pub-cache|cache|cache|reinstallable|
+home|.dartServer|cache|cache|reinstallable|
+home|.cocoapods|cache|cache|reinstallable|
+home|.zsh_sessions|cache|cache|reinstallable|
+home|.ollama|cache|tooling|reinstallable|model weights re-download (ollama pull)
+home|.lmstudio|cache|tooling|reinstallable|model weights re-download
+home|.huggingface|cache|tooling|reinstallable|model weights re-download
+home|.npm-global|cache|tooling|reinstallable|
+home|.cargo|cache|tooling|reinstallable|
+home|.rustup|cache|tooling|reinstallable|
+home|.bun|cache|tooling|reinstallable|
+home|.nvm|cache|tooling|reinstallable|
+home|.pyenv|cache|tooling|reinstallable|
+home|.rbenv|cache|tooling|reinstallable|
+home|.gem|cache|tooling|reinstallable|
+home|.vscode|cache|tooling|reinstallable|editor extensions
+home|.vscode-insiders|cache|tooling|reinstallable|editor extensions
+home|.cursor|cache|tooling|reinstallable|editor extensions
+home|.windsurf|cache|tooling|reinstallable|editor extensions
+home|.deno|cache|tooling|reinstallable|
+home|.expo|cache|tooling|reinstallable|
+home|.android|cache|tooling|reinstallable|
+home|.swiftpm|cache|tooling|reinstallable|
+home|.platformio|cache|tooling|reinstallable|
+home|go|cache|tooling|reinstallable|
+home|.nix-defexpr|cache|tooling|reinstallable|
+home|.nix-profile|cache|tooling|reinstallable|
+home|.conda|cache|tooling|reinstallable|
+home|miniconda3|cache|tooling|reinstallable|
+home|anaconda3|cache|tooling|reinstallable|
+appdata|Signal|RED|app-data|unprotected|Signal Desktop history is not synced to a new install
+appdata|org.whispersystems.signal-desktop*|RED|app-data|unprotected|Signal Desktop history is not synced to a new install
+appdata|*WhatsApp*|AMBER|app-data|reinstallable|WhatsApp Desktop history lives on the phone; re-link after the wipe
+appdata|*whatsapp*|AMBER|app-data|reinstallable|WhatsApp Desktop history lives on the phone; re-link after the wipe
+appdata|com.utmapp.UTM|VM|app-data|unprotected|virtual machine disks are local only
+appdata|*Parallels*|VM|app-data|unprotected|virtual machine disks are local only
+appdata|*parallels*|VM|app-data|unprotected|virtual machine disks are local only
+appdata|VMware Fusion|VM|app-data|unprotected|virtual machine disks are local only
+appdata|com.vmware.fusion*|VM|app-data|unprotected|virtual machine disks are local only
+appdata|com.docker.docker|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|Docker Desktop|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|*dev.orbstack*|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|OrbStack|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|MobileSync|NONE|app-data|unprotected|iPhone/iPad backups made by Finder (pre-wipe-check judges them under Data cleanup candidates)
+appdata|obsidian|NONE|app-data|reinstallable|Obsidian app settings; the vaults are separate folders
+appdata|Dropbox|-|app-data|reinstallable|Dropbox app state; re-created on sign-in
+appdata|CloudDocs|-|app-data|reinstallable|iCloud Drive internal state
+appdata|Ollama|-|tooling|reinstallable|
+appdata|LM Studio|-|tooling|reinstallable|
+appdata|Steam|-|tooling|reinstallable|games re-download; saves sync via Steam Cloud
+appdata|Caches|-|cache|reinstallable|'
+
 # Chromium-family browsers: "Label:path under ~/Library/Application Support".
 CHROMIUM_BROWSERS="Google Chrome:Google/Chrome
 Brave:BraveSoftware/Brave-Browser
@@ -104,6 +233,19 @@ WALLET_EXTENSIONS="nkbihfbeogaeaoehlefnkodbefgpgknn|MetaMask
 bfnaelmomeimhlpmgjnjophhpkkoljpa|Phantom
 hnfanknocfeofbddgcijnmhnfnkdnaad|Coinbase Wallet
 acmacodkjbdgmoleebolmdjonilkdbch|Rabby"
+
+# data_class_rule SCOPE NAME → "kind|category|status|note" of the first
+# matching row; returns 1 when no row matches. bash 3.2-safe, no temp files.
+data_class_rule() {
+  local scope="$1" name="$2" s pat kind cat st note
+  while IFS='|' read -r s pat kind cat st note; do
+    [ "$s" = "$scope" ] || continue
+    # shellcheck disable=SC2254  # $pat IS the glob
+    case "$name" in $pat) printf '%s|%s|%s|%s\n' "$kind" "$cat" "$st" "$note"; return 0 ;; esac
+  done < <(printf '%s\n' "$DATA_CLASS_RULES")
+  return 1
+}
+# <<< END SHARED DATA CLASSIFICATION <<<
 
 # The script's own text, for --all-users re-invocation (fed to each child on
 # stdin, so an account that cannot read the admin's home can still run it).
@@ -215,20 +357,12 @@ classify_app() {
   echo manual
 }
 
-# What a top-level entry of $HOME is, for deciding how much its loss matters.
+# What a top-level entry of $HOME is, for deciding how much its loss matters:
+# the `kind` column of the shared DATA_CLASS_RULES (not listed = other).
 home_entry_kind() {
-  case "$1" in
-    Library|.Trash|Applications|.DS_Store|.CFUserTextEncoding|.localized) echo skip ;;
-    Desktop|Documents) echo dd ;;
-    Downloads|Movies|Pictures|Public|Sites) echo standard ;;
-    Music) echo music ;;
-    "iCloud Drive (Archive)"*) echo other ;;
-    Dropbox|"Dropbox ("*|OneDrive|OneDrive*|"Google Drive"|"Google Drive ("*|"Creative Cloud Files"*|Box|"Box Sync"|"iCloud Drive") echo cloud ;;
-    .ssh|.gnupg|.aws|.kube|.netrc|.git-credentials|.password-store) echo secret ;;
-    .orbstack|OrbStack|.lima|.colima|.docker|.vagrant.d|Parallels|"Virtual Machines"|"Virtual Machines.localized"|"VirtualBox VMs") echo vm ;;
-    .cache|.npm|.npm-global|.cargo|.rustup|.gradle|.m2|.pnpm-store|.bun|.nvm|.pyenv|.rbenv|.gem|.ollama|.lmstudio|.vscode|.vscode-insiders|.cursor|.windsurf|.node-gyp|.yarn|.deno|.expo|.android|.swiftpm|.platformio|go|.nix-defexpr|.nix-profile|.cocoapods|.conda|miniconda3|anaconda3|.pub-cache|.dartServer|.huggingface|.zsh_sessions) echo cache ;;
-    *) echo other ;;
-  esac
+  local r
+  r="$(data_class_rule home "$1")" || { echo other; return; }
+  printf '%s\n' "${r%%|*}"
 }
 
 # home_entry_level KIND KB DD_SYNCED(0|1) HAS_REPOS(0|1) NAME [DENIED(0|1)]
@@ -279,23 +413,13 @@ _home_level_by_size() {
 }
 
 # Known app data that a reinstall does NOT bring back. Matches an
-# Application Support / Containers / Group Containers entry name.
-# → "LEVEL<TAB>note" or nothing.
+# Application Support / Containers / Group Containers entry name against the
+# appdata rows of DATA_CLASS_RULES. → "LEVEL<TAB>note" or nothing.
 appdata_flag() {
-  case "$1" in
-    Signal|org.whispersystems.signal-desktop*)
-      printf 'RED\tSignal Desktop history is not synced to a new install\n' ;;
-    *WhatsApp*|*whatsapp*)
-      printf 'AMBER\tWhatsApp Desktop history lives on the phone; re-link after the wipe\n' ;;
-    com.utmapp.UTM|*Parallels*|*parallels*|"VMware Fusion"|com.vmware.fusion*)
-      printf 'VM\tvirtual machine disks are local only\n' ;;
-    com.docker.docker|"Docker Desktop"|*dev.orbstack*|OrbStack)
-      printf 'AMBER\tcontainer volumes are local only (images re-pull)\n' ;;
-    MobileSync)
-      printf 'NONE\tdevice backups: judged under Data cleanup candidates\n' ;;
-    obsidian)
-      printf 'NONE\tvaults checked separately below\n' ;;
-  esac
+  local r kind note
+  r="$(data_class_rule appdata "$1")" || return 0
+  kind="${r%%|*}"; note="${r##*|}"
+  [ "$kind" = - ] || printf '%s\t%s\n' "$kind" "$note"
 }
 
 # git_at_risk DIRTY UNPUSHED NOREMOTE STASHES → 0 (safe) / 1 (unique work here)

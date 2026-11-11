@@ -199,6 +199,7 @@ modules/
     defaults.nix                       # macOS system defaults (dock, finder, keyboard)
     homebrew.nix                       # Homebrew scaffold (behavior config only)
     restic-backup.nix                  # opt-in daily restic backup -> Studio REST server (mkMac resticBackup = true)
+    fleet-launcher.nix                 # /usr/local/libexec/rh7-fleet-launcher: ONE binary for the audit + restic jobs (optional Full Disk Access grant)
     profiles/                          # Composable app sets (Homebrew casks/brews)
       core.nix                         #   1password, chrome, arc, raycast, tailscale
       dev-apps.nix                     #   cursor, ghostty, zed, orbstack, wezterm
@@ -306,7 +307,8 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 - Onboarding an **existing** device (audit first, then rebuild)
 - **Fixing dashboard issues on a device** (`scripts/fleet-fix.sh`, dry-run by default)
 - Secrets onboarding (age key → `sops-add-host.sh` on an existing recipient)
-- **Restic backups** of the policy folders to the Studio (`rh7-restic-backup`, pilot: rouven-m5-pro)
+- **Restic backups** of the policy folders to the Studio (`rh7-restic-backup`, pilot: rouven-m5-pro), plus the folders the owner approved on the dashboard
+- **Data inventory** — what important data each Mac holds that nothing backs up (`data_inventory` in the daily audit) and the **optional Full Disk Access** grant that lets the audit and restic see protected folders
 - Config service API reference
 
 ### Quick Reference

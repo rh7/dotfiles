@@ -49,6 +49,9 @@
           ./modules/darwin/xcode-license.nix
           ./modules/darwin/fleet-update.nix
           ./modules/darwin/restic-backup.nix
+          # The ONE stable launcher the scheduled jobs (audit, restic) start,
+          # so one optional Full Disk Access grant per Mac covers both.
+          ./modules/darwin/fleet-launcher.nix
           {
             # The attr to build is baked in here, never derived at runtime.
             # Every darwinConfigurations attr below equals its hostname.
