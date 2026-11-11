@@ -301,10 +301,15 @@ cask_app_targets() {
              | "\($t)\t\(.)"'
 }
 
-# cask_lifecycle_plan — fills the globals above. Needs PLAN_TMP/declared_casks
-# from homebrew_plan. A failed inventory leaves the lists EMPTY and says so:
-# not removing or replacing is the safe direction, guessing is not.
+# cask_lifecycle_plan [declared_known] — fills the globals above. Reads
+# PLAN_TMP/declared_casks from homebrew_plan; pass "false" when that evaluation
+# failed and only the retirement half runs. Deliberately independent of the
+# formula/upgrade plan: an unrelated `brew outdated` failure must not stop a
+# retired cask's removal or let activation trip over a hand-installed copy.
+# A failed inventory leaves the lists EMPTY and says so: not removing or
+# replacing is the safe direction, guessing is not.
 cask_lifecycle_plan() {
+  local declared_known="${1:-true}"
   ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
   if ! brew list --cask -1 >"$PLAN_TMP/installed_casks" 2>/dev/null; then
     warn "'brew list --cask' failed — install/replace/remove plan unavailable"
@@ -317,8 +322,12 @@ cask_lifecycle_plan() {
     warn "Could not evaluate dotfiles.homebrew.retiredCasks — nothing will be removed"
   fi
 
-  subtract_lines "$PLAN_TMP/declared_casks" "$PLAN_TMP/installed_casks" >"$PLAN_TMP/missing_casks"
-  if [[ -s "$PLAN_TMP/missing_casks" ]]; then
+  if [[ "$declared_known" != true ]]; then
+    warn "Declared casks unavailable — hand-installed copies not checked"
+  else
+    subtract_lines "$PLAN_TMP/declared_casks" "$PLAN_TMP/installed_casks" >"$PLAN_TMP/missing_casks"
+  fi
+  if [[ "$declared_known" == true && -s "$PLAN_TMP/missing_casks" ]]; then
     local cask app adopt=()
     if cask_app_targets <"$PLAN_TMP/missing_casks" >"$PLAN_TMP/missing_targets"; then
       while IFS=$'\t' read -r cask app; do
@@ -539,11 +548,17 @@ homebrew_plan() {
 
   # Per-category checks. A failure in ONE category must not read as "nothing
   # declared there" — that would relabel every package of that kind as drift.
+  # Casks are evaluated even when the inventory failed: the cask lifecycle plan
+  # below needs them and does not depend on `brew outdated`.
+  declared_casks_known=false
+  if declared_brew_names casks "$FLAKE_REF" >"$PLAN_TMP/declared_casks"; then
+    declared_casks_known=true
+  fi
   if $plan_known; then
     if ! declared_brew_names brews "$FLAKE_REF" >"$PLAN_TMP/declared_formulae"; then
       warn "Could not evaluate homebrew.brews for $FLAKE_REF"
       plan_known=false
-    elif ! declared_brew_names casks "$FLAKE_REF" >"$PLAN_TMP/declared_casks"; then
+    elif ! $declared_casks_known; then
       warn "Could not evaluate homebrew.casks for $FLAKE_REF"
       plan_known=false
     fi
@@ -622,10 +637,10 @@ homebrew_plan() {
       if [[ -n "$skip_casks" ]]; then echo "    casks:    $skip_casks"; fi
       echo "    (upgrade by hand with 'brew upgrade <name>', or declare them in a profile)"
     fi
-
-    echo ""
-    cask_lifecycle_plan
   fi
+
+  echo ""
+  cask_lifecycle_plan "$declared_casks_known"
 
   # Mac App Store, shown in the same breath as Homebrew so the plan covers
   # everything this run will change before you authenticate.

@@ -32,7 +32,7 @@
   config = {
     dotfiles.homebrew.criticalUpgrades = [
       # Browsers
-      "google-chrome" "firefox" "arc" "brave-browser"
+      "google-chrome" "firefox" "arc" "brave-browser" "zen"
       # Passwords / encryption
       "1password" "1password-cli" "cryptomator" "gpg-suite-no-mail"
       # VPN / network

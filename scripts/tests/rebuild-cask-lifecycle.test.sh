@@ -94,6 +94,11 @@ check "nothing blocked when the probe passes" "" "$ADOPT_BLOCKED"
 XATTR_MODE=eperm; cask_lifecycle_plan >/dev/null
 check "App Management block is recorded" "$APPS/Zen.app" "$(xargs <<<"$ADOPT_BLOCKED")"
 
+XATTR_MODE=allow; cask_lifecycle_plan false >/dev/null
+check "unevaluable declared casks adopt nothing" "" "$ADOPT_CASKS"
+check "unevaluable declared casks install nothing" "" "$NEW_CASKS"
+check "retirement still runs without declared casks" "session stremio" "$RETIRE_CASKS"
+
 XATTR_MODE=allow; RETIRED_FAILS=true; cask_lifecycle_plan >/dev/null
 check "unevaluable retired list removes NOTHING" "" "$RETIRE_CASKS"
 RETIRED_FAILS=false
