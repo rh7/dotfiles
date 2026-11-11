@@ -884,11 +884,14 @@ section_control_plane() {
 # ── section 3: apps ────────────────────────────────────────────────────────
 
 section_apps() {
-  emit "## 3. Apps to reinstall"
+  # --all-users: the system part inventories /Applications once; each account
+  # part covers what is per account (~/Applications, App Store, npm/pipx/uv).
+  if [ "$PART" = user ]; then emit "## 3. Apps and tools for this account"
+  else emit "## 3. Apps to reinstall"; fi
   blank
   progress "inventorying /Applications and ~/Applications…"
   local have_brew=0 have_mas=0 cask_map="" cask_list="" mas_map="" cask_names=""
-  command -v brew >/dev/null 2>&1 && have_brew=1
+  [ "$PART" != user ] && command -v brew >/dev/null 2>&1 && have_brew=1
   command -v mas  >/dev/null 2>&1 && have_mas=1
 
   if [ "$have_brew" = 1 ]; then
@@ -928,6 +931,7 @@ section_apps() {
   local paths info where="/Applications and ~/Applications"
   local -a roots=(/Applications "$HOME/Applications")
   [ "$PART" = system ] && { roots=(/Applications); where="/Applications (per-account ~/Applications: under each account)"; }
+  [ "$PART" = user ] && { roots=("$HOME/Applications"); where="~/Applications (this account only; /Applications is under \"this Mac\")"; }
   paths="$(find "${roots[@]}" -maxdepth 3 -name '*.app' -prune -print 2>/dev/null | LC_ALL=C sort -f)"
   info="$(printf '%s\n' "$paths" | osascript -l JavaScript -e "$JXA_APPINFO" 2>/dev/null)"
 
@@ -1007,7 +1011,7 @@ section_apps() {
   if [ "$have_brew" = 1 ]; then
     local leaves; leaves="$(brew_q leaves --installed-on-request | tr '\n' ' ')"
     emit "- Homebrew formulae installed on request: ${leaves:-none}"
-  else
+  elif [ "$PART" != user ]; then
     emit "- Homebrew: not installed"
   fi
   if command -v npm >/dev/null 2>&1; then
@@ -1260,7 +1264,7 @@ section_local_data() {
     case "$lvl" in
       RED|AMBER)
         FINDINGS_DEFERRED+="$lvl"$'\t'"\`~/$name\` — $dlabel — $note"$'\n'
-        [ "$lvl" = RED ] && plan_path RED "$kb" "$HOME/$name" "~/$name" ;;
+        plan_path "$lvl" "$kb" "$HOME/$name" "~/$name" ;;
       REPO)
         n_repo_dirs=$((n_repo_dirs + 1))
         if [ "$n_repo_dirs" -le 8 ]; then repo_dirs+="~/$name ($dlabel), "
@@ -1696,12 +1700,6 @@ section_backups() {
   done
   [ -n "$hist" ] && emit "- Shell history: ${hist% } (copy if you rely on it)."
   emit "- Music/TV: Account → Authorizations → Deauthorize This Computer (5-computer limit)."
-  if [ "$PART" = user ]; then
-    # The apps section ran once, for the admin; per-account installs live here.
-    local uapps="" a
-    for a in "$HOME/Applications"/*.app; do [ -d "$a" ] && uapps+="${a##*/} "; done
-    [ -n "$uapps" ] && finding AMBER "Apps installed only for this account (~/Applications): ${uapps% } — reinstall them for this account after the wipe."
-  fi
   fi
   if [ "$PART" != user ]; then
   if [ -r /etc/hosts ] && [ "$(grep -v -E '^[[:space:]]*(#|$)' /etc/hosts | grep -v -E '[[:space:]](localhost|broadcasthost)$' | grep -c .)" -gt 0 ]; then
@@ -1909,7 +1907,8 @@ collect_cleanup() {
   st="$(node_modules_total)"
   n="${st%%$'\t'*}"; r="${st#*$'\t'}"; kb="${r%%$'\t'*}"
   if [ "${n:-0}" -gt 0 ]; then
-    clean_add node_modules "node_modules ($n folders$( [ "${r##*$'\t'}" = 1 ] && printf ', search timed out: lower bound'))" "$HOME" "$kb" 0
+    # The path is a pattern, not a folder: the aggregate must never read as "delete ~".
+    clean_add node_modules "node_modules ($n folders$( [ "${r##*$'\t'}" = 1 ] && printf ', search timed out: lower bound'))" "~/**/node_modules" "$kb" 0
   fi
 
   [ "$PROTECTED_DONE" = 1 ] || return 0
@@ -2069,6 +2068,7 @@ section_backup_plan() { # section_backup_plan "USER …"
   emit "# 1. on the Studio (rh-device-management): this host's REST login — prints rh7-restic:$HOST:<password> once"
   emit "~/rh-device-management/scripts/restic-server-add-host.sh $HOST"
   emit "# 2. on this Mac (restic: brew install restic, or nix shell nixpkgs#restic)"
+  [ "$ALL_USERS" = 1 ] && emit "RESTIC_BIN=\"\$(command -v restic)\"   # sudo's secure PATH has no Homebrew/Nix"
   emit "export RESTIC_REPOSITORY='rest:http://$HOST@$STUDIO_HOST:$RESTIC_PORT/$HOST/'"
   emit "read -rs RESTIC_REST_PASSWORD && export RESTIC_REST_PASSWORD   # paste the <password> part of the token"
   emit "# 3. the ENCRYPTION key — without it the archive is unreadable: escrow it in 1Password"
@@ -2080,7 +2080,7 @@ section_backup_plan() { # section_backup_plan "USER …"
   for u in $1; do
     args=""
     while IFS= read -r p; do [ -n "$p" ] && args+=" \\"$'\n'"    $(shq "$p")"; done < <(plan_paths "$u" RED)
-    [ -n "$args" ] && emit "${sudo_r}restic backup --tag pre-wipe --tag account:$u --exclude-caches$args"
+    [ -n "$args" ] && emit "${sudo_r}$( [ "$ALL_USERS" = 1 ] && printf '"$RESTIC_BIN"' || printf restic) backup --tag pre-wipe --tag account:$u --exclude-caches$args"
     amb=""
     while IFS= read -r p; do [ -n "$p" ] && amb+="#   $(shq "$p")"$'\n'; done < <(plan_paths "$u" AMBER)
     [ -n "$amb" ] && BODY+="# AMBER for $u:"$'\n'"$amb"
@@ -2093,10 +2093,9 @@ section_backup_plan() { # section_backup_plan "USER …"
   emit "Format the disk APFS in Disk Utility and name it \`PreWipe\`. \`ditto\` keeps permissions, extended attributes and dates."
   blank
   emit '```sh'
-  emit "${sudo_c}mkdir -p $(shq "/Volumes/PreWipe/$HOST")"
   for u in $1; do
     while IFS= read -r p; do
-      [ -n "$p" ] && emit "${sudo_c}ditto $(shq "$p") $(shq "/Volumes/PreWipe/$HOST$p")"
+      [ -n "$p" ] && emit "${sudo_c}mkdir -p $(shq "/Volumes/PreWipe/$HOST${p%/*}") && ${sudo_c}ditto $(shq "$p") $(shq "/Volumes/PreWipe/$HOST$p")"
     done < <(plan_paths "$u" RED)
   done
   emit "# or a full Time Machine backup of this Mac (Time Machine takes over its disk — use a separate one):"
@@ -2203,14 +2202,20 @@ run_all_users() {
   fi
   [ -d "$admin_home" ] || { echo "pre-wipe-check: cannot find the home of $admin for the report" >&2; exit 2; }
 
-  blocked="$(fda_probe "${probes[@]}")"; rc=$?
-  if [ "$rc" = 1 ]; then fda_help "$blocked" "${PWC_SELF:-pre-wipe-check.sh}" >&2; exit 2; fi
+  if [ "$SKIP_PROTECTED" = 1 ]; then
+    rc=3   # nothing protected is read, so Full Disk Access is not needed
+  else
+    blocked="$(fda_probe "${probes[@]}")"; rc=$?
+    if [ "$rc" = 1 ]; then fda_help "$blocked" "${PWC_SELF:-pre-wipe-check.sh}" >&2; exit 2; fi
+  fi
 
   progress "all accounts: ${names% } — each checked as itself; report goes to $admin_home"
   emit "Host: \`$HOST\` · $(scutil --get ComputerName 2>/dev/null) · macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null)"
   emit "Generated $(date '+%Y-%m-%d %H:%M %Z') by pre-wipe-check v$PWC_VERSION --all-users (run by \`$admin\`) · protected locations: $( [ "$SKIP_PROTECTED" = 1 ] && printf 'SKIPPED (--skip-protected)' || printf 'read')"
   blank
   [ "$rc" = 2 ] && finding AMBER "Full Disk Access could not be verified (no Mail/Safari/Messages folder to probe) — anything macOS hid is marked \"partly unreadable\"."
+  [ "$rc" = 3 ] && emit "Full Disk Access not checked: --skip-protected reads no protected location in any account."
+  [ "$rc" = 3 ] && blank
   [ -n "${CONFIG_SERVICE_ADMIN_TOKEN:-}" ] && progress "note: CONFIG_SERVICE_ADMIN_TOKEN is not forwarded to the per-account runs (it would show in ps)"
   section_accounts "$users" "$admin"
 
@@ -2352,10 +2357,8 @@ main() {
     fi
   fi
 
-  if [ "$PART" != user ]; then
-    section_control_plane
-    section_apps
-  fi
+  [ "$PART" = user ] || section_control_plane
+  section_apps
 
   if [ "$PART" != system ]; then
     progress "looking for git repos and .env files under ~ (depth 5)…"

@@ -283,6 +283,9 @@ check "zip is an archive, not an installer" archive "$(installer_kind 'GoogleChr
   check "cleanup: simulator caches"    SAFE-TO-DELETE "$(row 'Simulator caches')"
   check "cleanup: simulator devices"   REVIEW "$(row 'Simulator devices')"
   check "cleanup: node_modules found" SAFE-TO-DELETE "$(row 'node_modules (1 folders)')"
+  # shellcheck disable=SC2088  # display text, not a path
+  check "node_modules aggregate is a pattern, never ~ itself" "~/**/node_modules" \
+    "$(printf '%s' "$CLEAN_ROWS" | awk -F'\t' '$4 ~ /^node_modules/ { print $5 }')"
   check "cleanup: device backups REVIEW" REVIEW "$(row 'iPhone/iPad backups (1)')"
   check "device backups are an AMBER finding" "1 0" "$N_AMBER $N_RED"
   check "device backups go to the plan as AMBER" AMBER "$(printf '%s' "$PLAN_ROWS" | cut -f2)"
@@ -372,9 +375,11 @@ check "account section demoted"            yes "$(has $'## Account `kassie`\n\n#
 check "code comment not demoted"           yes "$(has $'```sh\n# not a heading' "$out")"
 check "child RED folded into the verdict"  yes "$(has '- [kassie] Crypto wallets' "$out")"
 check "verdict counts summed"              yes "$(has '1 RED (will be lost) · 1 AMBER (check) · 3 GREEN' "$out")"
-check "plan: restic line for kassie"       yes "$(has 'restic backup --tag pre-wipe --tag account:kassie' "$out")"
+check "plan: restic via resolved binary under sudo" yes \
+  "$(has 'RESTIC_BIN="$(command -v restic)"' "$out")"
+check "plan: restic line for kassie"       yes "$(has 'sudo --preserve-env=RESTIC_REPOSITORY,RESTIC_REST_PASSWORD,RESTIC_PASSWORD_FILE "$RESTIC_BIN" backup --tag pre-wipe --tag account:kassie' "$out")"
 check "plan: restic repo URL"              yes "$(has "rest:http://kassie-mbp@rouvens-mac-studio:8000/kassie-mbp/" "$out")"
-check "plan: sudo ditto for kassie's path" yes "$(has "sudo ditto '$USERS_ROOT/kassie/Library/Application Support/Exodus'" "$out")"
+check "plan: parent dir then ditto"        yes "$(has "sudo mkdir -p '/Volumes/PreWipe/kassie-mbp$USERS_ROOT/kassie/Library/Application Support' && sudo ditto '$USERS_ROOT/kassie/Library/Application Support/Exodus' '/Volumes/PreWipe/kassie-mbp$USERS_ROOT/kassie/Library/Application Support/Exodus'" "$out")"
 rep="$(printf '%s\n' "$USERS_ROOT"/rouven/pre-wipe-kassie-mbp-*.md | head -1)"
 check "report saved in the admin's home"   yes "$( [ -f "$rep" ] && echo yes || echo no)"
 check "report is mode 600"                 "-rw-------" "$(command ls -l "$rep" | cut -c1-10)"
@@ -386,6 +391,9 @@ out="$( HOST=kassie-mbp SUDO_USER=rouven ALL_USERS=1; run_all_users 2>&1 )"; rc=
 check "no FDA → exit 2"                    2 "$rc"
 check "no FDA → the grant steps"           yes "$(has 'Full Disk Access' "$out")"
 check "no FDA → nothing ran as an account" 0 "$(grep -c . "$TMP/sudo.log")"
+out="$( HOST=kassie-mbp SUDO_USER=rouven ALL_USERS=1 SKIP_PROTECTED=1; run_all_users 2>/dev/null )"; rc=$?
+check "--skip-protected: no FDA probe, accounts still checked" "1 yes" "$rc $(has 'Full Disk Access not checked' "$out")"
+check "--skip-protected reaches the children" 3 "$(grep -c -- '--skip-protected' "$TMP/sudo.log")"
 id() { case "$1" in -u) echo 501 ;; -un) echo rouven ;; esac; }
 out="$( run_all_users 2>&1 )"; rc=$?
 check "not root → exit 2 with the sudo line" "2 yes" "$rc $(has 'needs root' "$out")"

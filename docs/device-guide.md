@@ -719,14 +719,17 @@ sudo bash /tmp/pre-wipe-check.sh --all-users
 It lists every real account (UID ≥ 501, not hidden, home under `/Users`) with
 admin flag, home size and last login, then re-runs itself **as each account**
 (`sudo -u <account> -H`, script text on stdin) so that account's iCloud,
-browser and app settings are the ones read. The system-wide parts (apps,
-control plane, Time Machine) run once, as you. One combined report, with a
-section per account, is written to **your** home (owned by you, mode 600). An
-account whose check fails is RED in the verdict, never silently skipped.
+browser and app settings are the ones read. The system-wide parts (apps in
+`/Applications`, Homebrew, control plane, Time Machine) run once, as you; each
+account part also lists its own `~/Applications` and npm/pipx/uv tools. One
+combined report, with a section per account, is written to **your** home
+(owned by you, mode 600). An account whose check fails is RED in the verdict,
+never silently skipped.
 
-**Full Disk Access is required.** Without it macOS hides other accounts' Mail,
-Messages, Safari and app data even from root, so the script probes those
-folders first and refuses to run (exit 2) with these steps:
+**Full Disk Access is required** (unless you pass `--skip-protected`, which
+reads no protected location in any account). Without it macOS hides other
+accounts' Mail, Messages, Safari and app data even from root, so the script
+probes those folders first and refuses to run (exit 2) with these steps:
 
 1. System Settings → Privacy & Security → **Full Disk Access**
    (`open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`).
