@@ -295,7 +295,7 @@ sub_load
 
 echo "== crypto wallets =="
 ( H="$TMP/home-wallet"; HOME="$H"; APPS_DIR="$TMP/Applications"; PART=all; PLAN_USER=kassie
-  mkdir -p "$H/.electrum/wallets"; : > "$H/.electrum/wallets/default_wallet"
+  mkdir -p "$H/.electrum/wallets" "$H/Library/Application Support/Electrum"; : > "$H/.electrum/wallets/default_wallet"
   mkdir -p "$H/Library/Application Support/Exodus" "$H/.electrum" "$APPS_DIR/Ledger Live.app" "$APPS_DIR/Exodus.app" \
     "$H/Library/Application Support/Google/Chrome/Profile 1/Extensions/nkbihfbeogaeaoehlefnkodbefgpgknn" \
     "$H/Library/Application Support/Google/Chrome/Profile 1/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn" \
@@ -312,7 +312,9 @@ echo "== crypto wallets =="
   check "one RED for the seed phrases"       1 "$N_RED"
   check "RED text" yes "$(has 'confirm the seed phrase / recovery for each wallet is stored offline before any change; local wallet files may hold keys' "$RED_ITEMS")"
   check "app-only wallet → AMBER (another account?)" 1 "$N_AMBER"
-  check "local-key wallet data + both extensions go to the plan (not Ledger)" 4 "$(printf '%s' "$PLAN_ROWS" | grep -c RED)"
+  check "local-key wallet data (both Electrum dirs) + both extensions go to the plan (not Ledger)" 5 "$(printf '%s' "$PLAN_ROWS" | grep -c RED)"
+  check "every existing wallet data dir is listed" 2 "$(printf '%s' "$WALLET_ROWS" | grep -c '^Electrum')"
+  check "wallet named once in the RED item" 1 "$(printf '%s' "$RED_ITEMS" | grep -o 'Electrum' | grep -c .)"
   check "Firefox profile is in the plan (size unknown)" "?" \
     "$(printf '%s' "$PLAN_ROWS" | awk -F'\t' '$4 ~ /Firefox/ { print $3 }')"
   check "never lists a wallet file name" no "$(has 'default_wallet' "$BODY")"

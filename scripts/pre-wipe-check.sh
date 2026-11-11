@@ -978,7 +978,9 @@ section_apps() {
             [ -n "$s" ] && hint="search: ${s% }"
           fi
         fi
-        [ -n "$hint" ] || hint="(brew not installed)"
+        if [ -z "$hint" ]; then
+          if [ "$PART" = user ]; then hint="per-account install (no cask lookup here)"; else hint="(brew not installed)"; fi
+        fi
         t_manual+="| $(md_cell "$base") | $(md_cell "$ver") | $(md_cell "$bid") | $(md_cell "$hint") |"$'\n' ;;
     esac
   done < <(printf '%s\n' "$info")
@@ -1727,16 +1729,19 @@ collect_wallets() {
       [ -n "$a" ] || continue
       if [ -d "$APPS_DIR/$a" ] || [ -d "$HOME/Applications/$a" ]; then app=1; break; fi
     done
+    # Every existing data dir is its own row (e.g. ~/.electrum AND an older
+    # Application Support copy): each may hold keys and must reach the plan.
     path=""; rest="$dirs;"
     while [ -n "$rest" ]; do
       d="${rest%%;*}"; rest="${rest#*;}"
-      [ -n "$d" ] || continue
-      if [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then path="$HOME/$d"; break; fi
+      [ -n "$d" ] && [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ] || continue
+      path="$HOME/$d"
+      du_size "$path"
+      WALLET_ROWS+="$name"$'\t'"$keys"$'\t'"$app"$'\t'"$DU_KB"$'\t'"$DU_DENIED"$'\t'"$path"$'\n'
     done
-    [ "$app" = 1 ] || [ -n "$path" ] || continue
-    DU_KB="-"; DU_DENIED=0   # "-" = not sized: an empty field would collapse in a tab read
-    [ -n "$path" ] && du_size "$path"
-    WALLET_ROWS+="$name"$'\t'"$keys"$'\t'"$app"$'\t'"$DU_KB"$'\t'"$DU_DENIED"$'\t'"$path"$'\n'
+    # App installed, no data here: "-" = not sized (an empty field would
+    # collapse in a tab read).
+    [ "$app" = 1 ] && [ -z "$path" ] && WALLET_ROWS+="$name"$'\t'"$keys"$'\t'"1"$'\t'"-"$'\t'"0"$'\t'$'\n'
   done < <(printf '%s\n' "$WALLET_APPS")
 
   local as="$HOME/Library/Application Support" b dir prof id ename les
@@ -1783,7 +1788,7 @@ section_wallets() {
     if [ "$keys" = local ]; then kdesc="may be stored in these files (encrypted wallet)"
     else kdesc="on the hardware device; this data is a cache"; fi
     if [ -n "$path" ]; then
-      here+="$name, "
+      case ", $here" in *", $name, "*) ;; *) here+="$name, " ;; esac
       emit "| $name | $( [ "$app" = 1 ] && printf yes || printf no) | \`$(md_cell "$(tilde_path "$path")")\` | $(size_label "$kb" "$den") | $kdesc |"
       [ "$keys" = local ] && plan_path RED "$kb" "$path" "$name wallet data"
     else
@@ -2325,6 +2330,15 @@ main() {
   local user_nix_bin
   user_nix_bin="/etc/profiles/per-user/$(id -un)/bin"
   export PATH="$user_nix_bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+  if [ -n "$AS_USER" ]; then
+    # sudo -u gives a bare system PATH; add the account's own tool dirs so its
+    # npm/pipx/uv (installed under ~) are found like in a login shell.
+    local d
+    for d in "$HOME"/.nvm/versions/node/*/bin "$HOME"/Library/Python/*/bin "$HOME/.volta/bin" \
+             "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"; do
+      [ -d "$d" ] && PATH="$d:$PATH"
+    done
+  fi
   export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
   local raw_host lhn
