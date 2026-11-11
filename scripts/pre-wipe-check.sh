@@ -5,6 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/pre-wipe-check.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/pre-wipe-check.sh | bash -s -- --skip-protected
 #   ./scripts/pre-wipe-check.sh [--skip-protected] [--suggest-casks] [--offline] [--host NAME]
+#   sudo ./scripts/pre-wipe-check.sh --all-users [--skip-protected] [--offline] [--host NAME]
 #
 #   --skip-protected  never touch macOS privacy-protected locations (Desktop,
 #                     Documents, Downloads, Pictures/Photos, iCloud Drive,
@@ -16,19 +17,27 @@
 #   --offline         do not query the fleet control plane
 #   --host NAME       control-plane hostname to check (default: this Mac's
 #                     hostname, lowercased, without .local)
+#   --all-users       admin mode: run with sudo from a terminal that has Full
+#                     Disk Access. Lists every real account (UID >= 501, not
+#                     hidden, home under /Users) and checks each one AS that
+#                     account (sudo -u), into one combined report owned by you.
 #
 # What it guarantees:
 #   * Read-only. The only file this script writes is the report,
-#     ~/pre-wipe-<host>-<YYYYmmdd-HHMM>.md (mode 600). Git is run with
+#     ~/pre-wipe-<host>-<YYYYmmdd-HHMM>.md (mode 600; with --all-users it is
+#     written as, and into the home of, the admin who ran sudo). Git is run with
 #     GIT_OPTIONAL_LOCKS=0 so `git status` does not refresh the index. Here-strings
 #     are avoided because bash 3.2 backs them with temp files. Tools it queries
 #     may still touch their OWN caches: Homebrew (bootsnap disabled, but it can
 #     refresh ~/Library/Caches/Homebrew) and gpg (may start gpg-agent). npm logs
-#     are turned off. No user data is ever modified.
+#     are turned off. No user data is ever modified or deleted — the cleanup
+#     section only measures.
 #   * Nothing leaves the machine except one GET of this host's retirement verdict
 #     from the fleet config service. No file names or contents are uploaded.
-#   * No sudo. Things that need root are named, not attempted.
+#   * No sudo, except --all-users, which must itself be started with sudo; it
+#     only uses root to list accounts, size homes and drop to each account.
 #   * Secrets: names, counts and public fingerprints only — never contents.
+#     Wallet files are never opened: presence and folder size only.
 #   * Stock macOS only (bash 3.2, osascript/JXA for JSON+plists, du, find,
 #     defaults, plutil, perl for timeouts). brew/mas/jq/gpg/npm/pipx/uv are used
 #     when present; /usr/bin/git is used only when the developer tools are
@@ -47,13 +56,59 @@ SKIP_PROTECTED=0
 SUGGEST_CASKS=0
 OFFLINE=0
 HOST_OVERRIDE=""
+ALL_USERS=0       # --all-users: root parent that re-invokes itself per account
+AS_USER=""        # --as-user NAME: internal, the per-account child
+PART=all          # --part system|user: what a child checks (all = single-user run)
 
 BIG_KB=102400      # 100 MB: a local-only folder this size is called out RED
 SMALL_KB=1024      # 1 MB: below this a folder is treated as empty
 DU_TIMEOUT=20      # seconds per du target
 SIZE_BUDGET=100    # seconds of du across the whole run before sizing stops
+CLEANUP_BUDGET=120 # fresh du budget for the cleanup + wallet sections
 GIT_TIMEOUT=10     # seconds per git command
 FIND_TIMEOUT=60    # seconds for the repo discovery walk
+LARGE_FIND_TIMEOUT=120 # seconds for the largest-files walk
+LARGE_MIN_MB=500   # "largest files" threshold
+LARGE_TOP=30       # rows in the largest-files table
+INSTALLER_MIN_MB=200
+ACCOUNT_DU_TIMEOUT=90  # --all-users: seconds to size one whole home
+
+USERS_ROOT=/Users      # real accounts' homes live here
+APPS_DIR=/Applications
+STUDIO_HOST=rouvens-mac-studio   # fleet restic REST server (rh-device-management)
+RESTIC_PORT=8000
+STUDIO_FREE_NOTE="433 GB free on 2026-11-11"
+
+# Chromium-family browsers: "Label:path under ~/Library/Application Support".
+CHROMIUM_BROWSERS="Google Chrome:Google/Chrome
+Brave:BraveSoftware/Brave-Browser
+Microsoft Edge:Microsoft Edge
+Vivaldi:Vivaldi
+Arc:Arc/User Data
+Dia:Dia/User Data
+Chromium:Chromium"
+
+# Wallet apps: "Name|keys|app bundles;…|data dirs under ~;…". keys=local means
+# the app's own files may hold (encrypted) private keys; hardware means the
+# keys are on a device and the app data is a cache. Folders are only tested
+# for existence and sized — never opened.
+WALLET_APPS="Exodus|local|Exodus.app|Library/Application Support/Exodus
+Electrum|local|Electrum.app|.electrum;Library/Application Support/Electrum
+Ledger Live|hardware|Ledger Live.app|Library/Application Support/Ledger Live
+MyCrypto|local|MyCrypto.app|Library/Application Support/MyCrypto
+KeepKey|hardware|KeepKey Desktop.app;KeepKey Client.app;KeepKey.app|Library/Application Support/KeepKey;Library/Application Support/keepkey-desktop;Library/Application Support/KeepKey Desktop
+Cypherock|hardware|cySync.app;Cypherock cySync.app;Cypherock.app|Library/Application Support/cySync;Library/Application Support/Cypherock
+Atomic Wallet|local|Atomic Wallet.app|Library/Application Support/atomic;Library/Application Support/Atomic Wallet"
+# Wallet browser extensions (Chrome Web Store ids): "id|Name".
+WALLET_EXTENSIONS="nkbihfbeogaeaoehlefnkodbefgpgknn|MetaMask
+bfnaelmomeimhlpmgjnjophhpkkoljpa|Phantom
+hnfanknocfeofbddgcijnmhnfnkdnaad|Coinbase Wallet
+acmacodkjbdgmoleebolmdjonilkdbch|Rabby"
+
+# The script's own text, for --all-users re-invocation (fed to each child on
+# stdin, so an account that cannot read the admin's home can still run it).
+PWC_SELF="${BASH_SOURCE[0]:-}"
+SELF_TEXT=""
 
 # ── report buffer + findings ────────────────────────────────────────────────
 # The verdict goes at the TOP but is only known at the end, so the body is
@@ -61,10 +116,17 @@ FIND_TIMEOUT=60    # seconds for the repo discovery walk
 BODY=""
 N_RED=0; N_AMBER=0; N_GREEN=0
 RED_ITEMS=""; AMBER_ITEMS=""
+PLAN_ROWS=""     # "USER\tLEVEL\tKB\tPATH\tLABEL" — what the backup plan copies
+PLAN_USER=""
+PROGRESS_TAG="pre-wipe"
 
 emit()  { BODY+="$*"$'\n'; }
 blank() { BODY+=$'\n'; }
-progress() { printf '[pre-wipe] %s\n' "$*" >&2; }
+progress() { printf '[%s] %s\n' "$PROGRESS_TAG" "$*" >&2; }
+
+# plan_path LEVEL KB PATH LABEL — a local-only path the backup plan must copy
+# (RED) or should consider (AMBER). KB may be "?".
+plan_path() { PLAN_ROWS+="$PLAN_USER"$'\t'"$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"$'\n'; }
 
 finding() { # finding RED|AMBER|GREEN text
   case "$1" in
@@ -230,7 +292,7 @@ appdata_flag() {
     com.docker.docker|"Docker Desktop"|*dev.orbstack*|OrbStack)
       printf 'AMBER\tcontainer volumes are local only (images re-pull)\n' ;;
     MobileSync)
-      printf 'VM\tlocal iPhone/iPad backups\n' ;;
+      printf 'NONE\tdevice backups: judged under Data cleanup candidates\n' ;;
     obsidian)
       printf 'NONE\tvaults checked separately below\n' ;;
   esac
@@ -273,6 +335,227 @@ table_get() { # table_get TABLE KEY
     *$'\n'"$k"$'\t'*) rest="${t#*$'\n'"$k"$'\t'}"; printf '%s' "${rest%%$'\n'*}"; return 0 ;;
   esac
   return 1
+}
+
+# ── multi-user + cleanup helpers (covered by the test file, with stubs) ─────
+
+# dscl . -read /Users/NAME NFSHomeDirectory IsHidden → "HOME<TAB>HIDDEN(0|1)".
+# dscl puts a value containing spaces on its own indented line, and reports
+# IsHidden as "dsAttrTypeNative:IsHidden".
+parse_dscl_user() {
+  awk '
+    /^[^ \t]/ {
+      line = $0; sub(/^dsAttrTypeNative:/, "", line)
+      key = line; sub(/:.*/, "", key)
+      val = line; sub(/^[^:]*:[ \t]*/, "", val)
+      if (val != "") v[key] = val
+      next
+    }
+    /^[ \t]/ { if (key != "" && !(key in v)) { s = $0; sub(/^[ \t]+/, "", s); v[key] = s } }
+    END {
+      h = ("NFSHomeDirectory" in v) ? v["NFSHomeDirectory"] : ""
+      x = ("IsHidden" in v) ? tolower(v["IsHidden"]) : ""
+      printf "%s\t%d\n", h, (x == "1" || x == "yes" || x == "true")
+    }'
+}
+
+# Real, visible local accounts → "NAME<TAB>UID<TAB>HOME". Excludes system
+# accounts (UID < 501, _names), hidden accounts (IsHidden) and anything whose
+# home is not an existing folder under $USERS_ROOT (sharing-only users).
+list_real_users() {
+  local name uid info home hidden
+  dscl . -list /Users UniqueID 2>/dev/null | while read -r name uid; do
+    case "$name" in ''|_*) continue ;; esac
+    case "$uid" in ''|*[!0-9]*) continue ;; esac
+    [ "$uid" -ge 501 ] || continue
+    info="$(dscl . -read "/Users/$name" NFSHomeDirectory IsHidden 2>/dev/null | parse_dscl_user)"
+    home="${info%%$'\t'*}"; hidden="${info##*$'\t'}"
+    [ "$hidden" = 1 ] && continue
+    case "$home" in "$USERS_ROOT"/?*) ;; *) continue ;; esac
+    [ -d "$home" ] || continue
+    printf '%s\t%s\t%s\n' "$name" "$uid" "$home"
+  done
+}
+
+user_is_admin() { # user_is_admin NAME
+  local m
+  m=" $(dscl . -read /Groups/admin GroupMembership 2>/dev/null | sed 's/^GroupMembership://' | tr '\n' ' ') "
+  case "$m" in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+last_login() { # last_login NAME → "Wed Nov 11 16:26" or nothing
+  run_timeout 10 last -1 "$1" 2>/dev/null \
+    | sed -n -E '/^wtmp begins/d; s/.*([A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}).*/\1/p' | head -1
+}
+
+# fda_probe DIR... — Full Disk Access check: TCC lets anyone stat these
+# folders but only an FDA-granted terminal list them, even as root.
+# Prints the first blocked folder. 0 = all readable, 1 = blocked, 2 = none exist.
+fda_probe() {
+  local p any=0
+  for p in "$@"; do
+    [ -d "$p" ] || continue
+    any=1
+    if ! ls -A "$p" >/dev/null 2>&1; then printf '%s\n' "$p"; return 1; fi
+  done
+  [ "$any" = 1 ] || return 2
+  return 0
+}
+
+fda_help() { # fda_help BLOCKED_DIR SELF
+  local term
+  case "${TERM_PROGRAM:-}" in
+    Apple_Terminal) term="Terminal (/System/Applications/Utilities/Terminal.app)" ;;
+    iTerm.app) term="iTerm (/Applications/iTerm.app)" ;;
+    ghostty) term="Ghostty (/Applications/Ghostty.app)" ;;
+    WezTerm) term="WezTerm" ;;
+    vscode) term="Visual Studio Code (its integrated terminal)" ;;
+    '') term="the terminal app you ran sudo from (Terminal, iTerm, Ghostty, …)" ;;
+    *) term="your terminal app ($TERM_PROGRAM)" ;;
+  esac
+  printf '%s\n' \
+    "pre-wipe-check: this terminal does not have Full Disk Access." \
+    "macOS refused to list $1 even as root, so other accounts' Mail, Messages," \
+    "Safari and app data would silently be missing from the report. Nothing was checked." \
+    "" \
+    "Grant it, then re-run:" \
+    "  1. Open System Settings → Privacy & Security → Full Disk Access" \
+    "     (shortcut: open \"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles\")" \
+    "  2. Click +, authenticate with your admin password, and add $term." \
+    "     In the file picker, ⇧⌘G and type /Applications or /System/Applications/Utilities." \
+    "  3. Make sure its switch is ON." \
+    "  4. Quit the terminal completely (⌘Q) and open it again — the grant only applies to newly started apps." \
+    "  5. Re-run: sudo $2 --all-users" \
+    "" \
+    "Revoke it afterwards in the same pane if you do not want the terminal to keep it."
+}
+
+# build_child_argv NAME HOME PART → CHILD_ARGV: re-run this script AS that
+# account with its own HOME, so iCloud/defaults/keychain-adjacent reads are
+# that account's. The script text arrives on stdin (bash -s): the account may
+# not be able to read the admin's copy of it.
+build_child_argv() {
+  CHILD_ARGV=(sudo -n -u "$1" -H /usr/bin/env "HOME=$2" "USER=$1" "LOGNAME=$1")
+  [ "$3" = system ] && [ -n "${CONFIG_SERVICE_URL:-}" ] && CHILD_ARGV+=("CONFIG_SERVICE_URL=$CONFIG_SERVICE_URL")
+  CHILD_ARGV+=(/bin/bash -s -- --as-user "$1" --part "$3")
+  [ "$SKIP_PROTECTED" = 1 ] && CHILD_ARGV+=(--skip-protected)
+  [ "$OFFLINE" = 1 ] && CHILD_ARGV+=(--offline)
+  [ "$3" = system ] && [ "$SUGGEST_CASKS" = 1 ] && CHILD_ARGV+=(--suggest-casks)
+  [ -n "$HOST_OVERRIDE" ] && CHILD_ARGV+=(--host "$HOST_OVERRIDE")
+  return 0
+}
+
+# A child prints its findings as a fragment; the parent folds it in.
+emit_fragment() {
+  local l
+  printf '@@PWC-FRAGMENT\t1\n'
+  printf '@@COUNTS\t%s\t%s\t%s\n' "$N_RED" "$N_AMBER" "$N_GREEN"
+  [ -z "$CFG_URL" ] || printf '@@CFG\t%s\n' "$CFG_URL"
+  while IFS= read -r l; do [ -z "$l" ] || printf '@@RED\t%s\n' "${l#- }"; done < <(printf '%s' "$RED_ITEMS")
+  while IFS= read -r l; do [ -z "$l" ] || printf '@@AMBER\t%s\n' "${l#- }"; done < <(printf '%s' "$AMBER_ITEMS")
+  while IFS= read -r l; do [ -z "$l" ] || printf '@@PLAN\t%s\n' "$l"; done < <(printf '%s' "$PLAN_ROWS")
+  printf '@@BODY\n%s@@END\n' "$BODY"
+}
+
+# parse_fragment TEXT LABEL — adds the child's counts, items (prefixed
+# "[LABEL]") and plan rows; sets FRAG_BODY. 1 = not a complete fragment.
+parse_fragment() {
+  local text="$1" hdr line a b c
+  FRAG_BODY=""
+  case "$text" in "@@PWC-FRAGMENT"$'\t'1$'\n'*$'\n'@@BODY$'\n'*@@END) ;; *) return 1 ;; esac
+  hdr="${text%%$'\n'@@BODY$'\n'*}"
+  FRAG_BODY="${text#*$'\n'@@BODY$'\n'}"; FRAG_BODY="${FRAG_BODY%@@END}"
+  while IFS= read -r line; do
+    case "$line" in
+      @@COUNTS$'\t'*)
+        line="${line#*$'\t'}"; a="${line%%$'\t'*}"; line="${line#*$'\t'}"
+        b="${line%%$'\t'*}"; c="${line#*$'\t'}"
+        case "$a" in ''|*[!0-9]*) return 1 ;; esac
+        case "$b" in ''|*[!0-9]*) return 1 ;; esac
+        case "$c" in ''|*[!0-9]*) return 1 ;; esac
+        N_RED=$((N_RED + a)); N_AMBER=$((N_AMBER + b)); N_GREEN=$((N_GREEN + c)) ;;
+      @@RED$'\t'*)   RED_ITEMS+="- [$2] ${line#*$'\t'}"$'\n' ;;
+      @@AMBER$'\t'*) AMBER_ITEMS+="- [$2] ${line#*$'\t'}"$'\n' ;;
+      @@PLAN$'\t'*)  PLAN_ROWS+="${line#*$'\t'}"$'\n' ;;
+      @@CFG$'\t'*)   CFG_URL="${line#*$'\t'}" ;;
+    esac
+  done < <(printf '%s\n' "$hdr")
+  return 0
+}
+
+# One heading level down, outside code fences (per-account sections nest
+# under "## Account …").
+demote_headings() { awk '/^```/ { f = !f } !f && /^#/ { print "#" $0; next } { print }'; }
+
+# Data cleanup classes. → "CLASS<TAB>note"
+cleanup_class() {
+  case "$1" in
+    caches)        printf 'SAFE-TO-DELETE\tapps rebuild their caches\n' ;;
+    deriveddata)   printf 'SAFE-TO-DELETE\tXcode rebuilds it\n' ;;
+    devicesupport) printf 'SAFE-TO-DELETE\tXcode copies device symbols again when a device connects\n' ;;
+    coresimulator) printf 'SAFE-TO-DELETE\tsimulator runtimes/devices re-download (`xcrun simctl delete unavailable` trims safely)\n' ;;
+    maildownloads) printf 'SAFE-TO-DELETE\tcopies of attachments opened from Mail; the originals stay in the mailbox\n' ;;
+    conda-pkgs)    printf 'SAFE-TO-DELETE\tconda package cache (`conda clean --all`)\n' ;;
+    cargo)         printf 'SAFE-TO-DELETE\tRust registry/git caches and `cargo install` binaries (note `cargo install --list` first)\n' ;;
+    rustup)        printf 'SAFE-TO-DELETE\tRust toolchains; rustup reinstalls them\n' ;;
+    node_modules)  printf 'SAFE-TO-DELETE\t`npm install` recreates them\n' ;;
+    installer-installed) printf 'SAFE-TO-DELETE\tinstaller for an app that is installed\n' ;;
+    xcarchives)    printf 'REVIEW\tholds the dSYMs of shipped builds\n' ;;
+    mobilesync)    printf 'REVIEW\tmay be the ONLY copy of an old iPhone/iPad: keep or copy off, not cleanup\n' ;;
+    trash)         printf 'REVIEW\talready discarded, but look before emptying\n' ;;
+    downloads)     printf 'REVIEW\tnever synced; sort before deleting\n' ;;
+    conda-env)     printf 'REVIEW\texport first: `conda env export -n <env> > <env>.yml`\n' ;;
+    docker|orbstack) printf 'REVIEW\timages re-pull; volumes and VM disks are local only\n' ;;
+    installer)     printf 'REVIEW\tno matching installed app found\n' ;;
+    archive)       printf 'REVIEW\tzip archive: may hold data, not just an installer\n' ;;
+    photos-dup)    printf 'REVIEW\tseveral Photos libraries: only the System Photo Library syncs with iCloud Photos\n' ;;
+    photos)        printf 'KEEP\tthe Photos library (see Photos above)\n' ;;
+    *)             printf 'KEEP\tunclassified\n' ;;
+  esac
+}
+
+letters_only() { lower "${1%.app}" | tr -cd 'a-z'; }
+
+# installer_kind FILENAME APPS("\nletters\n…", from letters_only) →
+# installer-installed | installer | archive. Matches the installer's leading
+# name (before any version digits) against installed app names; both sides
+# must be >= 4 letters, so "vlc" stays REVIEW rather than risk a false SAFE.
+installer_kind() {
+  local n stem a
+  n="$(lower "$1")"
+  case "$n" in *.zip) echo archive; return ;; esac
+  n="${n%.*}"; n="${n%%[0-9]*}"
+  stem="$(printf '%s' "$n" | tr -cd 'a-z')"
+  if [ "${#stem}" -ge 4 ]; then
+    while IFS= read -r a; do
+      [ "${#a}" -ge 4 ] || continue
+      case "$stem" in "$a"*) echo installer-installed; return ;; esac
+      case "$a" in "$stem"*) echo installer-installed; return ;; esac
+    done < <(printf '%s\n' "$2")
+  fi
+  echo installer
+}
+
+fmt_epoch() { [ -n "$1" ] && date -r "$1" '+%Y-%m-%d' 2>/dev/null; }
+
+# Single-quote for a copy-pasteable shell command. The quote and its escape go
+# through variables: bash 3.2 and 5 parse a quoted replacement differently.
+shq() { local q="'" r="'\\''"; local s="${1//$q/$r}"; printf "'%s'" "$s"; }
+
+# plan_summary USER LEVEL → "KB<TAB>PATHS<TAB>UNKNOWN_SIZES" over the plan
+# rows, a path inside another listed path counted once (via its ancestor).
+plan_summary() {
+  printf '%s' "$PLAN_ROWS" | awk -F'\t' -v u="$1" -v lv="$2" '$1 == u && $2 == lv { print $4 "\t" $3 }' \
+    | LC_ALL=C sort -t$'\t' -k1,1 -u \
+    | awk -F'\t' '{ for (i = 1; i <= n; i++) if (index($1, k[i] "/") == 1) next
+                    k[++n] = $1; if ($2 ~ /^[0-9]+$/) s += $2; else unk++ }
+                  END { printf "%d\t%d\t%d\n", s, n, unk }'
+}
+plan_paths() { # plan_paths USER LEVEL → unique paths, ancestors win
+  printf '%s' "$PLAN_ROWS" | awk -F'\t' -v u="$1" -v lv="$2" '$1 == u && $2 == lv { print $4 }' \
+    | LC_ALL=C sort -u \
+    | awk '{ for (i = 1; i <= n; i++) if (index($0, k[i] "/") == 1) next; k[++n] = $0; print }'
 }
 
 # ── platform helpers ───────────────────────────────────────────────────────
@@ -639,8 +922,11 @@ section_apps() {
     mas_map+=$'\n'
   fi
 
-  local paths info
-  paths="$(find /Applications "$HOME/Applications" -maxdepth 3 -name '*.app' -prune -print 2>/dev/null | LC_ALL=C sort -f)"
+  # --all-users: ~/Applications is per account, reported in each account's part.
+  local paths info where="/Applications and ~/Applications"
+  local -a roots=(/Applications "$HOME/Applications")
+  [ "$PART" = system ] && { roots=(/Applications); where="/Applications (per-account ~/Applications: under each account)"; }
+  paths="$(find "${roots[@]}" -maxdepth 3 -name '*.app' -prune -print 2>/dev/null | LC_ALL=C sort -f)"
   info="$(printf '%s\n' "$paths" | osascript -l JavaScript -e "$JXA_APPINFO" 2>/dev/null)"
 
   local t_mas="" t_brew="" t_nix="" t_setapp="" t_manual="" mas_lines="" n_apple=0 n_mas=0 n_brew=0 n_nix=0
@@ -691,7 +977,7 @@ section_apps() {
     esac
   done < <(printf '%s\n' "$info")
 
-  emit "Apple system apps skipped: $n_apple. Every other \`.app\` in /Applications and ~/Applications:"
+  emit "Apple system apps skipped: $n_apple. Every other \`.app\` in $where:"
   blank
   if [ "$n_mas" -gt 0 ]; then
     finding GREEN "$n_mas App Store app(s) — reinstall from the App Store (\`mas install <id>\`)."
@@ -970,7 +1256,9 @@ section_local_data() {
       esac
     fi
     case "$lvl" in
-      RED|AMBER) FINDINGS_DEFERRED+="$lvl"$'\t'"\`~/$name\` — $dlabel — $note"$'\n' ;;
+      RED|AMBER)
+        FINDINGS_DEFERRED+="$lvl"$'\t'"\`~/$name\` — $dlabel — $note"$'\n'
+        [ "$lvl" = RED ] && plan_path RED "$kb" "$HOME/$name" "~/$name" ;;
       REPO)
         n_repo_dirs=$((n_repo_dirs + 1))
         if [ "$n_repo_dirs" -le 8 ]; then repo_dirs+="~/$name ($dlabel), "
@@ -1004,6 +1292,9 @@ section_local_data() {
         finding GREEN "iCloud Photos reported on by the iCloud account (best effort). With \"Optimize Mac Storage\" the originals are in iCloud; check Photos → Settings → iCloud shows no pending uploads."
       else
         finding AMBER "Photos library present, iCloud Photos not confirmed — check Photos → Settings → iCloud, or copy the library."
+        while IFS=$'\t' read -r kb den e; do
+          [ -n "$e" ] && plan_path AMBER "$kb" "$e" "Photos library"
+        done < <(printf '%s' "$PHOTO_ROWS")
       fi
     fi
   else
@@ -1024,12 +1315,14 @@ section_local_data() {
     finding GREEN "Messages in iCloud reported on (best effort). ~/Library/Messages: $msz."
   else
     finding AMBER "Messages in iCloud not confirmed (Messages → Settings → iMessage). ~/Library/Messages: $msz."
+    [ "$PROTECTED_DONE" = 1 ] && [ -n "$MSG_KB" ] && plan_path AMBER "$MSG_KB" "$HOME/Library/Messages" "Messages history"
   fi
   if [ "$PROTECTED_DONE" = 1 ] && [ -n "$MAIL_KB" ]; then
     if [ "$MAIL_KB" = "?" ] || [ "$MAIL_DENIED" = 1 ]; then
       finding AMBER "Local Mail store $(size_label "$MAIL_KB" "$MAIL_DENIED") — give the terminal Full Disk Access, or check Mail for \"On My Mac\" mailboxes by hand."
     elif [ "$MAIL_KB" -ge "$BIG_KB" ]; then
       finding AMBER "Local Mail store $(size_label "$MAIL_KB" "$MAIL_DENIED") — IMAP/iCloud mail re-downloads, \"On My Mac\" mailboxes do not."
+      plan_path AMBER "$MAIL_KB" "$HOME/Library/Mail" "Mail store"
     else
       emit "- ~/Library/Mail: $(size_label "$MAIL_KB" "$MAIL_DENIED")"
     fi
@@ -1092,6 +1385,14 @@ appdata_table() { # appdata_table ROWS TITLE
       else lvl=NONE; fi
     fi
     [ "$lvl" = NONE ] || finding "$lvl" "$name: $note ($(size_label "$kb" "$den"))."
+    if [ "$lvl" = RED ]; then
+      local src="$HOME/Library/Application Support/$name"
+      case "$2" in *Containers*)
+        src="$HOME/Library/Containers/$name"
+        [ -e "$src" ] || src="$HOME/Library/Group Containers/$name" ;;
+      esac
+      plan_path RED "$kb" "$src" "$name app data"
+    fi
   done < <(printf '%s' "$rows" | awk -F'\t' 'BEGIN{OFS="\t"} { s=($1 ~ /^[0-9]+$/) ? $1 : -1; print s, $0 }' | sort -t$'\t' -k1,1nr | cut -f2-)
   if [ "$big" -gt 0 ]; then
     finding AMBER "$big app-data folder(s) of 100 MB+ under $2 that a reinstall will not restore — confirm each app syncs or is disposable: ${big_names%, }$( [ "$big" -gt 8 ] && printf ', …')."
@@ -1133,6 +1434,7 @@ section_app_data() {
         finding AMBER "Obsidian vault is a git repo (see Git): \`$(tilde_path "$vp")\`."
       else
         finding RED "Obsidian vault outside any cloud root: \`$(tilde_path "$vp")\` (unless you pay for Obsidian Sync)."
+        plan_path RED "?" "$vp" "Obsidian vault"
       fi
     done < <(jxa_json 'var v = d.vaults || {}; return Object.keys(v).map(function (k) { return v[k].path; }).join("\n");' < "$oj")
   fi
@@ -1205,6 +1507,7 @@ section_git() {
       fi
       if git_at_risk "$dirty" "$unpushed" "$noremote" "$stashes"; then
         at=$((at + 1))
+        plan_path RED "?" "$r" "git repo with unpushed/uncommitted work"
         if [ "$shared" = 1 ]; then
           rows+="| \`$(md_cell "$(tilde_path "$r")")\` | $dirty | $unpushed (worktree; branches counted at main checkout) | – | – |"$'\n'
         else
@@ -1290,9 +1593,11 @@ section_secrets() {
 # ── section 5: backups & pre-erase ─────────────────────────────────────────
 
 section_backups() {
-  emit "## 5. Backups & before you erase"
+  if [ "$PART" = user ]; then emit "## 8. Before you erase (this account)"
+  else emit "## 8. Backups & before you erase"; fi
   blank
   progress "checking Time Machine, FileVault, Find My, browsers…"
+  if [ "$PART" != user ]; then
   local di names latest
   di="$(run_timeout 10 tmutil destinationinfo 2>/dev/null)"
   names="$(printf '%s\n' "$di" | sed -n -E 's/^Name[[:space:]]*:[[:space:]]*//p' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
@@ -1317,7 +1622,9 @@ section_backups() {
 
   local fv; fv="$(fdesetup status 2>/dev/null | head -1)"; fv="${fv%.}"
   emit "- FileVault: ${fv:-status unknown}. (Personal recovery-key status needs root: \`sudo fdesetup haspersonalrecoverykey\` — irrelevant once you erase.)"
+  fi
 
+  if [ "$PART" != system ]; then
   if icloud_service FIND_MY_MAC; then
     finding AMBER "Find My Mac is ON — sign out of iCloud (System Settings → Apple Account → Sign Out) before \"Erase All Content and Settings\", or the Mac stays Activation-Locked to your Apple Account."
   elif [ "$ICLOUD_SIGNED_IN" = 1 ]; then
@@ -1328,13 +1635,15 @@ section_backups() {
   elif [ "$ICLOUD_SIGNED_IN" = 1 ]; then
     finding AMBER "iCloud Keychain not reported on — passwords saved only in the local login keychain will be lost."
   fi
+  fi
   blank
 
+  if [ "$PART" != system ]; then
   emit "### Browsers"
   blank
   local as="$HOME/Library/Application Support" b dir prof signed total
-  for b in "Google Chrome:Google/Chrome" "Brave:BraveSoftware/Brave-Browser" "Microsoft Edge:Microsoft Edge" \
-           "Vivaldi:Vivaldi" "Arc:Arc/User Data" "Dia:Dia/User Data" "Chromium:Chromium"; do
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
     dir="$as/${b#*:}"
     [ -d "$dir" ] || continue
     total=0; signed=0
@@ -1349,7 +1658,7 @@ section_backups() {
     else
       finding AMBER "${b%%:*}: $((total - signed)) of $total profile(s) not signed in — bookmarks/passwords/extensions there are local only."
     fi
-  done
+  done < <(printf '%s\n' "$CHROMIUM_BROWSERS")
   if [ -d "$as/Firefox/Profiles" ]; then
     total=0; signed=0
     for prof in "$as/Firefox/Profiles"/*; do
@@ -1367,10 +1676,12 @@ section_backups() {
     else finding AMBER "Safari: iCloud Safari sync not reported on — bookmarks/reading list may be local only."; fi
   fi
   blank
+  fi
 
   emit "### Commonly forgotten"
   blank
   local nf nla cron hist
+  if [ "$PART" != system ]; then
   nf="$(find "$HOME/Library/Fonts" -maxdepth 1 -type f 2>/dev/null | grep -c .)"
   [ "$nf" -gt 0 ] && finding AMBER "$nf user-installed font file(s) in ~/Library/Fonts."
   nla="$(find "$HOME/Library/LaunchAgents" -maxdepth 1 -name '*.plist' ! -name 'com.apple.*' 2>/dev/null | grep -c .)"
@@ -1382,17 +1693,409 @@ section_backups() {
     [ -e "$HOME/$f" ] && hist+="~/$f "
   done
   [ -n "$hist" ] && emit "- Shell history: ${hist% } (copy if you rely on it)."
+  emit "- Music/TV: Account → Authorizations → Deauthorize This Computer (5-computer limit)."
+  if [ "$PART" = user ]; then
+    # The apps section ran once, for the admin; per-account installs live here.
+    local uapps="" a
+    for a in "$HOME/Applications"/*.app; do [ -d "$a" ] && uapps+="${a##*/} "; done
+    [ -n "$uapps" ] && finding AMBER "Apps installed only for this account (~/Applications): ${uapps% } — reinstall them for this account after the wipe."
+  fi
+  fi
+  if [ "$PART" != user ]; then
   if [ -r /etc/hosts ] && [ "$(grep -v -E '^[[:space:]]*(#|$)' /etc/hosts | grep -v -E '[[:space:]](localhost|broadcasthost)$' | grep -c .)" -gt 0 ]; then
     emit "- /etc/hosts has custom entries."
   fi
   if [ "$MANUAL_COUNT" -gt 0 ] || [ "$SETAPP_COUNT" -gt 0 ]; then
     emit "- Licences: collect keys for the manual/Setapp apps above and deactivate seat-limited ones (Adobe, JetBrains, …)."
   fi
-  emit "- Music/TV: Account → Authorizations → Deauthorize This Computer (5-computer limit)."
+  fi
   blank
 }
 
-# ── section 6: checklist ───────────────────────────────────────────────────
+# ── section 5: crypto wallets ──────────────────────────────────────────────
+
+WALLET_ROWS=""      # "NAME\tKEYS\tAPP(0|1)\tKB\tDENIED\tPATH"
+WALLET_EXT_ROWS=""  # "NAME\tBROWSER\tPROFILE\tKB\tDENIED\tPATH"
+collect_wallets() {
+  local name keys apps dirs rest a d app path
+  WALLET_ROWS=""; WALLET_EXT_ROWS=""
+  while IFS='|' read -r name keys apps dirs; do
+    [ -n "$name" ] || continue
+    app=0; rest="$apps;"
+    while [ -n "$rest" ]; do
+      a="${rest%%;*}"; rest="${rest#*;}"
+      [ -n "$a" ] || continue
+      if [ -d "$APPS_DIR/$a" ] || [ -d "$HOME/Applications/$a" ]; then app=1; break; fi
+    done
+    path=""; rest="$dirs;"
+    while [ -n "$rest" ]; do
+      d="${rest%%;*}"; rest="${rest#*;}"
+      [ -n "$d" ] || continue
+      if [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then path="$HOME/$d"; break; fi
+    done
+    [ "$app" = 1 ] || [ -n "$path" ] || continue
+    DU_KB=""; DU_DENIED=0
+    [ -n "$path" ] && du_size "$path"
+    WALLET_ROWS+="$name"$'\t'"$keys"$'\t'"$app"$'\t'"$DU_KB"$'\t'"$DU_DENIED"$'\t'"$path"$'\n'
+  done < <(printf '%s\n' "$WALLET_APPS")
+
+  local as="$HOME/Library/Application Support" b dir prof id ename les
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    dir="$as/${b#*:}"
+    [ -d "$dir" ] || continue
+    for prof in "$dir/Default" "$dir"/Profile\ *; do
+      [ -d "$prof" ] || continue
+      while IFS='|' read -r id ename; do
+        [ -n "$id" ] || continue
+        les="$prof/Local Extension Settings/$id"
+        if [ -d "$prof/Extensions/$id" ] || [ -d "$les" ]; then
+          DU_KB=""; DU_DENIED=0
+          [ -d "$les" ] && du_size "$les"
+          WALLET_EXT_ROWS+="$ename"$'\t'"${b%%:*}"$'\t'"${prof##*/}"$'\t'"$DU_KB"$'\t'"$DU_DENIED"$'\t'"$les"$'\n'
+        fi
+      done < <(printf '%s\n' "$WALLET_EXTENSIONS")
+    done
+  done < <(printf '%s\n' "$CHROMIUM_BROWSERS")
+  for prof in "$as/Firefox/Profiles"/*; do
+    [ -e "$prof/extensions/webextension@metamask.io.xpi" ] || continue
+    WALLET_EXT_ROWS+="MetaMask"$'\t'"Firefox"$'\t'"${prof##*/}"$'\t'$'\t'"0"$'\t'"$prof"$'\n'
+  done
+}
+
+section_wallets() {
+  emit "## 5. Crypto wallets"
+  blank
+  progress "looking for crypto wallets (presence and folder size only)…"
+  SIZE_DEADLINE=$((SECONDS + CLEANUP_BUDGET))
+  collect_wallets
+  if [ -z "$WALLET_ROWS$WALLET_EXT_ROWS" ]; then
+    emit "- No known wallet app, wallet data folder or wallet browser extension (checked: Exodus, Electrum, Ledger Live, MyCrypto, KeepKey, Cypherock, Atomic Wallet; MetaMask, Phantom, Coinbase Wallet and Rabby in Chromium browsers; MetaMask in Firefox)."
+    blank; return
+  fi
+  emit "Wallet files are never opened — only whether they exist and how big the folder is."
+  blank
+  emit "| Wallet | App installed | Data in this account | Size | Keys |"
+  emit "|---|---|---|---|---|"
+  local name keys app kb den path here="" apponly="" kdesc browser profile
+  while IFS=$'\t' read -r name keys app kb den path; do
+    [ -n "$name" ] || continue
+    if [ "$keys" = local ]; then kdesc="may be stored in these files (encrypted wallet)"
+    else kdesc="on the hardware device; this data is a cache"; fi
+    if [ -n "$path" ]; then
+      here+="$name, "
+      emit "| $name | $( [ "$app" = 1 ] && printf yes || printf no) | \`$(md_cell "$(tilde_path "$path")")\` | $(size_label "$kb" "$den") | $kdesc |"
+      [ "$keys" = local ] && plan_path RED "$kb" "$path" "$name wallet data"
+    else
+      apponly+="$name, "
+      emit "| $name | yes | – | – | $kdesc |"
+    fi
+  done < <(printf '%s' "$WALLET_ROWS")
+  while IFS=$'\t' read -r name browser profile kb den path; do
+    [ -n "$name" ] || continue
+    here+="$name ($browser · $profile), "
+    emit "| $name extension | $browser | profile \`$(md_cell "$profile")\` | $( [ -n "$kb" ] && size_label "$kb" "$den" || printf '–') | in the browser profile (encrypted vault) |"
+    [ -n "$kb" ] && plan_path RED "$kb" "$path" "$name extension data ($browser $profile)"
+  done < <(printf '%s' "$WALLET_EXT_ROWS")
+  blank
+  if [ -n "$here" ]; then
+    finding RED "Crypto wallets in this account (${here%, }): confirm the seed phrase / recovery for each wallet is stored offline before any change; local wallet files may hold keys."
+  fi
+  if [ -n "$apponly" ]; then
+    if [ "$PART" = all ]; then
+      finding AMBER "Wallet app(s) installed with no data in this account: ${apponly%, } — another account may use them; run with --all-users (sudo) to check every account."
+    else
+      emit "- Installed, but no data in this account: ${apponly%, }."
+    fi
+  fi
+  blank
+}
+
+# ── section 6: data cleanup candidates ─────────────────────────────────────
+
+CLEAN_ROWS=""   # "CLASS\tKB\tDENIED\tLABEL\tPATH\tNOTE"
+clean_add() { # clean_add KIND LABEL PATH [KB DENIED [NOTE-PREFIX]]
+  local c note kb den
+  if [ $# -ge 5 ]; then kb="$4"; den="$5"; else du_size "$3"; kb="$DU_KB"; den="$DU_DENIED"; fi
+  c="$(cleanup_class "$1")"; note="${c#*$'\t'}"; c="${c%%$'\t'*}"
+  [ -n "${6:-}" ] && note="$6 — $note"
+  CLEAN_ROWS+="$c"$'\t'"$kb"$'\t'"$den"$'\t'"$2"$'\t'"$3"$'\t'"$note"$'\n'
+}
+
+home_row() { # home_row NAME → "KB<TAB>DENIED" from HOME_ROWS, or nothing
+  printf '%s' "$HOME_ROWS" | awk -F'\t' -v n="$1" '$3 == n { print $1 "\t" $2; exit }'
+}
+
+dir_stats() { # dir_stats DIR → "COUNT<TAB>OLDEST<TAB>NEWEST" over top-level entries (epoch mtimes)
+  find "$1" -mindepth 1 -maxdepth 1 ! -name .DS_Store ! -name .localized -exec stat -f '%m' {} + 2>/dev/null \
+    | awk 'NR == 1 { mn = $1; mx = $1 } { if ($1 < mn) mn = $1; if ($1 > mx) mx = $1; n++ } END { printf "%d\t%s\t%s\n", n, mn, mx }'
+}
+
+node_modules_total() { # → "COUNT<TAB>KB<TAB>TIMED_OUT(0|1)"
+  local out rc line total=0 n=0 to=0
+  local -a dirs=() prot=()
+  [ "$SKIP_PROTECTED" = 1 ] && prot=(-o -path "$HOME/Desktop" -o -path "$HOME/Documents" -o -path "$HOME/Downloads" -o -path "$HOME/Pictures")
+  out="$(run_timeout "$FIND_TIMEOUT" find "$HOME" -xdev -maxdepth 8 \
+    \( -path "$HOME/Library" -o -path "$HOME/.Trash" ${prot[@]+"${prot[@]}"} -o -name '*.photoslibrary' -o -name '*.app' \
+       -o -name Dropbox -o -name 'Dropbox (*' -o -name 'OneDrive*' -o -name 'Google Drive*' -o -name 'Creative Cloud Files*' \) -prune \
+    -o -type d -name node_modules -print -prune 2>/dev/null)"
+  rc=$?; [ "$rc" = 124 ] && to=1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    dirs+=("$line"); n=$((n + 1))
+  done < <(printf '%s\n' "$out")
+  if [ "$n" -gt 0 ]; then
+    total="$(run_timeout 60 du -skc "${dirs[@]}" 2>/dev/null | tail -1)"; total="${total%%[!0-9]*}"
+    [ -n "$total" ] || total="?"
+  fi
+  printf '%s\t%s\t%s\n' "$n" "$total" "$to"
+}
+
+# iPhone/iPad backups: AMBER, never "cleanup" — the only copy of an old phone.
+device_backups() {
+  local mb="$HOME/Library/Application Support/MobileSync/Backup" n=0 newest="" m e
+  [ -d "$mb" ] || return 0
+  if ! ls -A "$mb" >/dev/null 2>&1; then
+    finding AMBER "iPhone/iPad backup folder exists but could not be read (Full Disk Access) — check Finder → your device → Manage Backups; a local backup may be the ONLY copy of an old phone."
+    plan_path AMBER "?" "$mb" "iPhone/iPad backups"
+    return 0
+  fi
+  for e in "$mb"/*; do
+    [ -d "$e" ] || continue
+    n=$((n + 1))
+    m="$(stat -f %m "$e" 2>/dev/null)"
+    [ -n "$m" ] && { [ -z "$newest" ] || [ "$m" -gt "$newest" ]; } && newest="$m"
+  done
+  [ "$n" -gt 0 ] || return 0
+  du_size "$mb"
+  clean_add mobilesync "iPhone/iPad backups ($n)" "$mb" "$DU_KB" "$DU_DENIED" "newest $(fmt_epoch "$newest")"
+  finding AMBER "$n iPhone/iPad backup(s) in ~/Library/Application Support/MobileSync/Backup — $(size_label "$DU_KB" "$DU_DENIED"), newest $(fmt_epoch "$newest"). This may be the ONLY copy of an old phone: copy it off before erasing unless every device it came from still exists and backs up to iCloud."
+  plan_path AMBER "$DU_KB" "$mb" "iPhone/iPad backups"
+}
+
+collect_cleanup() {
+  local d e x r kb den st n old new sz mt p apps_norm="" lib libs nlib
+  CLEAN_ROWS=""
+  SIZE_DEADLINE=$((SECONDS + CLEANUP_BUDGET))
+  [ -d "$HOME/Library/Caches" ] && clean_add caches "App caches" "$HOME/Library/Caches"
+  x="$HOME/Library/Developer/Xcode"
+  [ -d "$x/DerivedData" ] && clean_add deriveddata "Xcode DerivedData" "$x/DerivedData"
+  [ -d "$x/Archives" ] && clean_add xcarchives "Xcode Archives" "$x/Archives"
+  for d in "$x"/*DeviceSupport; do [ -d "$d" ] && clean_add devicesupport "Xcode ${d##*/}" "$d"; done
+  d="$HOME/Library/Developer/CoreSimulator"
+  [ -d "$d" ] && clean_add coresimulator "Simulators (CoreSimulator)" "$d"
+  for d in "$HOME"/miniconda* "$HOME"/anaconda* "$HOME"/miniforge* "$HOME"/mambaforge* "$HOME/.conda" \
+           /opt/homebrew/Caskroom/miniconda/base /opt/miniconda3 /opt/anaconda3; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    case "$d" in "$HOME"/*) ;; *) [ -O "$d" ] || continue ;; esac   # a shared install: its owner's report
+    for e in "$d/envs"/*; do [ -d "$e" ] && clean_add conda-env "conda env \`${e##*/}\`" "$e"; done
+    [ -d "$d/pkgs" ] && clean_add conda-pkgs "conda package cache" "$d/pkgs"
+  done
+  [ -d "$HOME/.cargo" ] && [ ! -L "$HOME/.cargo" ] && clean_add cargo "Rust (cargo)" "$HOME/.cargo"
+  [ -d "$HOME/.rustup" ] && [ ! -L "$HOME/.rustup" ] && clean_add rustup "Rust toolchains (rustup)" "$HOME/.rustup"
+  [ -d "$HOME/.orbstack" ] && [ ! -L "$HOME/.orbstack" ] && clean_add orbstack "OrbStack" "$HOME/.orbstack"
+  progress "looking for node_modules under ~…"
+  st="$(node_modules_total)"
+  n="${st%%$'\t'*}"; r="${st#*$'\t'}"; kb="${r%%$'\t'*}"
+  if [ "${n:-0}" -gt 0 ]; then
+    clean_add node_modules "node_modules ($n folders$( [ "${r##*$'\t'}" = 1 ] && printf ', search timed out: lower bound'))" "$HOME" "$kb" 0
+  fi
+
+  [ "$PROTECTED_DONE" = 1 ] || return 0
+  d="$HOME/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
+  [ -d "$d" ] && clean_add maildownloads "Mail downloads" "$d"
+  [ -d "$HOME/.Trash" ] && clean_add trash "Trash" "$HOME/.Trash"
+  d="$HOME/Library/Containers/com.docker.docker"
+  [ -d "$d" ] && clean_add docker "Docker Desktop" "$d"
+  d="$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack"
+  [ -d "$d" ] && clean_add orbstack "OrbStack (group container)" "$d"
+
+  if [ -d "$HOME/Downloads" ] && [ ! -L "$HOME/Downloads" ]; then
+    r="$(home_row Downloads)"
+    if [ -n "$r" ]; then kb="${r%%$'\t'*}"; den="${r#*$'\t'}"; else kb="?"; den=0; fi
+    st="$(dir_stats "$HOME/Downloads")"
+    n="${st%%$'\t'*}"; r="${st#*$'\t'}"; old="${r%%$'\t'*}"; new="${r#*$'\t'}"
+    clean_add downloads "Downloads" "$HOME/Downloads" "$kb" "$den" \
+      "${n:-0} item(s)$( [ -n "$old" ] && printf ', oldest %s, newest %s' "$(fmt_epoch "$old")" "$(fmt_epoch "$new")")"
+  fi
+
+  # Old installers: an installer whose app is installed is SAFE; zips may be data.
+  for p in "$APPS_DIR"/*.app "$APPS_DIR"/*/*.app "$HOME/Applications"/*.app; do
+    [ -d "$p" ] && apps_norm+="$(letters_only "${p##*/}")"$'\n'
+  done
+  while IFS=$'\t' read -r sz mt p; do
+    case "$sz" in ''|*[!0-9]*) continue ;; esac
+    clean_add "$(installer_kind "${p##*/}" "$apps_norm")" "Installer \`${p##*/}\`" "$p" "$((sz / 1024))" 0 "modified $(fmt_epoch "$mt")"
+  done < <(run_timeout 30 find "$HOME/Downloads" "$HOME/Desktop" -maxdepth 3 -type f \
+             \( -iname '*.dmg' -o -iname '*.pkg' -o -iname '*.zip' \) -size +"${INSTALLER_MIN_MB}"M \
+             -exec stat -f '%z%t%m%t%N' {} + 2>/dev/null)
+
+  # Photos libraries anywhere shallow in ~: more than one is a duplicate risk.
+  libs="$( { printf '%s' "$PHOTO_ROWS" | cut -f3
+             run_timeout 30 find "$HOME" -xdev -maxdepth 3 \( -path "$HOME/Library" -o -path "$HOME/.Trash" \
+               -o -name Dropbox -o -name 'Dropbox (*' -o -name 'OneDrive*' -o -name 'Google Drive*' \) -prune \
+               -o -name '*.photoslibrary' -print -prune 2>/dev/null; } | sed '/^$/d' | LC_ALL=C sort -u)"
+  nlib="$(printf '%s' "$libs" | grep -c .)"
+  while IFS= read -r lib; do
+    [ -n "$lib" ] || continue
+    r="$(printf '%s' "$PHOTO_ROWS" | awk -F'\t' -v p="$lib" '$3 == p { print $1 "\t" $2; exit }')"
+    if [ -n "$r" ]; then kb="${r%%$'\t'*}"; den="${r#*$'\t'}"; else du_size "$lib"; kb="$DU_KB"; den="$DU_DENIED"; fi
+    if [ "$nlib" -gt 1 ]; then clean_add photos-dup "Photos library" "$lib" "$kb" "$den"
+    else clean_add photos "Photos library" "$lib" "$kb" "$den"; fi
+  done < <(printf '%s\n' "$libs")
+}
+
+section_cleanup() {
+  emit "## 6. Data cleanup candidates (sizes only — nothing is deleted)"
+  blank
+  progress "sizing cleanup candidates (caches, Xcode, conda, Rust, node_modules, installers…)…"
+  collect_cleanup
+  device_backups
+  if [ -z "$CLEAN_ROWS" ]; then
+    emit "- nothing found"; blank; return
+  fi
+  emit "SAFE-TO-DELETE: regenerated or re-downloadable · REVIEW: look first, may be the only copy · KEEP: not cleanup."
+  blank
+  emit "| Item | Path | Size | Class | Note |"
+  emit "|---|---|---|---|---|"
+  local cls c kb den label path note safe_kb=0 nsafe=0 rev_kb=0 nrev=0
+  for cls in SAFE-TO-DELETE REVIEW KEEP; do
+    while IFS=$'\t' read -r c kb den label path note; do
+      [ "$c" = "$cls" ] || continue
+      case "$kb" in
+        ''|*[!0-9]*) ;;
+        *) [ "$c" = SAFE-TO-DELETE ] && [ "$kb" -lt "$SMALL_KB" ] && continue
+           case "$c" in
+             SAFE-TO-DELETE) safe_kb=$((safe_kb + kb)); nsafe=$((nsafe + 1)) ;;
+             REVIEW) rev_kb=$((rev_kb + kb)); nrev=$((nrev + 1)) ;;
+           esac ;;
+      esac
+      emit "| $(md_cell "$label") | \`$(md_cell "$(tilde_path "$path")")\` | $(size_label "$kb" "$den") | $c | $(md_cell "$note") |"
+    done < <(printf '%s' "$CLEAN_ROWS" | awk -F'\t' 'BEGIN{OFS="\t"} { s=($2 ~ /^[0-9]+$/) ? $2 : -1; print s, $0 }' | sort -t$'\t' -k1,1nr | cut -f2-)
+  done
+  blank
+  emit "- SAFE-TO-DELETE: $(human_kb "$safe_kb") across $nsafe item(s) · REVIEW: $(human_kb "$rev_kb") across $nrev item(s). Nothing was deleted; an erase removes all of it anyway — this is for slimming the backup and the next setup."
+  [ "$PROTECTED_DONE" = 1 ] || emit "- Not measured (--skip-protected): Downloads, Trash, Mail downloads, Docker data, installers, Photos libraries."
+  blank
+}
+
+# ── section 7: largest files ───────────────────────────────────────────────
+
+section_largest() {
+  emit "## 7. Largest files and folders"
+  blank
+  emit "Largest folders: the **Home folders** table in section 4 (top 25 by size); app data and cleanup candidates are sized in sections 4 and 6."
+  blank
+  progress "finding files over ${LARGE_MIN_MB} MB under ~ (${LARGE_FIND_TIMEOUT}s cap)…"
+  local out rc rows n total=0 sz mt p shown=0
+  local -a prune=(-path "$HOME/Library/Caches" -o -path "$HOME/Library/CloudStorage" -o -path "$HOME/Library/Mobile Documents"
+    -o -path "$HOME/Dropbox" -o -path "$HOME/Dropbox (*" -o -path "$HOME/OneDrive*" -o -path "$HOME/Google Drive*"
+    -o -path "$HOME/Creative Cloud Files*" -o -path "$HOME/Box" -o -path "$HOME/Box Sync" -o -path "$HOME/iCloud Drive"
+    -o -name '*.photoslibrary')
+  [ "$SKIP_PROTECTED" = 1 ] && prune+=(-o -path "$HOME/Library" -o -path "$HOME/.Trash" -o -path "$HOME/Desktop"
+    -o -path "$HOME/Documents" -o -path "$HOME/Downloads" -o -path "$HOME/Pictures")
+  out="$(run_timeout "$LARGE_FIND_TIMEOUT" find "$HOME" -xdev \( "${prune[@]}" \) -prune \
+    -o -type f -size +"${LARGE_MIN_MB}"M -exec stat -f '%z%t%m%t%N' {} + 2>/dev/null)"
+  rc=$?
+  rows="$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /^[0-9]+$/' | LC_ALL=C sort -t$'\t' -k1,1nr)"
+  n="$(printf '%s' "$rows" | grep -c .)"
+  if [ "$n" -eq 0 ]; then
+    emit "- No files over $LARGE_MIN_MB MB under ~ (Library/Caches, cloud folders and Photos libraries skipped$( [ "$SKIP_PROTECTED" = 1 ] && printf '; protected folders and ~/Library skipped: --skip-protected'))."
+  else
+    emit "| File (under ~) | Size | Modified |"
+    emit "|---|---|---|"
+    while IFS=$'\t' read -r sz mt p; do
+      [ -n "$p" ] || continue
+      total=$((total + sz / 1024)); shown=$((shown + 1))
+      [ "$shown" -le "$LARGE_TOP" ] || continue
+      emit "| \`$(md_cell "${p#"$HOME"/}")\` | $(human_kb $((sz / 1024))) | $(fmt_epoch "$mt") |"
+    done < <(printf '%s\n' "$rows")
+    blank
+    emit "- $n file(s) over $LARGE_MIN_MB MB, $(human_kb "$total") in total$( [ "$n" -gt "$LARGE_TOP" ] && printf ' (top %s shown)' "$LARGE_TOP"). Library/Caches, cloud folders and Photos libraries skipped$( [ "$SKIP_PROTECTED" = 1 ] && printf '; protected folders and ~/Library skipped (--skip-protected)')."
+  fi
+  [ "$rc" = 124 ] && emit "- The search hit its ${LARGE_FIND_TIMEOUT}s limit — the list may be incomplete."
+  blank
+}
+
+# ── section 9: backup plan ─────────────────────────────────────────────────
+
+section_backup_plan() { # section_backup_plan "USER …"
+  emit "## 9. Backup plan"
+  blank
+  emit "What to copy off before erasing: RED = exists only on this Mac, AMBER = worth copying (device backups, unconfirmed Photos/Messages/Mail). Commands are printed, never run."
+  blank
+  local u s kb n unk total=0 any=0 cell lvl
+  emit "| Account | RED (local-only) | AMBER (worth copying) |"
+  emit "|---|---|---|"
+  for u in $1; do
+    cell=""
+    for lvl in RED AMBER; do
+      s="$(plan_summary "$u" "$lvl")"
+      kb="${s%%$'\t'*}"; s="${s#*$'\t'}"; n="${s%%$'\t'*}"; unk="${s#*$'\t'}"
+      [ "$lvl" = RED ] && total=$((total + kb))
+      [ "$n" -gt 0 ] && any=1
+      if [ "$n" -eq 0 ]; then cell+=" – |"
+      else cell+=" $(human_kb "$kb") in $n path(s)$( [ "$unk" -gt 0 ] && printf ' + %s of unknown size' "$unk") |"; fi
+    done
+    emit "| \`$u\` |$cell"
+  done
+  blank
+  if [ "$any" = 0 ]; then
+    emit "- Nothing flagged to copy. A final Time Machine backup is still cheap insurance."
+    blank; return
+  fi
+
+  local sudo_r="" sudo_c="" p args amb
+  if [ "$ALL_USERS" = 1 ]; then
+    sudo_r="sudo --preserve-env=RESTIC_REPOSITORY,RESTIC_REST_PASSWORD,RESTIC_PASSWORD_FILE "
+    sudo_c="sudo "
+  fi
+  emit "### Option A — encrypted one-off archive to the Studio (restic)"
+  blank
+  emit "The fleet restic REST server on \`$STUDIO_HOST:$RESTIC_PORT\` (append-only, one repo per host) — the same server and layout as \`scripts/restic-backup.sh\` (device-guide → *Restic backups*). Capacity: $STUDIO_FREE_NOTE; RED here totals $(human_kb "$total") — check \`df -h\` on the Studio first. If this Mac is on the dotfiles flake with \`resticBackup = true\`, \`rh7-restic-backup setup\` replaces steps 2–3.$( [ "$ALL_USERS" = 1 ] && printf ' Run from this admin terminal (it has Full Disk Access): `sudo` lets restic read every account.')"
+  blank
+  emit '```sh'
+  emit "# 1. on the Studio (rh-device-management): this host's REST login — prints rh7-restic:$HOST:<password> once"
+  emit "~/rh-device-management/scripts/restic-server-add-host.sh $HOST"
+  emit "# 2. on this Mac (restic: brew install restic, or nix shell nixpkgs#restic)"
+  emit "export RESTIC_REPOSITORY='rest:http://$HOST@$STUDIO_HOST:$RESTIC_PORT/$HOST/'"
+  emit "read -rs RESTIC_REST_PASSWORD && export RESTIC_REST_PASSWORD   # paste the <password> part of the token"
+  emit "# 3. the ENCRYPTION key — without it the archive is unreadable: escrow it in 1Password"
+  emit "mkdir -p ~/.config/rh7-restic && ( umask 077; [ -s ~/.config/rh7-restic/repo-password ] || openssl rand -base64 32 > ~/.config/rh7-restic/repo-password )"
+  emit "export RESTIC_PASSWORD_FILE=~/.config/rh7-restic/repo-password"
+  emit "~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password   # dry-run; add --apply"
+  emit "restic init   # once per repo; skip if rh7-restic-backup setup already did it"
+  emit "# 4. the archive: RED paths per account (AMBER ones listed as comments — add those you want)"
+  for u in $1; do
+    args=""
+    while IFS= read -r p; do [ -n "$p" ] && args+=" \\"$'\n'"    $(shq "$p")"; done < <(plan_paths "$u" RED)
+    [ -n "$args" ] && emit "${sudo_r}restic backup --tag pre-wipe --tag account:$u --exclude-caches$args"
+    amb=""
+    while IFS= read -r p; do [ -n "$p" ] && amb+="#   $(shq "$p")"$'\n'; done < <(plan_paths "$u" AMBER)
+    [ -n "$amb" ] && BODY+="# AMBER for $u:"$'\n'"$amb"
+  done
+  emit "restic snapshots --tag pre-wipe   # verify before erasing"
+  emit '```'
+  blank
+  emit "### Option B — copy to an external disk"
+  blank
+  emit "Format the disk APFS in Disk Utility and name it \`PreWipe\`. \`ditto\` keeps permissions, extended attributes and dates."
+  blank
+  emit '```sh'
+  emit "${sudo_c}mkdir -p $(shq "/Volumes/PreWipe/$HOST")"
+  for u in $1; do
+    while IFS= read -r p; do
+      [ -n "$p" ] && emit "${sudo_c}ditto $(shq "$p") $(shq "/Volumes/PreWipe/$HOST$p")"
+    done < <(plan_paths "$u" RED)
+  done
+  emit "# or a full Time Machine backup of this Mac (Time Machine takes over its disk — use a separate one):"
+  emit "sudo tmutil setdestination -a /Volumes/<TimeMachineDisk>"
+  emit "tmutil startbackup --block"
+  emit '```'
+  blank
+}
+
+# ── section 10: checklist ──────────────────────────────────────────────────
 
 section_checklist() {
   # The DELETE must go to the instance the fleet actually uses. Never put the
@@ -1402,22 +2105,168 @@ section_checklist() {
   [ -n "$cfg" ] || cfg="$(_config_service_pin "$CONFIG_SERVICE_PIN_SYSTEM" || _config_service_pin "$CONFIG_SERVICE_PIN_USER")"
   [ -n "$cfg" ] || cfg="<config-service-url>"
   cfg="${cfg%/}"
-  emit "## 6. Checklist (in this order)"
+  local each=""
+  [ "$ALL_USERS" = 1 ] && each=" — in **every** account"
+  emit "## 10. Checklist (in this order)"
   blank
-  emit "1. **Escrow secrets** — SSH keys, GPG keys, age key, .env files: \`scripts/escrow-secrets-1password.sh\` (rh7/rh-device-management)."
-  emit "2. **Commit and push every repo** flagged above (including stashes and branches without upstream)."
-  emit "3. **Copy every RED folder / app data** to iCloud Drive, Dropbox or an external disk."
-  emit "4. **Run a final Time Machine backup** (or a one-off copy) and confirm it completed."
-  emit "5. **Confirm browser sync, licences, Music deauthorization.** Re-run this script — it should say \`safe to wipe: likely\` or only list AMBERs you accept."
-  emit "6. **Sign out of iCloud** (System Settings → Apple Account → Sign Out) — this turns off Find My / Activation Lock."
-  emit "7. **Erase**: System Settings → General → Transfer or Reset → Erase All Content and Settings."
-  emit "8. **Afterwards, retire the registry row**: \`curl -X DELETE $cfg/api/devices/$HOST\` (admin-gated)."
+  emit "1. **Confirm every crypto wallet's seed phrase / recovery is stored offline** (section 5)$each. Do not touch wallet files before that."
+  emit "2. **Escrow secrets** — SSH keys, GPG keys, age key, .env files: \`scripts/escrow-secrets-1password.sh\` (rh7/rh-device-management)."
+  emit "3. **Commit and push every repo** flagged above (including stashes and branches without upstream)."
+  emit "4. **Copy every RED folder / app data** — the commands are in section 9 (restic to the Studio, or an external disk)."
+  emit "5. **Run a final Time Machine backup** (or a one-off copy) and confirm it completed."
+  emit "6. **Confirm browser sync, licences, Music deauthorization**$each. Re-run this script — it should say \`safe to wipe: likely\` or only list AMBERs you accept."
+  emit "7. **Sign out of iCloud**$each (System Settings → Apple Account → Sign Out) — this turns off Find My / Activation Lock."
+  emit "8. **Erase**: System Settings → General → Transfer or Reset → Erase All Content and Settings."
+  emit "9. **Afterwards, retire the registry row**: \`curl -X DELETE $cfg/api/devices/$HOST\` (admin-gated)."
   blank
+}
+
+# ── --all-users: accounts table + per-account re-invocation ────────────────
+
+section_accounts() { # section_accounts USERS("NAME\tUID\tHOME\n…") INVOKER
+  local name uid home adm out kb ll
+  emit "## Accounts on this Mac"
+  blank
+  emit "Real local accounts (UID ≥ 501, not hidden, home under $USERS_ROOT). Each is checked below **as that account** (\`sudo -u\`), so its iCloud, browser and app settings are its own."
+  blank
+  emit "| Account | Admin | Home size | Last login |"
+  emit "|---|---|---|---|"
+  while IFS=$'\t' read -r name uid home; do
+    [ -n "$name" ] || continue
+    adm=no; user_is_admin "$name" && adm=yes
+    progress "sizing $home (${ACCOUNT_DU_TIMEOUT}s cap)…"
+    out="$(run_timeout "$ACCOUNT_DU_TIMEOUT" du -skx "$home" 2>/dev/null)"
+    kb="${out%%[!0-9]*}"; [ -n "$kb" ] || kb="?"
+    ll="$(last_login "$name")"
+    emit "| \`$name\`$( [ "$name" = "$2" ] && printf ' (you)') | $adm | $(size_label "$kb" 0) | ${ll:-no record} |"
+  done < <(printf '%s\n' "$1")
+  blank
+}
+
+load_self_text() {
+  if [ -n "$PWC_SELF" ] && [ -f "$PWC_SELF" ] && [ -r "$PWC_SELF" ]; then
+    SELF_TEXT="$(cat "$PWC_SELF")"
+  else
+    progress "not run from a file (curl | bash): fetching $PWC_RAW_URL for the per-account runs"
+    SELF_TEXT="$(curl -fsSL --max-time 30 "$PWC_RAW_URL" 2>/dev/null)"
+  fi
+  case "$SELF_TEXT" in '#!/usr/bin/env bash'*PRE_WIPE_CHECK_SOURCE_ONLY*) return 0 ;; esac
+  return 1
+}
+
+run_child() { # run_child NAME HOME PART LABEL → folds the fragment in; 1 on failure
+  local frag rc
+  build_child_argv "$1" "$2" "$3"
+  frag="$(printf '%s\n' "$SELF_TEXT" | (cd / && "${CHILD_ARGV[@]}"))"
+  rc=$?
+  if [ "$rc" != 0 ] || ! parse_fragment "$frag" "$4"; then
+    finding RED "The $3 checks for account \`$1\` did not complete (exit $rc) — that account is NOT covered by this report; fix and re-run before wiping."
+    FRAG_BODY=""
+    return 1
+  fi
+  return 0
+}
+
+run_all_users() {
+  if [ "$(id -u)" != 0 ]; then
+    echo "pre-wipe-check: --all-users needs root: sudo ${PWC_SELF:-pre-wipe-check.sh} --all-users" >&2; exit 2
+  fi
+  local admin="${SUDO_USER:-}"
+  if [ -z "$admin" ] || [ "$admin" = root ]; then
+    echo "pre-wipe-check: run --all-users via sudo from your own admin account (SUDO_USER is unset), so the report has an owner." >&2; exit 2
+  fi
+  load_self_text || { echo "pre-wipe-check: cannot load this script's own text for the per-account runs; download it and run: sudo bash pre-wipe-check.sh --all-users" >&2; exit 2; }
+
+  local users name uid home admin_home="" blocked rc names=""
+  users="$(list_real_users)"
+  [ -n "$users" ] || { echo "pre-wipe-check: no real local accounts found (dscl)" >&2; exit 2; }
+  local -a probes=("/Library/Application Support/com.apple.TCC")
+  while IFS=$'\t' read -r name uid home; do
+    [ -n "$name" ] || continue
+    names+="$name "
+    [ "$name" = "$admin" ] && admin_home="$home"
+    probes+=("$home/Library/Mail" "$home/Library/Safari" "$home/Library/Messages")
+  done < <(printf '%s\n' "$users")
+  if [ -z "$admin_home" ]; then
+    admin_home="$(dscl . -read "/Users/$admin" NFSHomeDirectory 2>/dev/null | parse_dscl_user)"; admin_home="${admin_home%%$'\t'*}"
+  fi
+  [ -d "$admin_home" ] || { echo "pre-wipe-check: cannot find the home of $admin for the report" >&2; exit 2; }
+
+  blocked="$(fda_probe "${probes[@]}")"; rc=$?
+  if [ "$rc" = 1 ]; then fda_help "$blocked" "${PWC_SELF:-pre-wipe-check.sh}" >&2; exit 2; fi
+
+  progress "all accounts: ${names% } — each checked as itself; report goes to $admin_home"
+  emit "Host: \`$HOST\` · $(scutil --get ComputerName 2>/dev/null) · macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null)"
+  emit "Generated $(date '+%Y-%m-%d %H:%M %Z') by pre-wipe-check v$PWC_VERSION --all-users (run by \`$admin\`) · protected locations: $( [ "$SKIP_PROTECTED" = 1 ] && printf 'SKIPPED (--skip-protected)' || printf 'read')"
+  blank
+  [ "$rc" = 2 ] && finding AMBER "Full Disk Access could not be verified (no Mail/Safari/Messages folder to probe) — anything macOS hid is marked \"partly unreadable\"."
+  [ -n "${CONFIG_SERVICE_ADMIN_TOKEN:-}" ] && progress "note: CONFIG_SERVICE_ADMIN_TOKEN is not forwarded to the per-account runs (it would show in ps)"
+  section_accounts "$users" "$admin"
+
+  progress "── this Mac (apps, control plane, Time Machine) as $admin ──"
+  run_child "$admin" "$admin_home" system "this Mac" && BODY+="$FRAG_BODY"
+  while IFS=$'\t' read -r name uid home; do
+    [ -n "$name" ] || continue
+    progress "── account $name ($home) ──"
+    emit "## Account \`$name\`$( [ "$name" = "$admin" ] && printf ' (you)')"
+    blank
+    if run_child "$name" "$home" user "$name"; then
+      BODY+="$(printf '%s' "$FRAG_BODY" | demote_headings)"$'\n'
+    else
+      emit "- **Not checked** — see the RED item at the top."
+      blank
+    fi
+  done < <(printf '%s\n' "$users")
+
+  section_backup_plan "${names% }"
+  section_checklist
+  emit "---"
+  emit "Read-only report. Every account above was checked as itself. Not inspected: hidden/system accounts, system folders outside the home folders, external volumes, and anything a missing Full Disk Access grant hid (marked \"partly unreadable\")."
+  finish_report "$admin" "$admin_home"
+}
+
+# finish_report [OWNER OWNER_HOME] — verdict on top, print, save, exit.
+# With an OWNER (--all-users, running as root) the file is written AS that
+# account, so it is theirs and no root-owned file lands in their home.
+finish_report() {
+  local verdict head out file stamp safe_host home="${2:-$HOME}" rc=0 title="$HOST"
+  [ -n "${1:-}" ] && title="$HOST (all accounts)"
+  verdict="$(verdict_word "$N_RED" "$N_AMBER")"
+  head="# Pre-wipe check: $title"$'\n\n'
+  head+="## 1. Verdict"$'\n\n'
+  head+="**Safe to wipe: ${verdict}** — $N_RED RED (will be lost) · $N_AMBER AMBER (check) · $N_GREEN GREEN"$'\n\n'
+  [ -n "$RED_ITEMS" ] && head+="RED:"$'\n'"$RED_ITEMS"$'\n'
+  [ -n "$AMBER_ITEMS" ] && head+="AMBER:"$'\n'"$AMBER_ITEMS"$'\n'
+  out="$head$BODY"
+
+  stamp="$(date '+%Y%m%d-%H%M')"
+  safe_host="$(printf '%s' "$HOST" | tr -c 'a-z0-9.-' '_')"
+  file="$home/pre-wipe-$safe_host-$stamp.md"
+  [ -e "$file" ] && file="$home/pre-wipe-$safe_host-$stamp$(date '+%S').md"
+
+  printf '%s' "$out"
+  if [ -n "${1:-}" ]; then
+    printf '%s' "$out" | sudo -n -u "$1" /bin/sh -c 'umask 077; set -C; cat > "$1"' sh "$file" 2>/dev/null || rc=2
+  else
+    ( umask 077; printf '%s' "$out" > "$file" ) 2>/dev/null || rc=2
+  fi
+  if [ "$rc" = 0 ]; then
+    printf '\nReport saved: %s\n' "$file"
+    progress "report saved: $file"
+  else
+    echo "pre-wipe-check: could not write $file" >&2
+  fi
+  [ "$rc" = 0 ] && [ "$N_RED" -gt 0 ] && rc=1
+  FINISHED=1
+  exit "$rc"
 }
 
 # ── main ───────────────────────────────────────────────────────────────────
 
-usage() { sed -n '2,21p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//' || true; echo "See $PWC_RAW_URL"; }
+usage() {
+  awk 'NR == 1 { next } /^# What it guarantees/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null || true
+  echo "See $PWC_RAW_URL"
+}
 
 FINISHED=0
 on_exit() { local rc=$?; [ "$FINISHED" = 1 ] || exit 2; exit "$rc"; }
@@ -1434,13 +2283,28 @@ main() {
       --offline) OFFLINE=1 ;;
       --host) shift; HOST_OVERRIDE="${1:-}" ;;
       --host=*) HOST_OVERRIDE="${1#--host=}" ;;
+      --all-users) ALL_USERS=1 ;;
+      --as-user) shift; AS_USER="${1:-}" ;;   # internal (--all-users children)
+      --part) shift; PART="${1:-}" ;;         # internal (--all-users children)
       -h|--help) usage; FINISHED=1; exit 0 ;;
       *) echo "pre-wipe-check: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
     shift
   done
+  case "$PART" in all|system|user) ;; *) echo "pre-wipe-check: --part must be system or user" >&2; exit 2 ;; esac
+  if [ -n "$AS_USER" ] && { [ "$PART" = all ] || [ "$ALL_USERS" = 1 ]; }; then
+    echo "pre-wipe-check: --as-user is internal to --all-users and needs --part" >&2; exit 2
+  fi
+  if [ -z "$AS_USER" ] && [ "$PART" != all ]; then
+    echo "pre-wipe-check: --part is internal to --all-users" >&2; exit 2
+  fi
   if [ "$(uname -s)" != Darwin ]; then
     echo "pre-wipe-check: macOS only." >&2; exit 2
+  fi
+  if [ -n "$AS_USER" ]; then
+    # A child must really be the account it reports on.
+    [ "$(id -un)" = "$AS_USER" ] || { echo "pre-wipe-check: --as-user $AS_USER but running as $(id -un)" >&2; exit 2; }
+    PROGRESS_TAG="pre-wipe:$AS_USER"
   fi
   local user_nix_bin
   user_nix_bin="/etc/profiles/per-user/$(id -un)/bin"
@@ -1452,61 +2316,64 @@ main() {
   HOST="$(canonical_host "${HOST_OVERRIDE:-$raw_host}")"
   lhn="$(canonical_host "$(scutil --get LocalHostName 2>/dev/null)")"
   [ -n "$HOST" ] || HOST="$lhn"
+  PLAN_USER="$(id -un)"
+
+  if [ "$ALL_USERS" = 1 ]; then
+    progress "pre-wipe check v$PWC_VERSION --all-users on $HOST — read-only; the only write is the report."
+    run_all_users   # exits
+  fi
+
   have_git && GIT_OK=1
   SIZE_DEADLINE=$((SECONDS + SIZE_BUDGET))
-
-  progress "pre-wipe check v$PWC_VERSION on $HOST — read-only; the only write is the report."
+  [ -n "$AS_USER" ] || progress "pre-wipe check v$PWC_VERSION on $HOST — read-only; the only write is the report."
 
   collect_icloud_account
 
-  emit "Host: \`$HOST\`$( [ -n "$lhn" ] && [ "$lhn" != "$HOST" ] && printf ' (LocalHostName `%s`)' "$lhn") · $(scutil --get ComputerName 2>/dev/null) · macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null)"
-  emit "Generated $(date '+%Y-%m-%d %H:%M %Z') by pre-wipe-check v$PWC_VERSION · protected locations: $( [ "$SKIP_PROTECTED" = 1 ] && printf 'SKIPPED (--skip-protected)' || printf 'read')"
-  blank
+  if [ "$PART" = all ]; then
+    emit "Host: \`$HOST\`$( [ -n "$lhn" ] && [ "$lhn" != "$HOST" ] && printf ' (LocalHostName `%s`)' "$lhn") · $(scutil --get ComputerName 2>/dev/null) · macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null)"
+    emit "Generated $(date '+%Y-%m-%d %H:%M %Z') by pre-wipe-check v$PWC_VERSION · protected locations: $( [ "$SKIP_PROTECTED" = 1 ] && printf 'SKIPPED (--skip-protected)' || printf 'read')"
+    blank
+    local others
+    others="$(list_real_users | awk -F'\t' -v me="$PLAN_USER" '$1 != me { printf "%s ", $1 }')"
+    if [ -n "$others" ]; then
+      finding AMBER "Other accounts on this Mac were not inspected: ${others% } — run \`sudo pre-wipe-check.sh --all-users\` from an admin account (terminal with Full Disk Access)."
+      blank
+    fi
+  fi
 
-  section_control_plane
-  section_apps
+  if [ "$PART" != user ]; then
+    section_control_plane
+    section_apps
+  fi
 
-  progress "looking for git repos and .env files under ~ (depth 5)…"
-  collect_git_walk "$HOME" 5
-  collect_home_sizes
-  collect_appsupport_sizes
-  [ "$SKIP_PROTECTED" = 1 ] || collect_protected
-  REPOS="$(printf '%s' "$REPOS" | LC_ALL=C sort -u)"
-  [ -n "$REPOS" ] && REPOS+=$'\n'
+  if [ "$PART" != system ]; then
+    progress "looking for git repos and .env files under ~ (depth 5)…"
+    collect_git_walk "$HOME" 5
+    collect_home_sizes
+    collect_appsupport_sizes
+    [ "$SKIP_PROTECTED" = 1 ] || collect_protected
+    REPOS="$(printf '%s' "$REPOS" | LC_ALL=C sort -u)"
+    [ -n "$REPOS" ] && REPOS+=$'\n'
 
-  section_local_data
+    section_local_data
+    section_wallets
+    section_cleanup
+    section_largest
+  fi
   section_backups
+
+  if [ -n "$AS_USER" ]; then
+    emit_fragment
+    FINISHED=1
+    exit 0
+  fi
+
+  section_backup_plan "$PLAN_USER"
   section_checklist
 
   emit "---"
-  emit "Read-only report. Not inspected: system folders outside your home, other user accounts, external volumes, and anything a denied privacy prompt or missing Full Disk Access hid (marked \"partly unreadable\")."
-
-  local verdict head out file stamp safe_host
-  verdict="$(verdict_word "$N_RED" "$N_AMBER")"
-  head="# Pre-wipe check: $HOST"$'\n\n'
-  head+="## 1. Verdict"$'\n\n'
-  head+="**Safe to wipe: ${verdict}** — $N_RED RED (will be lost) · $N_AMBER AMBER (check) · $N_GREEN GREEN"$'\n\n'
-  [ -n "$RED_ITEMS" ] && head+="RED:"$'\n'"$RED_ITEMS"$'\n'
-  [ -n "$AMBER_ITEMS" ] && head+="AMBER:"$'\n'"$AMBER_ITEMS"$'\n'
-  out="$head$BODY"
-
-  stamp="$(date '+%Y%m%d-%H%M')"
-  safe_host="$(printf '%s' "$HOST" | tr -c 'a-z0-9.-' '_')"
-  file="$HOME/pre-wipe-$safe_host-$stamp.md"
-  [ -e "$file" ] && file="$HOME/pre-wipe-$safe_host-$stamp$(date '+%S').md"
-
-  printf '%s' "$out"
-  local rc=0
-  if ( umask 077; printf '%s' "$out" > "$file" ) 2>/dev/null; then
-    printf '\nReport saved: %s\n' "$file"
-    progress "report saved: $file"
-  else
-    echo "pre-wipe-check: could not write $file" >&2
-    rc=2
-  fi
-  [ "$rc" = 0 ] && [ "$N_RED" -gt 0 ] && rc=1
-  FINISHED=1
-  exit "$rc"
+  emit "Read-only report. Not inspected: system folders outside your home, other user accounts (\`--all-users\`), external volumes, and anything a denied privacy prompt or missing Full Disk Access hid (marked \"partly unreadable\")."
+  finish_report
 }
 
 [ "${PRE_WIPE_CHECK_SOURCE_ONLY:-0}" = 1 ] || main "$@"

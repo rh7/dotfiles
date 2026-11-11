@@ -677,13 +677,73 @@ RED (lost on erase), AMBER (check by hand) and GREEN counts, then a
 
 - the control plane's `GET /api/fleet/retirement/<host>` verdict (admin-gated)
 - every app and where to reinstall it from, plus a Brewfile and `mas` ids
-- data that exists only on this Mac: home folders, Photos, Messages, app data,
-  VMs, git repos with unpushed work, and secrets (names only)
+- data that exists only on this Mac: home folders (top 25 by size), Photos,
+  Messages, app data, VMs, git repos with unpushed work, and secrets (names only)
+- crypto wallets: Exodus, Electrum, Ledger Live, MyCrypto, KeepKey, Cypherock,
+  Atomic Wallet, and MetaMask/Phantom/Coinbase Wallet/Rabby browser extensions —
+  presence and folder size only, wallet files are never opened. Any wallet is
+  RED until its seed phrase / recovery is confirmed stored offline
+- data cleanup candidates, sizes only (nothing is deleted): caches, Xcode
+  DerivedData/Archives/DeviceSupport/simulators, conda envs, `~/.cargo`,
+  `~/.rustup`, `node_modules`, Docker/OrbStack, Downloads, Trash, Mail
+  downloads, old installers over 200 MB, duplicate Photos libraries — each
+  `SAFE-TO-DELETE`, `REVIEW` or `KEEP`. iPhone/iPad backups are AMBER, not
+  cleanup: they may be the only copy of an old phone
+- the 30 largest files over 500 MB (`~/Library/Caches`, cloud folders and
+  Photos libraries skipped), as paths relative to the home folder
 - Time Machine, Find My and browser sync status
+- a backup plan: RED/AMBER totals and the exact commands for an encrypted
+  restic archive to the Studio (same server as [Restic backups](#restic-backups))
+  or a `ditto` copy to an external disk — printed, never run
 - an ordered checklist, ending with `DELETE /api/devices/<host>`
 
 Exit status is `0` (no RED), `1` (RED present) or `2` (script error). It never
-uses sudo, uploads anything or modifies user data. The report is the only file
-the script writes, though Homebrew and gpg may refresh their own caches when it
-queries them. To escrow secrets, use `scripts/escrow-secrets-1password.sh` in
+uploads anything or modifies user data, and uses no sudo except in
+`--all-users` mode below. The report is the only file the script writes,
+though Homebrew and gpg may refresh their own caches when it queries them. To
+escrow secrets, use `scripts/escrow-secrets-1password.sh` in
 rh7/rh-device-management.
+
+### A Mac with several accounts (`--all-users`)
+
+For a shared Mac (e.g. one an admin set up but someone else mainly uses), run
+it once from **your** admin account instead of logging in as each person:
+
+```bash
+sudo ~/dotfiles/scripts/pre-wipe-check.sh --all-users
+# without a dotfiles clone:
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/pre-wipe-check.sh -o /tmp/pre-wipe-check.sh
+sudo bash /tmp/pre-wipe-check.sh --all-users
+```
+
+It lists every real account (UID ≥ 501, not hidden, home under `/Users`) with
+admin flag, home size and last login, then re-runs itself **as each account**
+(`sudo -u <account> -H`, script text on stdin) so that account's iCloud,
+browser and app settings are the ones read. The system-wide parts (apps,
+control plane, Time Machine) run once, as you. One combined report, with a
+section per account, is written to **your** home (owned by you, mode 600). An
+account whose check fails is RED in the verdict, never silently skipped.
+
+**Full Disk Access is required.** Without it macOS hides other accounts' Mail,
+Messages, Safari and app data even from root, so the script probes those
+folders first and refuses to run (exit 2) with these steps:
+
+1. System Settings → Privacy & Security → **Full Disk Access**
+   (`open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`).
+2. `+`, authenticate, add your terminal app (Terminal is in
+   `/System/Applications/Utilities`; iTerm/Ghostty in `/Applications`).
+3. Switch it on, **quit the terminal (⌘Q) and reopen it**, re-run.
+4. Optionally switch it off again afterwards.
+
+What still needs the account's owner in person — the report cannot do or
+verify these:
+
+- **Apple ID**: signing out of iCloud (turns off Find My / Activation Lock) and
+  App Store / Music deauthorization happen inside their session, with their
+  Apple ID password.
+- **Crypto wallet seeds**: they confirm each wallet's seed phrase / recovery
+  is stored offline. The script only sees that wallet data exists.
+- **Browser sync**: confirming Chrome/Brave/Arc/Firefox profiles are signed in
+  *and* syncing, and signing in again after the wipe.
+- **1Password** (and other password managers): their account, Secret Key and
+  any local-only vaults.
