@@ -32,6 +32,9 @@
       # Unattended nightly updates (modules/darwin/fleet-update.nix):
       # null = off, or the channel to follow — "main" (canary) | "fleet/stable".
       autoUpdate ? null,
+      # Daily restic backup of the policy folders to the Studio's REST server
+      # (modules/darwin/restic-backup.nix). Inert until `rh7-restic-backup setup`.
+      resticBackup ? false,
     }:
       nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
@@ -45,6 +48,7 @@
           ./modules/darwin/mas.nix
           ./modules/darwin/xcode-license.nix
           ./modules/darwin/fleet-update.nix
+          ./modules/darwin/restic-backup.nix
           {
             # The attr to build is baked in here, never derived at runtime.
             # Every darwinConfigurations attr below equals its hostname.
@@ -57,6 +61,7 @@
             # commit the running generation was built from.
             system.configurationRevision =
               nixpkgs.lib.mkIf (autoUpdate != null) (self.rev or self.dirtyRev or null);
+            services.rh7.resticBackup.enable = resticBackup;
           }
           role
           home-manager.darwinModules.home-manager
@@ -151,6 +156,7 @@
         hostname = "rouven-m5-pro";
         username = "rouven";
         autoUpdate = "main";  # canary
+        resticBackup = true;  # pilot: restic to the Studio instead of Time Machine
         extraModules = [ ./configurations/macos/macbook.nix ];
         # Staged rollout — validate the weekly updater here for a few weeks
         # before promoting it to modules/common.nix for the whole fleet.

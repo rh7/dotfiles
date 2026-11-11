@@ -198,6 +198,7 @@ modules/
   darwin/
     defaults.nix                       # macOS system defaults (dock, finder, keyboard)
     homebrew.nix                       # Homebrew scaffold (behavior config only)
+    restic-backup.nix                  # opt-in daily restic backup -> Studio REST server (mkMac resticBackup = true)
     profiles/                          # Composable app sets (Homebrew casks/brews)
       core.nix                         #   1password, chrome, arc, raycast, tailscale
       dev-apps.nix                     #   cursor, ghostty, zed, orbstack, wezterm
@@ -305,6 +306,7 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 - Onboarding an **existing** device (audit first, then rebuild)
 - **Fixing dashboard issues on a device** (`scripts/fleet-fix.sh`, dry-run by default)
 - Secrets onboarding (age key → `sops-add-host.sh` on an existing recipient)
+- **Restic backups** of the policy folders to the Studio (`rh7-restic-backup`, pilot: rouven-m5-pro)
 - Config service API reference
 
 ### Quick Reference
@@ -317,6 +319,7 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ./scripts/collector-runner.sh --install   # daily audit on any host without com.rh7.collector-runner
 curl -fsSL https://config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ./scripts/fleet-fix.sh doctor      # this device's dashboard issues -> fix ids + plans; <fix-id> [--apply] to fix
+rh7-restic-backup status           # restic backup (resticBackup hosts): setup | run | status | snapshots | restore-hint
 ```
 
 Connectivity comes from the **daily audit**, not a heartbeat. Hosts that import
