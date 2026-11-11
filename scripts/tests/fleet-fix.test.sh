@@ -314,6 +314,37 @@ ff SUDO_N_EXIT=0 -- fleet-update
 check "old last_success_at stays unresolved (stale)" "$RC" 1
 has "says how stale" "last successful fleet update"
 
+echo "== backup: restic status (scripts/restic-backup.sh status file) =="
+RS_DIR="$TEST_ROOT/home/.local/state/rh7-restic"
+rstatus() { # rstatus CONFIGURED RESULT REASON SNAPSHOT_AGE_HOURS|none
+  local t=null
+  [ "$4" = none ] || t="\"$("$REAL_PY" -c 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$4")\""
+  mkdir -p "$RS_DIR"
+  printf '{"schema":1,"enabled":true,"configured":%s,"last_run_at":"2026-11-10T13:00:00Z","last_result":"%s","reason":%s,"last_snapshot_time":%s,"snapshot_id":"abcd1234","files_new":1,"bytes_added":2,"paths":["~/code","~/.ssh"],"repo_host":"rouvens-mac-studio"}\n' \
+    "$1" "$2" "$([ "$3" = null ] && echo null || echo "\"$3\"")" "$t" >"$RS_DIR/status.json"
+}
+reset; ff MOCK_ONLINE=0 -- backup
+has "no status, no wrapper: not enabled (info only)" "restic: not enabled on this host"
+hasnt "not enabled is not a MANUAL item" "[MANUAL] restic"
+reset; stub rh7-restic-backup 'exit 0'; ff MOCK_ONLINE=0 -- backup; rm -f "$FAKE_BIN/rh7-restic-backup"
+has "wrapper but no run: setup command" "rh7-restic-backup setup && rh7-restic-backup run"
+has "names the Studio token step" "scripts/restic-server-add-host.sh test-mac"
+reset; rstatus false not-configured null none; ff MOCK_ONLINE=0 -- backup
+has "not configured -> MANUAL setup" "[MANUAL] restic: installed but NOT configured"
+reset; rstatus true ok null 5; ff MOCK_ONLINE=0 -- backup
+has "fresh snapshot -> OK with age" "[OK]     restic: snapshot 5h old"
+has "shows paths" "paths: ~/code ~/.ssh"
+has "escrow reminder" "escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password --apply"
+reset; rstatus true skipped offline 100; ff MOCK_ONLINE=0 -- backup
+has "stale snapshot behind skips -> MANUAL" "restic: no snapshot in 48h (last run: skipped, offline)"
+reset; rstatus true failed permission-denied 3; ff MOCK_ONLINE=0 -- backup
+has "permission-denied -> Full Disk Access" "grant Full Disk Access to /usr/local/libexec/rh7-restic-launcher"
+reset; rstatus true failed auth-failed 3; ff MOCK_ONLINE=0 -- backup
+has "auth-failed -> rotate the token" "restic-server-add-host.sh test-mac --rotate"
+reset; mkdir -p "$RS_DIR"; echo '{nope' >"$RS_DIR/status.json"; ff MOCK_ONLINE=0 -- backup
+has "corrupt status -> unreadable, never OK" "restic: status file unreadable"
+hasnt "corrupt status never reads as OK" "[OK]     restic"
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]

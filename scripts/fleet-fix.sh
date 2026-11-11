@@ -8,7 +8,8 @@
 # Fix ids — the dashboard (GET /api/fleet/health action items) names one per item:
 #   doctor           this host's open action items -> fix id + dry-run plan for each
 #   backup           backup blockers: repos to push, secrets to escrow, Time Machine,
-#                    iCloud Desktop & Documents (report-only: --apply changes nothing)
+#                    iCloud Desktop & Documents, restic status (report-only: --apply
+#                    changes nothing)
 #   age-key          sops age key via setup-secrets.sh + the recipient-side step
 #                    (--apply needs a dotfiles clone: it evaluates the flake)
 #   audit            install/repair the collector-runner schedule, run one audit
@@ -51,6 +52,9 @@ RUNNER_LABEL="com.rh7.collector-runner"
 STALE_AUDIT_HOURS=168   # = config-service src/audit-age.ts
 DISK_PCT_WARN=80        # = /api/fleet/health "Disk N% full" (> 80)
 SWAP_MB_WARN=1000       # = /api/fleet/health "High swap" (> 1000 MB)
+RESTIC_STATUS="$HOME/.local/state/rh7-restic/status.json"   # scripts/restic-backup.sh
+RESTIC_LOG="$HOME/.local/state/rh7-restic/backup.log"
+RESTIC_STALE_HOURS=48   # = config-service STALENESS_HOURS.restic
 
 OS="$(uname -s)"
 # Same derivation as audit-device.sh (strip .local, keep case); the registry key
@@ -329,6 +333,57 @@ backup_local_darwin() {
   fi
 }
 
+# rh7-restic (modules/darwin/restic-backup.nix): what its own status file says.
+backup_restic() {
+  local conf result reason snap age paths
+  if [ ! -f "$RESTIC_STATUS" ]; then
+    if command -v rh7-restic-backup >/dev/null 2>&1; then
+      st_manual "restic: enabled but no run recorded — get a token on the Studio (scripts/restic-server-add-host.sh $HOST_LC), then set up and run once" \
+        "rh7-restic-backup setup && rh7-restic-backup run"
+    else
+      info "restic: not enabled on this host (opt in: services.rh7.resticBackup — modules/darwin/restic-backup.nix)"
+    fi
+    return 0
+  fi
+  : >"$FF_TMP/restic.line"
+  have_python && { python3 - "$RESTIC_STATUS" >"$FF_TMP/restic.line" 2>/dev/null || : >"$FF_TMP/restic.line"; } <<'PY'
+import json, sys, datetime
+s = json.load(open(sys.argv[1]))
+t, age = s.get("last_snapshot_time"), "never"
+if t:
+    d = datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    age = str(int((datetime.datetime.now(datetime.timezone.utc) - d).total_seconds() // 3600))
+print("\x1f".join(["1" if s.get("configured") is True else "0", str(s.get("last_result") or "?"),
+                   str(s.get("reason") or "-"), str(s.get("snapshot_id") or "-"), age,
+                   " ".join(p for p in (s.get("paths") or []) if isinstance(p, str)) or "-"]))
+PY
+  if ! IFS=$'\x1f' read -r conf result reason snap age paths <"$FF_TMP/restic.line"; then
+    st_manual "restic: status file unreadable" "cat $(tilde "$RESTIC_STATUS")"
+    return 0
+  fi
+  if [ "$conf" != 1 ]; then
+    st_manual "restic: installed but NOT configured — get a token on the Studio (scripts/restic-server-add-host.sh $HOST_LC), then set up and run once" \
+      "rh7-restic-backup setup && rh7-restic-backup run"
+    return 0
+  fi
+  info "restic: last run $result$([ "$reason" = "-" ] || echo " ($reason)"); last snapshot $snap, $([ "$age" = never ] && echo never || echo "${age}h ago"); paths: $paths"
+  info "its encryption key must be escrowed (not verifiable here): ~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password --apply"
+  case "$result:$reason" in
+    failed:auth-failed) st_manual "restic: the server rejected this device — re-issue the token on the Studio (scripts/restic-server-add-host.sh $HOST_LC --rotate), then re-run setup" "rh7-restic-backup setup" ;;
+    failed:permission-denied) st_manual "restic: macOS privacy blocked a path — grant Full Disk Access to /usr/local/libexec/rh7-restic-launcher, or drop the protected path (modules/darwin/restic-backup.nix header)" \
+      "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'" ;;
+    failed:*) st_manual "restic: last run failed ($reason) — read the log, then retry" "tail -40 $(tilde "$RESTIC_LOG") && rh7-restic-backup run" ;;
+    *)
+      if [ "$age" = never ] || [ "$age" -gt "$RESTIC_STALE_HOURS" ]; then
+        st_manual "restic: no snapshot in ${RESTIC_STALE_HOURS}h (last run: $result$([ "$reason" = "-" ] || echo ", $reason")) — on Tailscale and on power, run it now" "rh7-restic-backup run"
+      else
+        st_ok "restic: snapshot ${age}h old"
+      fi ;;
+  esac
+}
+
 fix_backup() {
   [ "$APPLY" -eq 1 ] && info "backup is report-only: nothing is pushed, escrowed or enabled automatically"
   local rc=0
@@ -405,6 +460,8 @@ PY
     section "Time Machine / iCloud (live)"
     backup_local_darwin
   fi
+  section "restic (rh7-restic-backup, live)"
+  backup_restic
   return "$rc"
 }
 

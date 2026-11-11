@@ -2072,6 +2072,29 @@ for tool in ['restic', 'borg', 'kopia', 'rclone']:
         elif repo:
             entry['note'] = 'repo configured but no password in env; snapshot age unavailable'
     prog.append(entry)
+
+# rh7-restic (modules/darwin/restic-backup.nix): the scheduled job records each
+# run in a status file, so its snapshot age is known without a password in the
+# environment. It REPLACES the env-based restic entry; `paths` scopes what it
+# covers (the config service credits only policy paths at or under them).
+# Missing, unreadable or foreign-schema file -> the detection above stands.
+try:
+    with open(os.path.join(home, '.local/state/rh7-restic/status.json')) as f:
+        st = json.load(f)
+    if isinstance(st, dict) and st.get('schema') == 1:
+        paths = st.get('paths')
+        prog = [e for e in prog if e.get('tool') != 'restic']
+        prog.append({
+            'tool': 'restic',
+            'present': True,
+            'repo_configured': st.get('configured') is True,
+            'latest_snapshot_time': st.get('last_snapshot_time'),
+            'paths': [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else [],
+            'source': 'rh7-restic',
+            'last_result': st.get('last_result'),
+        })
+except Exception:
+    pass
 if prog:
     result['programmatic'] = prog
 

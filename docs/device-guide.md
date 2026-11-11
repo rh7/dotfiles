@@ -411,7 +411,7 @@ curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/fleet-fix
 | Fix id | Dry-run shows | `--apply` does | Needs |
 |---|---|---|---|
 | `doctor` | this host's open action items → fix id, then each fix id's plan | nothing (read-only) | — |
-| `backup` | at-risk repos (re-checked live) with the git commands to push every branch to `backup/<host>-<date>/*` — only on a remote `gh` confirms PRIVATE; public/unverifiable remotes get a `git bundle` to keep in iCloud/Dropbox instead; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
+| `backup` | at-risk repos (re-checked live) with the git commands to push every branch to `backup/<host>-<date>/*` — only on a remote `gh` confirms PRIVATE; public/unverifiable remotes get a `git bundle` to keep in iCloud/Dropbox instead; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents; restic status (configured? last snapshot age, failure reason, setup command — see [Restic backups](#restic-backups)) | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
 | `age-key` | whether `~/.config/sops/age/keys.txt` exists | runs `setup-secrets.sh` (generate + register); prints `sops-add-host.sh <host>` for an existing recipient | a clone, recipient host |
 | `audit` | collector-runner schedule + last audit age | `collector-runner.sh --install` (reloads the nix-declared agent where one exists) + one gated audit | — |
 | `firewall` | macOS application firewall state; `rouvens-mac-studio` is exempt (#93) unless `--force` | `sudo socketfilterfw --setglobalstate on`, re-verify; if the CLI no-ops (macOS 15+), opens System Settings and re-verifies | sudo, GUI |
@@ -428,6 +428,73 @@ remain (or `--apply` incomplete), `2` error (e.g. config service unreachable),
 `setup-secrets.sh` and `collector-runner.sh`; run clone-free it fetches the
 resolver and `collector-runner.sh` from raw `main`. `age-key --apply` and `drift`
 need a clone (they evaluate the flake / secrets file) and say so.
+
+---
+
+## Restic backups
+
+Targeted, encrypted, versioned backups of the folders the fleet backup policy
+cares about, instead of full-disk Time Machine. Hosts opt in with
+`resticBackup = true` in their `mkMac` entry (`flake.nix`; pilot:
+`rouven-m5-pro`), which enables `modules/darwin/restic-backup.nix`:
+
+- a **user** LaunchAgent `org.rh7.restic-backup`, daily at 13:00 (on wake if
+  the Mac slept), never at load;
+- the command `rh7-restic-backup` (nixpkgs restic baked in; no Homebrew);
+- destination: the restic REST server on the Studio
+  (`rest:http://rouvens-mac-studio:8000/<host>/`, append-only, one private repo
+  per host — rh-device-management). A NAS later = change `repositoryHost`.
+
+Default paths: `~/.ssh ~/.config ~/.gnupg ~/code ~/Projects ~/localtesting
+~/dotfiles` (missing ones are skipped). Excluded: `node_modules`, `.venv`,
+`venv`, `__pycache__`, `target`, `dist`, `build`, `.next`, `.cache`, `*.tmp`,
+`.DS_Store`, `~/.config/**/Cache*`, CACHEDIR.TAG dirs, and every file over
+100 MB (model weights). Override with `services.rh7.resticBackup.paths` /
+`exclude` / `excludeLargerThan`.
+
+**Enabling is safe before setup**: each run records `not-configured` until the
+device has credentials. Setup, once per device:
+
+```bash
+# on the Studio (rh-device-management): prints rh7-restic:<host>:<password> once
+scripts/restic-server-add-host.sh <host>
+# on the device: paste the token (or pipe it: pbpaste | rh7-restic-backup setup)
+rh7-restic-backup setup
+# escrow the encryption key it generated — without it the snapshots are unreadable
+~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password          # dry-run
+~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password --apply
+rh7-restic-backup run                # first backup now
+```
+
+`setup` refuses a token issued for another hostname (`--force` if the registry
+name really differs), never overwrites an existing encryption key, and refuses to
+re-init a repo the key does not open. Daily use: `rh7-restic-backup status`,
+`snapshots`, `restore-hint` (prints the list/restore commands). Nothing on the
+device ever forgets or prunes — the server is append-only; retention is a
+server-side job.
+
+Each run writes `~/.local/state/rh7-restic/status.json` (log: `backup.log` next
+to it): `ok`, `failed` (`auth-failed`, `repo-locked`, `permission-denied`,
+`offline`, `unknown`), `skipped` (`on-battery` below 30 %, `offline` when the
+Studio is unreachable) or `not-configured`. The daily audit reports it as the
+`restic` entry of `backup_posture.programmatic` (with the backed-up `paths`), so
+the config service credits exactly those folders; `fleet-fix.sh backup` shows it.
+
+**~/Desktop, ~/Documents, ~/Downloads are not in the defaults.** macOS privacy
+protection (TCC) stops a launchd job from reading them (and iCloud Drive /
+external volumes) without Full Disk Access; iCloud Desktop & Documents already
+replicates the first two. To include one anyway: add it to `paths`, rebuild,
+then System Settings → Privacy & Security → Full Disk Access → `+` → ⇧⌘G →
+`/usr/local/libexec/rh7-restic-launcher`, and
+`launchctl kickstart -k gui/$(id -u)/org.rh7.restic-backup`. Grant that file —
+not Terminal, not the wrapper script, not restic: it is a small fixed binary the
+module installs once, so the grant survives rebuilds (the module header has the
+details). A missing grant shows up as `permission-denied`, and the unreadable
+folder is left out of `paths`.
+
+Changing the backup script: run `bash scripts/tests/restic-backup.test.sh`
+(stubs; CI runs it) and `bash scripts/tests/restic-backup-e2e.sh` (real restic
+and rest-server from the flake's nixpkgs on 127.0.0.1; needs nix).
 
 ---
 
