@@ -21,7 +21,9 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; printf '      %s\n' "$2"; fail
 check() { [[ "$2" == "$3" ]] && good "$1" || bad "$1" "expected [$2] got [$3]"; }
 
 info() { :; }; warn() { :; }; ok() { :; }; err() { :; }
+# shellcheck disable=SC2034  # read by the eval'd cask_lifecycle_plan / ensure_app_management
 FLAKE_REF="unused#host"
+# shellcheck disable=SC2034
 APP_MGMT_PANE="x-test:pane"
 
 # shellcheck source=../lib/declared-packages.sh
