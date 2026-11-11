@@ -440,7 +440,8 @@ cares about, instead of full-disk Time Machine. Hosts opt in with
 
 - a **user** LaunchAgent `org.rh7.restic-backup`, daily at 13:00 (on wake if
   the Mac slept), never at load;
-- the command `rh7-restic-backup` (nixpkgs restic baked in; no Homebrew);
+- the command `rh7-restic-backup` (nixpkgs restic baked in; no Homebrew), plus
+  `restic` on PATH for the restore commands `restore-hint` prints;
 - destination: the restic REST server on the Studio
   (`rest:http://rouvens-mac-studio:8000/<host>/`, append-only, one private repo
   per host — rh-device-management). A NAS later = change `repositoryHost`.

@@ -196,6 +196,13 @@ check "stopped run recorded as failed" "$(st '[.last_result,.reason]')" '["faile
 check "log says it was terminated" "$(grep -c 'terminated by signal' "$H/.local/state/rh7-restic/backup.log")" 1
 check "lock released" "$([ -d "$H/.local/state/rh7-restic/run.lock" ] && echo held || echo free)" free
 
+echo "== a symlinked root is backed up through its target, reported by its name =="
+reset; configure; mkdir -p "$T/realdot"; echo x >"$T/realdot/f"; ln -s "$T/realdot" "$H/dotfiles"
+PATHS_SPEC=$'~/dotfiles\n~/code' rb -- run
+check "restic gets the target, not the link" "$(grep -cF -- "-- $(realpath "$T/realdot") $H/code |" "$CALLS")" 1
+check "paths report the configured name" "$(st .paths)" '["~/dotfiles","~/code"]'
+rm -rf "$T/realdot"
+
 echo "== no configured path exists =="
 reset; configure; PATHS_SPEC='~/nope' rb -- run
 check "failed unknown, exit 1" "$(st '[.last_result,.reason]')/$RC" '["failed","unknown"]/1'
@@ -250,6 +257,7 @@ echo "== audit-device.sh: rh7-restic entry in backup_posture =="
 eval "$(sed -n '/^collect_backup_posture() {/,/^PYEOF$/p' "$AUDIT"; echo '}')"
 declare -f collect_backup_posture >/dev/null || { echo "FATAL: could not extract collect_backup_posture" >&2; exit 1; }
 reset; configure; rb -- run
+mkdir -p "$H/Library/LaunchAgents"; : >"$H/Library/LaunchAgents/org.rh7.restic-backup.plist"   # the job exists
 J="$(HOME="$H" collect_backup_posture)"
 check "entry from the status file" "$(jq -c '[.programmatic[] | select(.source == "rh7-restic")] | length' <<<"$J")" 1
 check "contract fields" "$(jq -c '.programmatic[] | select(.source == "rh7-restic") | [.tool,.present,.repo_configured,.paths,.last_result,(.latest_snapshot_time | test("Z$"))]' <<<"$J")" \
@@ -261,6 +269,9 @@ check "not-configured -> repo_configured false" "$(jq -c '.programmatic[] | sele
 echo '{not json' >"$STATUS"
 J="$(HOME="$H" collect_backup_posture)"
 check "corrupt status -> no rh7-restic entry" "$(jq '[(.programmatic // [])[] | select(.source == "rh7-restic")] | length' <<<"$J")" 0
+rb -- run; rm -f "$H/Library/LaunchAgents/org.rh7.restic-backup.plist"
+J="$(HOME="$H" PATH="/usr/bin:/bin" collect_backup_posture)"
+check "status left by a removed job is ignored" "$(jq '[(.programmatic // [])[] | select(.source == "rh7-restic")] | length' <<<"$J")" 0
 
 echo
 echo "passed: $pass   failed: $fail"

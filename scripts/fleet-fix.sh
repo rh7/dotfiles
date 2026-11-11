@@ -335,14 +335,17 @@ backup_local_darwin() {
 
 # rh7-restic (modules/darwin/restic-backup.nix): what its own status file says.
 backup_restic() {
-  local conf result reason snap age paths
+  local conf result reason snap age paths job=0
+  # The job exists = its LaunchAgent or the wrapper (same test as audit-device.sh).
+  { [ -f "$HOME/Library/LaunchAgents/org.rh7.restic-backup.plist" ] || command -v rh7-restic-backup >/dev/null 2>&1; } && job=1
+  if [ "$job" -eq 0 ]; then
+    info "restic: not enabled on this host (opt in: services.rh7.resticBackup — modules/darwin/restic-backup.nix)"
+    [ -f "$RESTIC_STATUS" ] && info "  $(tilde "$RESTIC_STATUS") is left from a removed setup — ignored (the audit ignores it too)"
+    return 0
+  fi
   if [ ! -f "$RESTIC_STATUS" ]; then
-    if command -v rh7-restic-backup >/dev/null 2>&1; then
-      st_manual "restic: enabled but no run recorded — get a token on the Studio (scripts/restic-server-add-host.sh $HOST_LC), then set up and run once" \
-        "rh7-restic-backup setup && rh7-restic-backup run"
-    else
-      info "restic: not enabled on this host (opt in: services.rh7.resticBackup — modules/darwin/restic-backup.nix)"
-    fi
+    st_manual "restic: enabled but no run recorded — get a token on the Studio (scripts/restic-server-add-host.sh $HOST_LC), then set up and run once" \
+      "rh7-restic-backup setup && rh7-restic-backup run"
     return 0
   fi
   : >"$FF_TMP/restic.line"

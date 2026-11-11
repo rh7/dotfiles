@@ -160,16 +160,25 @@ write_status() {
   fi
 }
 
-# Configured paths -> RUN_PATHS (absolute, existing) + RUN_PATHS_TILDE.
+# Configured paths -> RUN_PATHS (what restic is given: absolute, existing,
+# symlinked roots resolved) + RUN_PATHS_TILDE (the configured name, same index,
+# what `paths` reports). restic stores a symlink ROOT as just the link, so a
+# symlinked ~/dotfiles would otherwise be "covered" with none of its content.
 RUN_PATHS=(); RUN_PATHS_TILDE=()
 resolve_paths() {
-  local p abs
+  local p abs real
   RUN_PATHS=(); RUN_PATHS_TILDE=()
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     abs="$(untilde "$p")"
     case "$abs" in /*) ;; *) log "ignoring non-absolute path '$p' (use ~/… or /…)"; continue ;; esac
-    if [ -e "$abs" ]; then RUN_PATHS+=("$abs"); RUN_PATHS_TILDE+=("$(tilde "$abs")"); fi
+    [ -e "$abs" ] || continue
+    real="$abs"
+    if [ -L "$abs" ]; then
+      real="$(realpath "$abs" 2>/dev/null)" || { log "cannot resolve symlink $(tilde "$abs") — skipped"; continue; }
+      log "$(tilde "$abs") is a symlink — backing up its target $real"
+    fi
+    RUN_PATHS+=("$real"); RUN_PATHS_TILDE+=("$(tilde "$abs")")
   done <<<"$PATHS_SPEC"
 }
 
@@ -267,11 +276,11 @@ cmd_run() {
 
   # A top-level path restic could not read at all is not backed up: keep it out
   # of `paths`, so coverage never credits it.
-  local unreadable kept=()
+  local unreadable kept=() i
   unreadable="$(jq -r 'select(.message_type? == "error") | .item // empty' "$tmp/err" 2>/dev/null | sort -u)"
-  for p in "${RUN_PATHS[@]}"; do
-    if grep -qxF -- "$p" <<<"$unreadable"; then log "unreadable, not covered: $(tilde "$p")"
-    else kept+=("$(tilde "$p")"); fi
+  for i in "${!RUN_PATHS[@]}"; do
+    if grep -qxF -- "${RUN_PATHS[$i]}" <<<"$unreadable"; then log "unreadable, not covered: ${RUN_PATHS_TILDE[$i]}"
+    else kept+=("${RUN_PATHS_TILDE[$i]}"); fi
   done
   pj="$(paths_json "${kept[@]+"${kept[@]}"}")"
 

@@ -59,9 +59,11 @@ echo "setting=1" >"$H/.config/app/settings.ini"
 echo "cache" >"$H/.config/app/Caches/blob"
 dd if=/dev/zero of="$H/Projects/models/big.gguf" bs=1048576 count=0 seek=101 2>/dev/null   # sparse 101 MiB
 echo "small weights" >"$H/Projects/models/lora.safetensors"
+mkdir -p "$T/real-dotfiles"; echo "flake" >"$T/real-dotfiles/flake.nix"; ln -s "$T/real-dotfiles" "$H/dotfiles"   # symlinked root
 mkdir -p "$T/bin"; printf '#!/bin/sh\necho %s.local\n' "$HOSTNAME_E2E" >"$T/bin/hostname"; chmod +x "$T/bin/hostname"
 
-ENVV=(env -i PATH="$T/bin:$(dirname "$(command -v jq)"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$H" TMPDIR="$T"
+mkdir -p "$T/tmp"   # not an ancestor of a backed-up path: its churn stays out of the snapshot
+ENVV=(env -i PATH="$T/bin:$(dirname "$(command -v jq)"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$H" TMPDIR="$T/tmp"
   RH7_RESTIC_BIN="$RESTIC" RH7_RESTIC_REPO_HOST=127.0.0.1 RH7_RESTIC_PORT="$PORT"
   RH7_RESTIC_PATHS=$'~/.ssh\n~/.config\n~/.gnupg\n~/code\n~/Projects\n~/localtesting\n~/dotfiles'
   RH7_RESTIC_EXCLUDES=$'node_modules\n.venv\nvenv\n__pycache__\ntarget\ndist\nbuild\n.next\n.cache\n*.tmp\n.DS_Store\n~/.config/**/Cache*')
@@ -79,9 +81,9 @@ echo "== run 1 =="
 check "run exit 0" "$rc" 0
 jq . "$STATUS"
 check "ok" "$(jq -r .last_result "$STATUS")" ok
-check "paths = existing policy paths" "$(jq -c .paths "$STATUS")" '["~/.ssh","~/.config","~/code","~/Projects"]'
+check "paths = existing policy paths" "$(jq -c .paths "$STATUS")" '["~/.ssh","~/.config","~/code","~/Projects","~/dotfiles"]'
 check "snapshot_id 8 hex" "$(jq -r '.snapshot_id | test("^[0-9a-f]{8}$")' "$STATUS")" true
-check "files_new = 4 (main.py, id_e2e, settings.ini, lora.safetensors)" "$(jq -r .files_new "$STATUS")" 4
+check "files_new = 5 (main.py, id_e2e, settings.ini, lora.safetensors, flake.nix via the symlinked root)" "$(jq -r .files_new "$STATUS")" 5
 first_bytes="$(jq -r .bytes_added "$STATUS")"
 
 export RESTIC_REPOSITORY="rest:http://127.0.0.1:$PORT/$HOSTNAME_E2E/" RESTIC_REST_USERNAME="$HOSTNAME_E2E" \
@@ -91,7 +93,7 @@ echo "$listing" | sed 's/^/    /'
 for gone in node_modules .venv Caches big.gguf rh7-restic; do
   check "excluded: $gone" "$(grep -c "$gone" <<<"$listing")" 0
 done
-for kept in main.py id_e2e settings.ini lora.safetensors; do
+for kept in main.py id_e2e settings.ini lora.safetensors flake.nix; do
   check "included: $kept" "$(grep -c "/$kept\$" <<<"$listing")" 1
 done
 
@@ -100,7 +102,9 @@ echo "== run 2 (nothing changed) =="
 check "run 2 exit 0" "$rc" 0
 second_bytes="$(jq -r .bytes_added "$STATUS")"
 echo "    bytes_added: run 1 = $first_bytes, run 2 = $second_bytes; files_new run 2 = $(jq -r .files_new "$STATUS")"
-check "run 2 adds ~0 bytes (< 1 KiB)" "$([ "$second_bytes" -lt 1024 ] && echo y)" y
+# Unchanged files add no data; only re-written tree metadata (ancestor dir
+# mtimes, e.g. $HOME after the state dir appeared) — a few hundred bytes.
+check "run 2 adds ~0 bytes (< 4 KiB, metadata only)" "$([ "$second_bytes" -lt 4096 ] && echo y)" y
 check "run 2 has no new files" "$(jq -r .files_new "$STATUS")" 0
 check "two snapshots" "$("$RESTIC" snapshots --json 2>/dev/null | jq length)" 2
 

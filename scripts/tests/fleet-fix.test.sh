@@ -316,10 +316,11 @@ has "says how stale" "last successful fleet update"
 
 echo "== backup: restic status (scripts/restic-backup.sh status file) =="
 RS_DIR="$TEST_ROOT/home/.local/state/rh7-restic"
-rstatus() { # rstatus CONFIGURED RESULT REASON SNAPSHOT_AGE_HOURS|none
+rstatus() { # rstatus CONFIGURED RESULT REASON SNAPSHOT_AGE_HOURS|none — plus the job's LaunchAgent
   local t=null
   [ "$4" = none ] || t="\"$("$REAL_PY" -c 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$4")\""
-  mkdir -p "$RS_DIR"
+  mkdir -p "$RS_DIR" "$TEST_ROOT/home/Library/LaunchAgents"
+  : >"$TEST_ROOT/home/Library/LaunchAgents/org.rh7.restic-backup.plist"
   printf '{"schema":1,"enabled":true,"configured":%s,"last_run_at":"2026-11-10T13:00:00Z","last_result":"%s","reason":%s,"last_snapshot_time":%s,"snapshot_id":"abcd1234","files_new":1,"bytes_added":2,"paths":["~/code","~/.ssh"],"repo_host":"rouvens-mac-studio"}\n' \
     "$1" "$2" "$([ "$3" = null ] && echo null || echo "\"$3\"")" "$t" >"$RS_DIR/status.json"
 }
@@ -349,9 +350,12 @@ echo "2026-11-10T14:00:00Z failed: auth-failed — encryption key: repo-password
 ff MOCK_ONLINE=0 -- backup
 has "auth-failed (key) -> restore from 1Password, latest log line wins" "restore ~/.config/rh7-restic/repo-password from its 1Password escrow item"
 hasnt "key failure never suggests rotating the token" "the server rejected this device"
-reset; mkdir -p "$RS_DIR"; echo '{nope' >"$RS_DIR/status.json"; ff MOCK_ONLINE=0 -- backup
+reset; rstatus true ok null 5; echo '{nope' >"$RS_DIR/status.json"; ff MOCK_ONLINE=0 -- backup
 has "corrupt status -> unreadable, never OK" "restic: status file unreadable"
 hasnt "corrupt status never reads as OK" "[OK]     restic"
+reset; rstatus true ok null 5; rm -f "$TEST_ROOT/home/Library/LaunchAgents/org.rh7.restic-backup.plist"; ff MOCK_ONLINE=0 -- backup
+has "status left by a removed job -> ignored" "is left from a removed setup — ignored"
+hasnt "stale status never reads as OK" "[OK]     restic"
 
 echo
 echo "passed: $pass   failed: $fail"

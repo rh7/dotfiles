@@ -2078,10 +2078,15 @@ for tool in ['restic', 'borg', 'kopia', 'rclone']:
 # environment. It REPLACES the env-based restic entry; `paths` scopes what it
 # covers (the config service credits only policy paths at or under them).
 # Missing, unreadable or foreign-schema file -> the detection above stands.
+# Only while the job still exists (its LaunchAgent or the wrapper): disabling
+# the module leaves the status file behind, and stale state must not keep
+# reporting coverage.
 try:
+    restic_job = (os.path.exists(os.path.join(home, 'Library/LaunchAgents/org.rh7.restic-backup.plist'))
+                  or bool(shutil.which('rh7-restic-backup')))
     with open(os.path.join(home, '.local/state/rh7-restic/status.json')) as f:
         st = json.load(f)
-    if isinstance(st, dict) and st.get('schema') == 1:
+    if restic_job and isinstance(st, dict) and st.get('schema') == 1:
         paths = st.get('paths')
         prog = [e for e in prog if e.get('tool') != 'restic']
         prog.append({

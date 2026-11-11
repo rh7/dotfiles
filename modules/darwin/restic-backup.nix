@@ -165,7 +165,9 @@ in
       message = "services.rh7.resticBackup.paths must be \"~/…\" or absolute";
     }];
 
-    environment.systemPackages = [ runner ];
+    # restic itself too: `rh7-restic-backup restore-hint` prints plain restic
+    # commands for listing and restoring.
+    environment.systemPackages = [ runner pkgs.restic ];
 
     # Copy, never symlink: TCC binds a grant to this file's code identity.
     system.activationScripts.postActivation.text = lib.mkAfter ''
