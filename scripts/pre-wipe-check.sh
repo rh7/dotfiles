@@ -494,13 +494,15 @@ cleanup_class() {
     caches)        printf 'SAFE-TO-DELETE\tapps rebuild their caches\n' ;;
     deriveddata)   printf 'SAFE-TO-DELETE\tXcode rebuilds it\n' ;;
     devicesupport) printf 'SAFE-TO-DELETE\tXcode copies device symbols again when a device connects\n' ;;
-    coresimulator) printf 'SAFE-TO-DELETE\tsimulator runtimes/devices re-download (`xcrun simctl delete unavailable` trims safely)\n' ;;
+    sim-caches)    printf 'SAFE-TO-DELETE\tsimulator caches, rebuilt on demand\n' ;;
     maildownloads) printf 'SAFE-TO-DELETE\tcopies of attachments opened from Mail; the originals stay in the mailbox\n' ;;
     conda-pkgs)    printf 'SAFE-TO-DELETE\tconda package cache (`conda clean --all`)\n' ;;
-    cargo)         printf 'SAFE-TO-DELETE\tRust registry/git caches and `cargo install` binaries (note `cargo install --list` first)\n' ;;
+    cargo-cache)   printf 'SAFE-TO-DELETE\tcargo download cache, re-fetched on the next build\n' ;;
     rustup)        printf 'SAFE-TO-DELETE\tRust toolchains; rustup reinstalls them\n' ;;
     node_modules)  printf 'SAFE-TO-DELETE\t`npm install` recreates them\n' ;;
     installer-installed) printf 'SAFE-TO-DELETE\tinstaller for an app that is installed\n' ;;
+    sim-devices)   printf 'REVIEW\tsimulator devices hold test-app data; `xcrun simctl delete unavailable` removes only stale ones\n' ;;
+    cargo-bin)     printf 'REVIEW\t`cargo install`ed binaries: `cargo install --list` to recreate (config/credentials: see Secrets)\n' ;;
     xcarchives)    printf 'REVIEW\tholds the dSYMs of shipped builds\n' ;;
     mobilesync)    printf 'REVIEW\tmay be the ONLY copy of an old iPhone/iPad: keep or copy off, not cleanup\n' ;;
     trash)         printf 'REVIEW\talready discarded, but look before emptying\n' ;;
@@ -1714,8 +1716,8 @@ section_backups() {
 
 # ── section 5: crypto wallets ──────────────────────────────────────────────
 
-WALLET_ROWS=""      # "NAME\tKEYS\tAPP(0|1)\tKB\tDENIED\tPATH"
-WALLET_EXT_ROWS=""  # "NAME\tBROWSER\tPROFILE\tKB\tDENIED\tPATH"
+WALLET_ROWS=""      # "NAME\tKEYS\tAPP(0|1)\tKB\tDENIED\tPATH" (KB "-" = not sized)
+WALLET_EXT_ROWS=""  # "NAME\tBROWSER\tPROFILE\tKB\tDENIED\tPATH" (KB "-" = not sized)
 collect_wallets() {
   local name keys apps dirs rest a d app path
   WALLET_ROWS=""; WALLET_EXT_ROWS=""
@@ -1734,7 +1736,7 @@ collect_wallets() {
       if [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then path="$HOME/$d"; break; fi
     done
     [ "$app" = 1 ] || [ -n "$path" ] || continue
-    DU_KB=""; DU_DENIED=0
+    DU_KB="-"; DU_DENIED=0   # "-" = not sized: an empty field would collapse in a tab read
     [ -n "$path" ] && du_size "$path"
     WALLET_ROWS+="$name"$'\t'"$keys"$'\t'"$app"$'\t'"$DU_KB"$'\t'"$DU_DENIED"$'\t'"$path"$'\n'
   done < <(printf '%s\n' "$WALLET_APPS")
@@ -1750,7 +1752,7 @@ collect_wallets() {
         [ -n "$id" ] || continue
         les="$prof/Local Extension Settings/$id"
         if [ -d "$prof/Extensions/$id" ] || [ -d "$les" ]; then
-          DU_KB=""; DU_DENIED=0
+          DU_KB="-"; DU_DENIED=0
           [ -d "$les" ] && du_size "$les"
           WALLET_EXT_ROWS+="$ename"$'\t'"${b%%:*}"$'\t'"${prof##*/}"$'\t'"$DU_KB"$'\t'"$DU_DENIED"$'\t'"$les"$'\n'
         fi
@@ -1759,7 +1761,7 @@ collect_wallets() {
   done < <(printf '%s\n' "$CHROMIUM_BROWSERS")
   for prof in "$as/Firefox/Profiles"/*; do
     [ -e "$prof/extensions/webextension@metamask.io.xpi" ] || continue
-    WALLET_EXT_ROWS+="MetaMask"$'\t'"Firefox"$'\t'"${prof##*/}"$'\t'$'\t'"0"$'\t'"$prof"$'\n'
+    WALLET_EXT_ROWS+="MetaMask"$'\t'"Firefox"$'\t'"${prof##*/}"$'\t'"-"$'\t'"0"$'\t'"$prof"$'\n'
   done
 }
 
@@ -1794,8 +1796,9 @@ section_wallets() {
   while IFS=$'\t' read -r name browser profile kb den path; do
     [ -n "$name" ] || continue
     here+="$name ($browser · $profile), "
-    emit "| $name extension | $browser | profile \`$(md_cell "$profile")\` | $( [ -n "$kb" ] && size_label "$kb" "$den" || printf '–') | in the browser profile (encrypted vault) |"
-    [ -n "$kb" ] && plan_path RED "$kb" "$path" "$name extension data ($browser $profile)"
+    emit "| $name extension | $browser | profile \`$(md_cell "$profile")\` | $( [ "$kb" != - ] && size_label "$kb" "$den" || printf '–') | in the browser profile (encrypted vault) |"
+    [ "$kb" = - ] && kb="?"
+    [ -d "$path" ] && plan_path RED "$kb" "$path" "$name extension data ($browser $profile)"
   done < <(printf '%s' "$WALLET_EXT_ROWS")
   blank
   if [ -n "$here" ]; then
@@ -1882,8 +1885,11 @@ collect_cleanup() {
   [ -d "$x/DerivedData" ] && clean_add deriveddata "Xcode DerivedData" "$x/DerivedData"
   [ -d "$x/Archives" ] && clean_add xcarchives "Xcode Archives" "$x/Archives"
   for d in "$x"/*DeviceSupport; do [ -d "$d" ] && clean_add devicesupport "Xcode ${d##*/}" "$d"; done
+  # Simulator caches rebuild; simulator devices can hold the only copy of
+  # test-app data, so they are REVIEW (runtimes live outside ~).
   d="$HOME/Library/Developer/CoreSimulator"
-  [ -d "$d" ] && clean_add coresimulator "Simulators (CoreSimulator)" "$d"
+  [ -d "$d/Caches" ] && clean_add sim-caches "Simulator caches" "$d/Caches"
+  [ -d "$d/Devices" ] && clean_add sim-devices "Simulator devices" "$d/Devices"
   for d in "$HOME"/miniconda* "$HOME"/anaconda* "$HOME"/miniforge* "$HOME"/mambaforge* "$HOME/.conda" \
            /opt/homebrew/Caskroom/miniconda/base /opt/miniconda3 /opt/anaconda3; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
@@ -1891,7 +1897,12 @@ collect_cleanup() {
     for e in "$d/envs"/*; do [ -d "$e" ] && clean_add conda-env "conda env \`${e##*/}\`" "$e"; done
     [ -d "$d/pkgs" ] && clean_add conda-pkgs "conda package cache" "$d/pkgs"
   done
-  [ -d "$HOME/.cargo" ] && [ ! -L "$HOME/.cargo" ] && clean_add cargo "Rust (cargo)" "$HOME/.cargo"
+  # Only cargo's download caches are disposable; ~/.cargo also holds config,
+  # credentials and installed binaries.
+  for d in registry git; do
+    [ -d "$HOME/.cargo/$d" ] && clean_add cargo-cache "Rust cargo $d cache" "$HOME/.cargo/$d"
+  done
+  [ -d "$HOME/.cargo/bin" ] && clean_add cargo-bin "Rust cargo-installed binaries" "$HOME/.cargo/bin"
   [ -d "$HOME/.rustup" ] && [ ! -L "$HOME/.rustup" ] && clean_add rustup "Rust toolchains (rustup)" "$HOME/.rustup"
   [ -d "$HOME/.orbstack" ] && [ ! -L "$HOME/.orbstack" ] && clean_add orbstack "OrbStack" "$HOME/.orbstack"
   progress "looking for node_modules under ~…"

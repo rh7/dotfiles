@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fixture tests for the pure helpers in scripts/pre-wipe-check.sh.
+# Fixture tests for the pure helpers in scripts/pre-wipe-check.sh, plus the
+# --all-users orchestration against stubbed id/sudo/dscl/du/ls/last.
 #
 # Run: bash scripts/tests/pre-wipe-check.test.sh
 #
@@ -242,7 +243,10 @@ echo "== cleanup classification =="
 cls() { local r; r="$(cleanup_class "$1")"; printf '%s' "${r%%$'\t'*}"; }
 check "caches safe"              SAFE-TO-DELETE "$(cls caches)"
 check "DerivedData safe"         SAFE-TO-DELETE "$(cls deriveddata)"
-check "simulators safe"          SAFE-TO-DELETE "$(cls coresimulator)"
+check "simulator caches safe"    SAFE-TO-DELETE "$(cls sim-caches)"
+check "simulator devices review" REVIEW "$(cls sim-devices)"
+check "cargo caches safe"        SAFE-TO-DELETE "$(cls cargo-cache)"
+check "cargo binaries review"    REVIEW "$(cls cargo-bin)"
 check "DeviceSupport safe"       SAFE-TO-DELETE "$(cls devicesupport)"
 check "installed installer safe" SAFE-TO-DELETE "$(cls installer-installed)"
 check "Downloads review"         REVIEW "$(cls downloads)"
@@ -261,7 +265,8 @@ check "no matching app"                installer "$(installer_kind 'Electrum-4.5
 check "zip is an archive, not an installer" archive "$(installer_kind 'GoogleChrome.zip' "$APPS")"
 
 ( H="$TMP/home-clean"; HOME="$H"; mkdir -p "$H/Library/Caches" "$H/Library/Developer/Xcode/DerivedData" \
-    "$H/Library/Developer/Xcode/iOS DeviceSupport" "$H/miniconda3/envs/ml" "$H/miniconda3/pkgs" "$H/.cargo" \
+    "$H/Library/Developer/Xcode/iOS DeviceSupport" "$H/miniconda3/envs/ml" "$H/miniconda3/pkgs" "$H/.cargo/registry" "$H/.cargo/bin" \
+    "$H/Library/Developer/CoreSimulator/Caches" "$H/Library/Developer/CoreSimulator/Devices" \
     "$H/Library/Application Support/MobileSync/Backup/00008030-AAA" "$H/proj/node_modules"
   stat() { echo 1700000000; }
   PROTECTED_DONE=0; SKIP_PROTECTED=1; CLEANUP_BUDGET=100
@@ -272,7 +277,11 @@ check "zip is an archive, not an installer" archive "$(installer_kind 'GoogleChr
   check "cleanup: DeviceSupport row"  SAFE-TO-DELETE "$(row 'Xcode iOS DeviceSupport')"
   check "cleanup: conda env row"      REVIEW "$(row 'conda env `ml`')"
   check "cleanup: conda pkgs row"     SAFE-TO-DELETE "$(row 'conda package cache')"
-  check "cleanup: cargo row"          SAFE-TO-DELETE "$(row 'Rust (cargo)')"
+  check "cleanup: cargo registry cache" SAFE-TO-DELETE "$(row 'Rust cargo registry cache')"
+  check "cleanup: cargo binaries"      REVIEW "$(row 'Rust cargo-installed binaries')"
+  check "cleanup: no whole-~/.cargo row" "" "$(printf '%s' "$CLEAN_ROWS" | awk -F'\t' -v p="$HOME/.cargo" '$5 == p')"
+  check "cleanup: simulator caches"    SAFE-TO-DELETE "$(row 'Simulator caches')"
+  check "cleanup: simulator devices"   REVIEW "$(row 'Simulator devices')"
   check "cleanup: node_modules found" SAFE-TO-DELETE "$(row 'node_modules (1 folders)')"
   check "cleanup: device backups REVIEW" REVIEW "$(row 'iPhone/iPad backups (1)')"
   check "device backups are an AMBER finding" "1 0" "$N_AMBER $N_RED"
@@ -286,19 +295,23 @@ echo "== crypto wallets =="
   mkdir -p "$H/.electrum/wallets"; : > "$H/.electrum/wallets/default_wallet"
   mkdir -p "$H/Library/Application Support/Exodus" "$H/.electrum" "$APPS_DIR/Ledger Live.app" "$APPS_DIR/Exodus.app" \
     "$H/Library/Application Support/Google/Chrome/Profile 1/Extensions/nkbihfbeogaeaoehlefnkodbefgpgknn" \
-    "$H/Library/Application Support/Google/Chrome/Profile 1/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn"
+    "$H/Library/Application Support/Google/Chrome/Profile 1/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn" \
+    "$H/Library/Application Support/Firefox/Profiles/abcd.default-release/extensions"
+  : > "$H/Library/Application Support/Firefox/Profiles/abcd.default-release/extensions/webextension@metamask.io.xpi"
   section_wallets 2>/dev/null
   wrow() { printf '%s' "$WALLET_ROWS" | awk -F'\t' -v n="$1" '$1 == n { print $2 "/" $3 "/" ($6 != "" ? "data" : "nodata"); exit }'; }
   check "Exodus: local keys, app, data"      "local/1/data"      "$(wrow Exodus)"
   check "Electrum: data without the app"     "local/0/data"      "$(wrow Electrum)"
   check "Ledger Live: app only"              "hardware/1/nodata" "$(wrow 'Ledger Live')"
   check "absent wallets not listed"          ""                  "$(wrow KeepKey)"
-  check "MetaMask extension in Chrome Profile 1" "MetaMask/Google Chrome/Profile 1" \
-    "$(printf '%s' "$WALLET_EXT_ROWS" | awk -F'\t' '{ print $1 "/" $2 "/" $3 }')"
+  check "MetaMask extension in Chrome Profile 1 and Firefox" "MetaMask/Google Chrome/Profile 1|MetaMask/Firefox/abcd.default-release|" \
+    "$(printf '%s' "$WALLET_EXT_ROWS" | awk -F'\t' '{ print $1 "/" $2 "/" $3 }' | tr '\n' '|')"
   check "one RED for the seed phrases"       1 "$N_RED"
   check "RED text" yes "$(has 'confirm the seed phrase / recovery for each wallet is stored offline before any change; local wallet files may hold keys' "$RED_ITEMS")"
   check "app-only wallet → AMBER (another account?)" 1 "$N_AMBER"
-  check "local-key wallet data + extension go to the plan (not Ledger)" 3 "$(printf '%s' "$PLAN_ROWS" | grep -c RED)"
+  check "local-key wallet data + both extensions go to the plan (not Ledger)" 4 "$(printf '%s' "$PLAN_ROWS" | grep -c RED)"
+  check "Firefox profile is in the plan (size unknown)" "?" \
+    "$(printf '%s' "$PLAN_ROWS" | awk -F'\t' '$4 ~ /Firefox/ { print $3 }')"
   check "never lists a wallet file name" no "$(has 'default_wallet' "$BODY")"
   sub_save
 )
