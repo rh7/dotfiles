@@ -164,10 +164,10 @@ write_status() {
 # symlinked roots resolved) + RUN_PATHS_TILDE (the configured name, same index,
 # what `paths` reports). restic stores a symlink ROOT as just the link, so a
 # symlinked ~/dotfiles would otherwise be "covered" with none of its content.
-RUN_PATHS=(); RUN_PATHS_TILDE=()
+RUN_PATHS=(); RUN_PATHS_TILDE=(); LINK_FROM=(); LINK_TO=()
 resolve_paths() {
   local p abs real
-  RUN_PATHS=(); RUN_PATHS_TILDE=()
+  RUN_PATHS=(); RUN_PATHS_TILDE=(); LINK_FROM=(); LINK_TO=()
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     abs="$(untilde "$p")"
@@ -177,6 +177,7 @@ resolve_paths() {
     if [ -L "$abs" ]; then
       real="$(realpath "$abs" 2>/dev/null)" || { log "cannot resolve symlink $(tilde "$abs") — skipped"; continue; }
       log "$(tilde "$abs") is a symlink — backing up its target $real"
+      LINK_FROM+=("$abs"); LINK_TO+=("$real")
     fi
     RUN_PATHS+=("$real"); RUN_PATHS_TILDE+=("$(tilde "$abs")")
   done <<<"$PATHS_SPEC"
@@ -186,14 +187,28 @@ paths_json() { # paths_json <tilde-path>... ; '[]' for none
   if [ $# -eq 0 ]; then echo '[]'; else printf '%s\n' "$@" | jq -R . | jq -cs .; fi
 }
 
+# restic matches excludes against the paths it archives, i.e. a symlinked
+# root's TARGET: an absolute exclude under the configured name is emitted a
+# second time rebased onto the target, so caches and the credentials dir stay
+# out either way.
+exclude_line() {
+  local i
+  printf '%s\n' "$1"
+  for i in "${!LINK_FROM[@]}"; do
+    case "$1" in
+      "${LINK_FROM[$i]}"|"${LINK_FROM[$i]}"/*) printf '%s%s\n' "${LINK_TO[$i]}" "${1#"${LINK_FROM[$i]}"}" ;;
+    esac
+  done
+}
+
 write_exclude_file() { # write_exclude_file <file>
   local e
   {
     # The credentials of this very repo: pointless inside it.
-    printf '%s\n' "$CONF_DIR"
+    exclude_line "$CONF_DIR"
     while IFS= read -r e; do
       [ -n "$e" ] || continue
-      untilde "$e"; echo
+      exclude_line "$(untilde "$e")"
     done <<<"$EXCLUDES_SPEC"
   } >"$1"
 }

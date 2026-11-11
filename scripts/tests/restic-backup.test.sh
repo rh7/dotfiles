@@ -119,6 +119,13 @@ SAVE="$SCRIPT"; SCRIPT="$T/rb-keep.sh"; rb -- run; SCRIPT="$SAVE"
 check "~/.config/**/Cache* expanded" "$(grep -cxF "$H/.config/**/Cache*" "$H/excl")" 1
 check "plain pattern kept" "$(grep -cx 'node_modules' "$H/excl")" 1
 check "rh7-restic credentials excluded" "$(grep -cxF "$H/.config/rh7-restic" "$H/excl")" 1
+check "no symlinked roots -> no rebased lines" "$(wc -l <"$H/excl" | tr -d ' ')" 3
+reset; mkdir -p "$T/realconf/x/Caches"; rm -rf "$H/.config"; ln -s "$T/realconf" "$H/.config"; configure
+SCRIPT="$T/rb-keep.sh"; rb -- run; SCRIPT="$SAVE"
+RC_REAL="$(realpath "$T/realconf")"
+check "symlinked ~/.config: Cache exclude rebased onto the target" "$(grep -cxF "$RC_REAL/**/Cache*" "$H/excl")" 1
+check "symlinked ~/.config: credentials dir rebased onto the target" "$(grep -cxF "$RC_REAL/rh7-restic" "$H/excl")" 1
+rm -rf "$T/realconf"
 
 echo "== battery: < 30 % skips (no restic), >= 30 % runs =="
 reset; configure; rb -- run   # a good snapshot to carry forward
