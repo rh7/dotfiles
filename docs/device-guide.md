@@ -447,7 +447,8 @@ cares about, instead of full-disk Time Machine. Hosts opt in with
   per host — rh-device-management). A NAS later = change `repositoryHost`.
 
 Default paths: `~/.ssh ~/.config ~/.gnupg ~/code ~/Projects ~/localtesting
-~/dotfiles` (missing ones are skipped). Excluded: `node_modules`, `.venv`,
+~/dotfiles` (missing ones are skipped; a symlinked one is backed up through
+its target). Excluded: `node_modules`, `.venv`,
 `venv`, `__pycache__`, `target`, `dist`, `build`, `.next`, `.cache`, `*.tmp`,
 `.DS_Store`, `~/.config/**/Cache*`, CACHEDIR.TAG dirs, and every file over
 100 MB (model weights). Override with `services.rh7.resticBackup.paths` /
