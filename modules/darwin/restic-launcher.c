@@ -20,16 +20,25 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #ifndef TARGET /* overridable only to test the launcher itself */
 #define TARGET "/run/current-system/sw/bin/rh7-restic-backup"
 #endif
 
 extern char **environ;
 
-static volatile pid_t child = -1;
+static volatile sig_atomic_t spawned = 0;
 
+/* launchd signals only the job's main process (this one). Relay to the whole
+ * process group — launchd makes each job its own group — so restic itself gets
+ * SIGTERM and releases its repository lock, instead of running on behind a
+ * shell that defers the signal until its foreground child exits. Ignore our
+ * own copy first. Started by hand (not by launchd), the group is the caller's
+ * job: run rh7-restic-backup directly instead. */
 static void forward(int sig) {
-  if (child > 0) kill(child, sig);
+  if (!spawned) _exit(128 + sig);
+  signal(sig, SIG_IGN);
+  kill(0, sig);
 }
 
 int main(int argc, char **argv) {
@@ -45,7 +54,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "rh7-restic-launcher: cannot start %s: %s\n", TARGET, strerror(rc));
     return 127;
   }
-  child = pid;
+  spawned = 1;
   while (waitpid(pid, &status, 0) < 0) {
     if (errno != EINTR) {
       perror("rh7-restic-launcher: waitpid");

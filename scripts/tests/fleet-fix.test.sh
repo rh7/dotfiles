@@ -340,7 +340,15 @@ has "stale snapshot behind skips -> MANUAL" "restic: no snapshot in 48h (last ru
 reset; rstatus true failed permission-denied 3; ff MOCK_ONLINE=0 -- backup
 has "permission-denied -> Full Disk Access" "grant Full Disk Access to /usr/local/libexec/rh7-restic-launcher"
 reset; rstatus true failed auth-failed 3; ff MOCK_ONLINE=0 -- backup
-has "auth-failed -> rotate the token" "restic-server-add-host.sh test-mac --rotate"
+has "auth-failed, no log: names both credentials" "either the REST token (re-issue: scripts/restic-server-add-host.sh test-mac --rotate) or the encryption key"
+reset; rstatus true failed auth-failed 3
+echo "2026-11-10T13:00:00Z failed: auth-failed — REST token: the server rejected it (restic exit 1)" >"$RS_DIR/backup.log"
+ff MOCK_ONLINE=0 -- backup
+has "auth-failed (token) -> rotate the token" "the server rejected this device — re-issue the token on the Studio (scripts/restic-server-add-host.sh test-mac --rotate)"
+echo "2026-11-10T14:00:00Z failed: auth-failed — encryption key: repo-password does not open the repository (restic exit 12)" >>"$RS_DIR/backup.log"
+ff MOCK_ONLINE=0 -- backup
+has "auth-failed (key) -> restore from 1Password, latest log line wins" "restore ~/.config/rh7-restic/repo-password from its 1Password escrow item"
+hasnt "key failure never suggests rotating the token" "the server rejected this device"
 reset; mkdir -p "$RS_DIR"; echo '{nope' >"$RS_DIR/status.json"; ff MOCK_ONLINE=0 -- backup
 has "corrupt status -> unreadable, never OK" "restic: status file unreadable"
 hasnt "corrupt status never reads as OK" "[OK]     restic"

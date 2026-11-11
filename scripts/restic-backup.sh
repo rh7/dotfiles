@@ -29,10 +29,11 @@
 #   last_result: ok | failed | skipped | not-configured
 #   reason:      on-battery | offline | auth-failed | repo-locked |
 #                permission-denied | unknown | null
-#   paths:       the configured paths that EXISTED and were readable this run,
-#                as "~/…" under $HOME (absolute otherwise). Snapshot fields are
-#                carried forward from the previous status on a run that made no
-#                snapshot.
+#   paths:       what the snapshot named by last_snapshot_time contains: the
+#                configured paths that existed and were readable when it was
+#                taken, as "~/…" under $HOME (absolute otherwise). A run that
+#                makes no snapshot carries the snapshot fields AND its paths
+#                forward (before the first snapshot: the existing paths).
 #
 # POLICY
 #   - Never forgets or prunes: the server is append-only, retention is a
@@ -94,11 +95,11 @@ repo_url() { printf 'rest:http://%s:%s/%s/' "$REPO_HOST" "$PORT" "$1"; }
 
 # The REST password goes through the environment, never argv (it would show in
 # `ps`); the encryption key stays a file.
-restic_env() { # restic_env <user>
+restic_env() { # restic_env <user> [rest-password; default: the stored one]
   export RESTIC_REPOSITORY RESTIC_REST_USERNAME RESTIC_REST_PASSWORD RESTIC_PASSWORD_FILE
   RESTIC_REPOSITORY="$(repo_url "$1")"
   RESTIC_REST_USERNAME="$1"
-  RESTIC_REST_PASSWORD="$(cat "$CONF_DIR/server-password")"
+  if [ $# -ge 2 ]; then RESTIC_REST_PASSWORD="$2"; else RESTIC_REST_PASSWORD="$(cat "$CONF_DIR/server-password")"; fi
   RESTIC_PASSWORD_FILE="$CONF_DIR/repo-password"
 }
 
@@ -139,12 +140,19 @@ write_status() {
          { last_snapshot_time: $started, snapshot_id: ($s.snapshot_id[0:8]),
            files_new: $s.files_new, bytes_added: $s.data_added }
        else
+         # No snapshot this run: the carried snapshot keeps the paths IT
+         # contains, so a newly configured path is never credited to an older
+         # snapshot that lacks it.
          { last_snapshot_time: ($prev.last_snapshot_time // null), snapshot_id: ($prev.snapshot_id // null),
-           files_new: ($prev.files_new // null), bytes_added: ($prev.bytes_added // null) }
+           files_new: ($prev.files_new // null), bytes_added: ($prev.bytes_added // null),
+           paths: (if ($prev.last_snapshot_time // null) != null and ($prev.paths | type) == "array"
+                   then $prev.paths else $paths end) }
        end) as $snap
     | { schema: 1, enabled: true, configured: ($conf == 1), last_run_at: $now,
-        last_result: $result, reason: (if $reason == "" then null else $reason end) }
-      + $snap + { paths: $paths, repo_host: $host }' >"$tmp"; then
+        last_result: $result, reason: (if $reason == "" then null else $reason end),
+        last_snapshot_time: $snap.last_snapshot_time, snapshot_id: $snap.snapshot_id,
+        files_new: $snap.files_new, bytes_added: $snap.bytes_added,
+        paths: ($snap.paths // $paths), repo_host: $host }' >"$tmp"; then
     chmod 0644 "$tmp"
     mv -f "$tmp" "$STATUS_FILE"
   else
@@ -192,6 +200,16 @@ classify_failure() {
   else echo unknown; fi
 }
 
+# Which credential an auth-failed run tripped on — the status token is shared,
+# the fix is not. Logged; fleet-fix.sh reads it back from the log.
+auth_detail() { # auth_detail <stderr-file> <rc>
+  if [ "$2" = 12 ] || grep -qiE 'wrong password|no key found' "$1" 2>/dev/null; then
+    echo "encryption key: repo-password does not open the repository — restore it from the 1Password escrow (never re-init)"
+  else
+    echo "REST token: the server rejected it — re-issue on the Studio (restic-server-add-host.sh <host> --rotate), then setup"
+  fi
+}
+
 acquire_lock() {
   mkdir -p "$STATE_DIR" || return 1
   if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ >"$LOCK_DIR/pid"; return 0; fi
@@ -237,6 +255,10 @@ cmd_run() {
   restic_env "$user"
   started="$(now_iso)"
   log "backup to $(repo_url "$user") of: ${RUN_PATHS_TILDE[*]}"
+  # A stop (logout, launchctl unload) signals the whole job group: restic
+  # releases its repository lock and exits, and this trap — a CAUGHT signal,
+  # so restic still gets its own handling — lets the shell record the run.
+  trap 'log "terminated by signal"' TERM INT
   "$RESTIC" backup --json --host "$user" --tag "$SNAPSHOT_TAG" \
     --exclude-file "$tmp/excludes" --exclude-caches --exclude-larger-than "$EXCLUDE_LARGER" \
     -- "${RUN_PATHS[@]}" </dev/null >"$tmp/out" 2>"$tmp/err"
@@ -273,7 +295,8 @@ cmd_run() {
     fi
   else
     reason="$(classify_failure "$tmp/err" "$tmp/out" "$rc")"
-    log "failed: $reason (restic exit $rc)"
+    if [ "$reason" = auth-failed ]; then log "failed: auth-failed — $(auth_detail "$tmp/err" "$rc") (restic exit $rc)"
+    else log "failed: $reason (restic exit $rc)"; fi
     [ "$rc" = 10 ] && log "  the repository does not exist on the server — run: rh7-restic-backup setup"
     grep -v '^{' "$tmp/err" | tail -5 | while IFS= read -r p; do log "  $p"; done
     write_status failed "$reason" 1 "$pj"; rc=1
@@ -317,7 +340,10 @@ cmd_setup() {
 
   umask 077
   mkdir -p "$CONF_DIR" && chmod 0700 "$CONF_DIR" || die "setup: cannot create $CONF_DIR"
-  write_secret server-user "$host" && write_secret server-password "$pw" || die "setup: cannot write credentials"
+  # The encryption key must be a file for restic; it is only ever CREATED,
+  # never replaced. The REST credentials are tried in memory and stored only
+  # once the repository opens (or was initialised), so a mistyped or rejected
+  # token never replaces working credentials.
   local new_key=0
   if [ ! -s "$CONF_DIR/repo-password" ]; then
     write_secret repo-password "$(gen_key)" || die "setup: cannot write repo-password"
@@ -327,24 +353,23 @@ cmd_setup() {
     echo "keeping existing encryption key $(tilde "$CONF_DIR")/repo-password" >&2
   fi
 
-  server_reachable || die "setup: $REPO_HOST:$PORT is unreachable (Tailscale up?). Credentials are saved — re-run setup to initialise the repository."
-  restic_env "$host"
+  server_reachable || die "setup: $REPO_HOST:$PORT is unreachable (Tailscale up?) — nothing changed; re-run setup when it is reachable."
+  restic_env "$host" "$pw"
   out="$("$RESTIC" cat config </dev/null 2>&1 >/dev/null)"; rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "repository $(repo_url "$host") already exists and this key opens it" >&2
-  elif [ "$rc" -eq 10 ] || grep -qiE 'does not exist|no such file|Is there a repository' <<<"$out"; then
-    if [ "$new_key" -eq 0 ]; then
-      echo "repository not found — initialising it with the existing key" >&2
-    fi
-    "$RESTIC" init </dev/null >/dev/null || die "setup: restic init failed"
-    echo "initialised $(repo_url "$host")" >&2
   elif [ "$rc" -eq 12 ] || grep -qiE 'wrong password|no key found' <<<"$out"; then
     die "setup: the repository exists but $(tilde "$CONF_DIR")/repo-password does not open it. Restore the escrowed key from 1Password into that file (0600) and re-run setup — never re-init."
-  elif grep -qiE '401|Unauthorized' <<<"$out"; then
-    die "setup: the server rejected the token (401). Re-issue it on the Studio: scripts/restic-server-add-host.sh $host --rotate"
+  elif grep -qiE 'HTTP response \(40[13]\)|Unauthorized|Forbidden' <<<"$out"; then
+    die "setup: the server rejected the token — nothing changed. Re-issue it on the Studio: scripts/restic-server-add-host.sh $host --rotate"
+  elif [ "$rc" -eq 10 ] || grep -qiE 'does not exist|no such file|Is there a repository' <<<"$out"; then
+    [ "$new_key" -eq 0 ] && echo "repository not found — initialising it with the existing key" >&2
+    "$RESTIC" init </dev/null >/dev/null || die "setup: restic init failed — nothing changed"
+    echo "initialised $(repo_url "$host")" >&2
   else
-    die "setup: cannot open the repository (restic exit $rc): $(tail -1 <<<"$out")"
+    die "setup: cannot open the repository (restic exit $rc) — nothing changed: $(tail -1 <<<"$out")"
   fi
+  write_secret server-user "$host" && write_secret server-password "$pw" || die "setup: cannot write credentials"
 
   cat >&2 <<EOF
 

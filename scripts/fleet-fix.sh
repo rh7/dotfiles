@@ -371,7 +371,13 @@ PY
   info "restic: last run $result$([ "$reason" = "-" ] || echo " ($reason)"); last snapshot $snap, $([ "$age" = never ] && echo never || echo "${age}h ago"); paths: $paths"
   info "its encryption key must be escrowed (not verifiable here): ~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password --apply"
   case "$result:$reason" in
-    failed:auth-failed) st_manual "restic: the server rejected this device — re-issue the token on the Studio (scripts/restic-server-add-host.sh $HOST_LC --rotate), then re-run setup" "rh7-restic-backup setup" ;;
+    failed:auth-failed)
+      # One status token for both credentials; the run log says which one.
+      case "$(grep 'failed: auth-failed' "$RESTIC_LOG" 2>/dev/null | tail -1)" in
+        *"encryption key"*) st_manual "restic: the encryption key does not open the repository — restore ~/.config/rh7-restic/repo-password from its 1Password escrow item (0600), then re-run setup; never re-init" "rh7-restic-backup setup" ;;
+        *"REST token"*) st_manual "restic: the server rejected this device — re-issue the token on the Studio (scripts/restic-server-add-host.sh $HOST_LC --rotate), then re-run setup" "rh7-restic-backup setup" ;;
+        *) st_manual "restic: authentication failed — either the REST token (re-issue: scripts/restic-server-add-host.sh $HOST_LC --rotate) or the encryption key (restore repo-password from 1Password); the log says which" "tail -40 $(tilde "$RESTIC_LOG")" ;;
+      esac ;;
     failed:permission-denied) st_manual "restic: macOS privacy blocked a path — grant Full Disk Access to /usr/local/libexec/rh7-restic-launcher, or drop the protected path (modules/darwin/restic-backup.nix header)" \
       "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'" ;;
     failed:*) st_manual "restic: last run failed ($reason) — read the log, then retry" "tail -40 $(tilde "$RESTIC_LOG") && rh7-restic-backup run" ;;

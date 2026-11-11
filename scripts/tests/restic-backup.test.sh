@@ -42,7 +42,7 @@ cat >"$BIN/restic" <<STUB
 echo "restic \$* | user=\${RESTIC_REST_USERNAME:-} repo=\${RESTIC_REPOSITORY:-} pwfile=\${RESTIC_PASSWORD_FILE:-} restpw=\${RESTIC_REST_PASSWORD:+set}" >>"$CALLS"
 summary='{"message_type":"summary","files_new":3,"data_added":1234,"snapshot_id":"abcdef0123456789abcdef"}'
 case "\$1" in
-  cat) exit "\${CAT_RC:-0}" ;;
+  cat) [ -n "\${CAT_ERR:-}" ] && echo "\$CAT_ERR" >&2; exit "\${CAT_RC:-0}" ;;
   init) exit 0 ;;
   backup)
     while [ "\$1" != "--" ]; do shift; done; shift
@@ -55,6 +55,8 @@ case "\$1" in
       auth) echo "Fatal: unable to open config file: unexpected HTTP response (401): 401 Unauthorized" >&2; exit 1 ;;
       locked) echo "Fatal: unable to create lock in backend: repository is already locked" >&2; exit 11 ;;
       weird) echo "Fatal: something else entirely" >&2; exit 1 ;;
+      wrongkey) echo "Fatal: wrong password or no key found" >&2; exit 12 ;;
+      slow) echo started >"\$HOME/restic-started"; trap 'echo "{\"message_type\":\"exit_error\",\"code\":130}" >&2; exit 130' TERM; sleep 20 & wait; exit 0 ;;
     esac ;;
 esac
 STUB
@@ -160,6 +162,39 @@ rb RESTIC_MODE=auth -- run;   check "401 -> auth-failed" "$(st '[.last_result,.r
 check "previous snapshot kept" "$(st .snapshot_id)" '"abcdef01"'
 rb RESTIC_MODE=locked -- run; check "exit 11 -> repo-locked" "$(st .reason)" '"repo-locked"'
 rb RESTIC_MODE=weird -- run;  check "anything else -> unknown" "$(st .reason)" '"unknown"'
+grep -q 'auth-failed — REST token' "$H/.local/state/rh7-restic/backup.log"; check "401 logged as the REST token" "$?" 0
+rb RESTIC_MODE=wrongkey -- run; check "exit 12 -> auth-failed" "$(st .reason)" '"auth-failed"'
+check "exit 12 logged as the encryption key" "$(grep 'failed: auth-failed' "$H/.local/state/rh7-restic/backup.log" | tail -1 | grep -c 'encryption key')" 1
+
+echo "== carried snapshot keeps ITS paths (no credit for a newly added path) =="
+reset; configure; rb -- run
+mkdir -p "$H/Projects"
+rb CURL_CODE=000 -- run
+check "offline run after adding ~/Projects: paths of the carried snapshot" "$(st '[.last_result,.paths]')" '["skipped",["~/.ssh","~/.config","~/code"]]'
+rb RESTIC_MODE=auth -- run
+check "failed run: same" "$(st .paths)" '["~/.ssh","~/.config","~/code"]'
+rb -- run
+check "next snapshot: new path credited" "$(st .paths)" '["~/.ssh","~/.config","~/code","~/Projects"]'
+
+echo "== a stop signal to the job group still records the run =="
+reset; configure
+python3 - "$T" "$H" "$BIN" "$SCRIPT" "$PATHS_SPEC" <<'PY'
+import os, signal, subprocess, sys, time
+T, H, BIN, SCRIPT, PATHS = sys.argv[1:6]
+env = {"PATH": BIN + ":/usr/bin:/bin", "HOME": H, "TMPDIR": T, "RH7_RESTIC_BIN": BIN + "/restic",
+       "RH7_RESTIC_PATHS": PATHS, "RH7_RESTIC_REPO_HOST": "studio", "RESTIC_MODE": "slow"}
+p = subprocess.Popen(["bash", SCRIPT, "run"], env=env, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+for _ in range(100):
+    if os.path.exists(H + "/restic-started"):
+        break
+    time.sleep(0.05)
+os.killpg(p.pid, signal.SIGTERM)   # what the launcher relays: the whole group
+p.wait(timeout=10)
+PY
+check "stopped run recorded as failed" "$(st '[.last_result,.reason]')" '["failed","unknown"]'
+check "log says it was terminated" "$(grep -c 'terminated by signal' "$H/.local/state/rh7-restic/backup.log")" 1
+check "lock released" "$([ -d "$H/.local/state/rh7-restic/run.lock" ] && echo held || echo free)" free
 
 echo "== no configured path exists =="
 reset; configure; PATHS_SPEC='~/nope' rb -- run
@@ -195,6 +230,13 @@ check "says restore from 1Password" "$(grep -c '1Password' "$T/o")" 1
 printf 'garbage\n' | env -i PATH="$BIN:/usr/bin:/bin" HOME="$H" bash "$SCRIPT" setup >/dev/null 2>&1; check "non-token rejected" "$?" 2
 printf 'rh7-restic:other-mac:pw\n' | env -i PATH="$BIN:/usr/bin:/bin" HOME="$H" RH7_RESTIC_BIN="$BIN/restic" bash "$SCRIPT" setup --force >/dev/null 2>&1
 check "--force accepts a registry name that differs" "$(cat "$CONF/server-user")" other-mac
+printf 'rh7-restic:other-mac:typo\n' | env -i PATH="$BIN:/usr/bin:/bin" HOME="$H" RH7_RESTIC_BIN="$BIN/restic" CAT_RC=1 \
+  CAT_ERR='Fatal: unable to open config file: unexpected HTTP response (401): 401 Unauthorized' bash "$SCRIPT" setup --force >"$T/o" 2>&1; RC=$?
+check "rejected replacement token -> exit 2" "$RC" 2
+check "working credentials kept" "$(cat "$CONF/server-password")" pw
+check "says nothing changed" "$(grep -c 'nothing changed' "$T/o")" 1
+printf 'rh7-restic:other-mac:pw9\n' | env -i PATH="$BIN:/usr/bin:/bin" HOME="$H" RH7_RESTIC_BIN="$BIN/restic" CURL_CODE=000 bash "$SCRIPT" setup --force >/dev/null 2>&1
+check "unreachable server -> credentials untouched" "$(cat "$CONF/server-password")" pw
 
 echo "== restore-hint / status =="
 OUT="$(env -i PATH="$BIN:/usr/bin:/bin" HOME="$H" bash "$SCRIPT" restore-hint 2>&1)"
