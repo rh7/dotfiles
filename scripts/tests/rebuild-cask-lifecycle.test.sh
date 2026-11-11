@@ -75,6 +75,8 @@ JSON
 }
 RETIRED_FAILS=false
 retired_cask_names() { $RETIRED_FAILS && return 1; printf '%s\n' session stremio never-installed; }
+HB_MANAGED_RC=0   # 0 managed | 1 homebrew.enable = false | 2 eval failed
+homebrew_managed() { return "$HB_MANAGED_RC"; }
 printf '%s\n' zen vlc newapp tailscale-app >"$PLAN_TMP/declared_casks"
 
 echo ""
@@ -98,6 +100,15 @@ XATTR_MODE=allow; cask_lifecycle_plan false >/dev/null
 check "unevaluable declared casks adopt nothing" "" "$ADOPT_CASKS"
 check "unevaluable declared casks install nothing" "" "$NEW_CASKS"
 check "retirement still runs without declared casks" "session stremio" "$RETIRE_CASKS"
+
+HB_MANAGED_RC=1; cask_lifecycle_plan >/dev/null
+check "homebrew.enable = false adopts nothing" "" "$ADOPT_CASKS"
+check "homebrew.enable = false installs nothing" "" "$NEW_CASKS"
+check "homebrew.enable = false removes nothing" "" "$RETIRE_CASKS"
+HB_MANAGED_RC=2; cask_lifecycle_plan >/dev/null
+check "unevaluable homebrew.enable removes nothing" "" "$RETIRE_CASKS"
+check "unevaluable homebrew.enable adopts nothing" "" "$ADOPT_CASKS"
+HB_MANAGED_RC=0
 
 XATTR_MODE=allow; RETIRED_FAILS=true; cask_lifecycle_plan >/dev/null
 check "unevaluable retired list removes NOTHING" "" "$RETIRE_CASKS"

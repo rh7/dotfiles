@@ -307,10 +307,20 @@ cask_app_targets() {
 # formula/upgrade plan: an unrelated `brew outdated` failure must not stop a
 # retired cask's removal or let activation trip over a hand-installed copy.
 # A failed inventory leaves the lists EMPTY and says so: not removing or
-# replacing is the safe direction, guessing is not.
+# replacing is the safe direction, guessing is not. Same for a host whose
+# config does not manage Homebrew (homebrew.enable = false, the Studio): its
+# casks are owned by hand, so this plan touches none of them.
 cask_lifecycle_plan() {
-  local declared_known="${1:-true}"
+  local declared_known="${1:-true}" managed_rc=0
   ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
+  homebrew_managed "$FLAKE_REF" || managed_rc=$?
+  if [[ $managed_rc -eq 1 ]]; then
+    info "homebrew.enable = false for this host — no casks replaced or removed"
+    return 0
+  elif [[ $managed_rc -ne 0 ]]; then
+    warn "Could not evaluate homebrew.enable — no casks replaced or removed"
+    return 0
+  fi
   if ! brew list --cask -1 >"$PLAN_TMP/installed_casks" 2>/dev/null; then
     warn "'brew list --cask' failed — install/replace/remove plan unavailable"
     return 0
