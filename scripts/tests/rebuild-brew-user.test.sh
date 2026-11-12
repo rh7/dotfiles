@@ -32,7 +32,7 @@ check() { if [[ "$2" == "$3" ]]; then good "$1"; else bad "$1" "expected [$3] go
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-FNS="setup_brew_user eval_primary_user brew_prefix brew_prefix_foreign brew_as_primary
+FNS="setup_brew_user host_flake_ref eval_primary_user brew_prefix brew_prefix_foreign brew_as_primary
      authenticate_once ensure_jq ensure_declared_lib homebrew_plan cask_lifecycle_plan
      cask_app_targets app_bundle_modifiable declared_outdated_mas select_by_mode
      load_critical_names replace_hand_installed"
@@ -113,6 +113,7 @@ BOLD=; NC=
 OS=Darwin
 DOTFILES_DIR="$ROOT/.."
 FLAKE_REF="/flake#host"
+HOSTNAME=thishost
 UPGRADE_MODE=all
 AUTO_CONFIRM=false; FORCE_MAS=false
 REBUILD_MAS_BIN=/nonexistent/mas
@@ -175,6 +176,16 @@ grep -qF "$PFX/Caskroom ($ME)" "$W/out" && good "half-chowned prefix: names the 
 HB_ENABLE=false OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'
 grep -q "AS=false" "$W/out" && good "homebrew.enable = false: hands off, no ownership stop" \
   || bad "homebrew.enable = false: hands off, no ownership stop" "$(cat "$W/out")"
+HB_ENABLE=null run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'
+grep -q "AS=true" "$W/out" && good "homebrew.enable unknown: still runs Homebrew as kassie (fail safe)" \
+  || bad "homebrew.enable unknown: still runs Homebrew as kassie (fail safe)" "$(cat "$W/out")"
+for ref in /flake '/flake#'; do
+  run_case "FLAKE_REF='$ref'; setup_brew_user; echo \"AS=\$BREW_AS_PRIMARY\""
+  grep -qF 'nix eval --raw /flake#darwinConfigurations."thishost".config.system.primaryUser' "$W/log" \
+    && grep -q "AS=true" "$W/out" \
+    && good "--flake $ref: resolves to this host, like the build" \
+    || bad "--flake $ref: resolves to this host, like the build" "$(cat "$W/log" "$W/out")"
+done
 
 echo ""
 echo "brew_as_primary"

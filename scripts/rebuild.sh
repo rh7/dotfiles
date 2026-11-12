@@ -220,9 +220,20 @@ PRIMARY_USER=""
 BREW_AS_PRIMARY=false
 BREW_BIN=""
 
-# eval_primary_user — prints system.primaryUser of FLAKE_REF's configuration.
+# host_flake_ref — FLAKE_REF with a missing or empty fragment (`path` /
+# `path#`) resolved to this host, exactly as build_darwin_system resolves it.
+# Otherwise a fragment-less --flake would evaluate nothing below and silently
+# fall back to running Homebrew as the invoker.
+host_flake_ref() {
+  local dir="${FLAKE_REF%%#*}" host=""
+  [[ "$FLAKE_REF" == *#* ]] && host="${FLAKE_REF#*#}"
+  printf '%s#%s\n' "$dir" "${host:-$HOSTNAME}"
+}
+
+# eval_primary_user — prints system.primaryUser of the configuration.
 eval_primary_user() {
-  local dir="${FLAKE_REF%#*}" host="${FLAKE_REF##*#}"
+  local ref dir host
+  ref=$(host_flake_ref); dir="${ref%#*}"; host="${ref##*#}"
   nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.system.primaryUser" 2>/dev/null
 }
 
@@ -275,15 +286,16 @@ setup_brew_user() {
   invoker=$(id -un)
   if ! PRIMARY_USER=$(eval_primary_user) || [[ -z "$PRIMARY_USER" ]]; then
     PRIMARY_USER=""
-    warn "Could not evaluate system.primaryUser for $FLAKE_REF — Homebrew runs as $invoker"
+    warn "Could not evaluate system.primaryUser for $(host_flake_ref) — Homebrew runs as $invoker"
     return 0
   fi
   [[ "$PRIMARY_USER" != "$invoker" ]] || return 0
   ensure_declared_lib
-  homebrew_managed "$FLAKE_REF" || managed_rc=$?
-  # 1 = homebrew.enable is false (nothing runs brew), 2 = unknown: the
-  # activation then decides, exactly as on the same-user path.
-  [[ $managed_rc -eq 0 ]] || return 0
+  homebrew_managed "$(host_flake_ref)" || managed_rc=$?
+  # Only homebrew.enable = false (1) means nothing runs brew for her. An
+  # unknown answer (2) keeps the checks: running brew as the wrong account is
+  # the failure this guards against.
+  [[ $managed_rc -ne 1 ]] || return 0
   if ! prefix=$(brew_prefix) || [[ -z "$prefix" ]]; then
     return 0   # no Homebrew yet: nothing to own or to run as her
   fi
