@@ -105,9 +105,10 @@ HB_MANAGED_RC=1; cask_lifecycle_plan >/dev/null
 check "homebrew.enable = false adopts nothing" "" "$ADOPT_CASKS"
 check "homebrew.enable = false installs nothing" "" "$NEW_CASKS"
 check "homebrew.enable = false removes nothing" "" "$RETIRE_CASKS"
-HB_MANAGED_RC=2; cask_lifecycle_plan >/dev/null
-check "unevaluable homebrew.enable removes nothing" "" "$RETIRE_CASKS"
-check "unevaluable homebrew.enable adopts nothing" "" "$ADOPT_CASKS"
+homebrew_enable_failed() { echo "FATAL homebrew.enable"; exit 1; }
+HB_MANAGED_RC=2; out=$( brew() { echo "BREW CALLED"; }; cask_lifecycle_plan 2>&1 ); rc=$?
+check "unevaluable homebrew.enable is fatal (rc 1)" "1" "$rc"
+check "unevaluable homebrew.enable stops before any brew call" "FATAL homebrew.enable" "$out"
 HB_MANAGED_RC=0
 
 XATTR_MODE=allow; RETIRED_FAILS=true; cask_lifecycle_plan >/dev/null

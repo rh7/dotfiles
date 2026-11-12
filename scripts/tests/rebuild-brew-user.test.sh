@@ -32,7 +32,8 @@ check() { if [[ "$2" == "$3" ]]; then good "$1"; else bad "$1" "expected [$3] go
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-FNS="setup_brew_user host_flake_ref eval_primary_user brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary
+FNS="setup_brew_user host_flake_ref eval_failed eval_primary_user homebrew_enable_failed require_nix_features
+     brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary
      authenticate_once ensure_jq ensure_declared_lib homebrew_plan cask_lifecycle_plan
      cask_app_targets app_bundle_modifiable declared_outdated_mas select_by_mode
      load_critical_names replace_hand_installed"
@@ -94,8 +95,22 @@ if [[ "$*" == *" shell nixpkgs#jq "* ]]; then
   echo "$STUB_JQ_DIR/jq"; exit 0
 fi
 case "$*" in
-  *config.system.primaryUser*) [[ -n "${STUB_PRIMARY_FAIL:-}" ]] && exit 1; printf '%s' "$STUB_PRIMARY" ;;
-  *config.homebrew.enable*) echo "${STUB_HB_ENABLE:-true}" ;;
+  "config show experimental-features")
+    if [[ -n "${STUB_NOCMD:-}" ]]; then
+      echo "error: experimental Nix feature 'nix-command' is disabled; add '--extra-experimental-features nix-command' to enable it" >&2
+      exit 1
+    fi
+    echo "${STUB_FEATURES:-flakes nix-command}" ;;
+  *config.system.primaryUser*)
+    if [[ -n "${STUB_PRIMARY_FAIL:-}" ]]; then
+      echo "error: attribute 'rouvens-new-mac' missing" >&2
+      echo "       at «string»:1:1:" >&2
+      exit 1
+    fi
+    printf '%s' "$STUB_PRIMARY" ;;
+  *config.homebrew.enable*)
+    if [[ "${STUB_HB_ENABLE:-true}" == fail ]]; then echo "error: homebrew eval exploded" >&2; exit 1; fi
+    echo "${STUB_HB_ENABLE:-true}" ;;
   *config.homebrew.casks*) echo '[{"name":"zen"},{"name":"vlc"}]' ;;
   *config.homebrew.brews*) echo '[]' ;;
   *retiredCasks*|*criticalUpgrades*) echo '[]' ;;
@@ -132,8 +147,9 @@ $1
 EOF
   ( cd "$W" && env PATH="$STUBS:$PFX/bin:/usr/bin:/bin" STUB_LOG="$W/log" STUB_PFX="$PFX" \
       STUB_APPS="$APPS" STUB_OWNERS="$W/owners" STUB_DEFAULT_OWNER="${OWNER:-kassie}" \
-      STUB_PRIMARY="${PRIMARY:-kassie}" STUB_PRIMARY_FAIL="${PRIMARY_FAIL:-}" \
+      STUB_PRIMARY="${PRIMARY-kassie}" STUB_PRIMARY_FAIL="${PRIMARY_FAIL:-}" \
       STUB_HB_ENABLE="${HB_ENABLE:-true}" STUB_JQ_DIR="${JQ_DIR:-}" \
+      STUB_NOCMD="${NOCMD:-}" STUB_FEATURES="${FEATURES:-}" \
       bash "$W/case.sh" >"$W/out" 2>&1 )
   echo $? >"$W/rc"
 }
@@ -149,10 +165,17 @@ grep -q "AS=false TYPE=file" "$W/out" && good "same user: brew stays the plain c
   || bad "same user: brew stays the plain command" "$(cat "$W/out")"
 grep -q '^sudo' "$W/log" && bad "same user: no sudo" "$(cat "$W/log")" || good "same user: no sudo"
 
-PRIMARY_FAIL=1 run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'
-grep -q "AS=false" "$W/out" && grep -q "Could not evaluate system.primaryUser" "$W/out" \
-  && good "unevaluable primaryUser: warns, Homebrew runs as the invoker" \
-  || bad "unevaluable primaryUser: warns, Homebrew runs as the invoker" "$(cat "$W/out")"
+PRIMARY_FAIL=1 run_case 'setup_brew_user; echo "REACHED"'
+check "unevaluable primaryUser: fatal (rc 1)" "$(cat "$W/rc")" 1
+grep -q REACHED "$W/out" && bad "unevaluable primaryUser: no fallback to the invoker" "$(cat "$W/out")" \
+  || good "unevaluable primaryUser: no fallback to the invoker"
+grep -q "Could not evaluate system.primaryUser" "$W/out" && grep -qF "error: attribute 'rouvens-new-mac' missing" "$W/out" \
+  && good "unevaluable primaryUser: shows the nix error" \
+  || bad "unevaluable primaryUser: shows the nix error" "$(cat "$W/out")"
+grep -q '^brew\|^sudo' "$W/log" && bad "unevaluable primaryUser: no brew/sudo calls" "$(cat "$W/log")" \
+  || good "unevaluable primaryUser: no brew/sudo calls"
+PRIMARY="" run_case 'setup_brew_user; echo "REACHED"'
+check "empty primaryUser: fatal (rc 1)" "$(cat "$W/rc")" 1
 
 echo ""
 echo "setup_brew_user — cross-user (primaryUser kassie, invoker $ME)"
@@ -190,9 +213,35 @@ grep -q "… and [0-9]* more" "$W/out" && good "wholly foreign prefix: first 5 p
 HB_ENABLE=false OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'
 grep -q "AS=false" "$W/out" && good "homebrew.enable = false: hands off, no ownership stop" \
   || bad "homebrew.enable = false: hands off, no ownership stop" "$(cat "$W/out")"
-HB_ENABLE=null run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'
-grep -q "AS=true" "$W/out" && good "homebrew.enable unknown: still runs Homebrew as kassie (fail safe)" \
-  || bad "homebrew.enable unknown: still runs Homebrew as kassie (fail safe)" "$(cat "$W/out")"
+for hb in null fail; do
+  HB_ENABLE=$hb run_case 'setup_brew_user; echo "REACHED"'
+  check "homebrew.enable $hb: fatal (rc 1)" "$(cat "$W/rc")" 1
+  grep -q "Could not evaluate homebrew.enable" "$W/out" && ! grep -q REACHED "$W/out" \
+    && good "homebrew.enable $hb: stops with the reason" || bad "homebrew.enable $hb: stops with the reason" "$(cat "$W/out")"
+done
+grep -q "homebrew eval exploded" "$W/out" && good "homebrew.enable eval error: nix error shown" \
+  || bad "homebrew.enable eval error: nix error shown" "$(cat "$W/out")"
+
+echo ""
+echo "require_nix_features"
+run_case 'require_nix_features; echo "PASSED"'
+check "features on: rc 0" "$(cat "$W/rc")" 0
+grep -q PASSED "$W/out" && good "features on: continues" || bad "features on: continues" "$(cat "$W/out")"
+NOCMD=1 run_case 'require_nix_features; setup_brew_user; echo "REACHED"'
+check "nix-command off: stops (rc 1)" "$(cat "$W/rc")" 1
+grep -qF "echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon" "$W/out" \
+  && good "nix-command off: prints the exact macOS fix" || bad "nix-command off: prints the exact macOS fix" "$(cat "$W/out")"
+grep -q REACHED "$W/out" && bad "nix-command off: nothing after the check runs" "$(cat "$W/out")" \
+  || good "nix-command off: nothing after the check runs"
+grep -q '^brew\|^sudo\|nix eval' "$W/log" && bad "nix-command off: no eval, brew or sudo" "$(cat "$W/log")" \
+  || good "nix-command off: no eval, brew or sudo"
+FEATURES="nix-command" run_case 'require_nix_features'
+check "flakes off: stops (rc 1)" "$(cat "$W/rc")" 1
+grep -q "not enabled: flakes\." "$W/out" && good "flakes off: names the missing feature" \
+  || bad "flakes off: names the missing feature" "$(cat "$W/out")"
+FEATURES="nix-command" run_case 'OS=Linux; require_nix_features'
+grep -q "systemctl restart nix-daemon" "$W/out" && good "Linux: prints the systemd fix" \
+  || bad "Linux: prints the systemd fix" "$(cat "$W/out")"
 for ref in /flake '/flake#'; do
   run_case "FLAKE_REF='$ref'; setup_brew_user; echo \"AS=\$BREW_AS_PRIMARY\""
   grep -qF 'nix eval --raw /flake#darwinConfigurations."thishost".config.system.primaryUser' "$W/log" \

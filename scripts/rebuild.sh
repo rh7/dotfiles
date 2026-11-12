@@ -230,11 +230,77 @@ host_flake_ref() {
   printf '%s#%s\n' "$dir" "${host:-$HOSTNAME}"
 }
 
-# eval_primary_user — prints system.primaryUser of the configuration.
+# eval_failed <what> <stderr-file> — a configuration value this run depends on
+# could not be evaluated. Fatal, never a guess: falling back (e.g. to running
+# Homebrew as the invoker) turned one eval error into every brew step failing.
+eval_failed() {
+  err "Could not evaluate $1 for $(host_flake_ref). Nothing was built or changed."
+  if [[ -s "$2" ]]; then
+    err "nix said (first 20 lines):"
+    head -20 "$2" | sed 's/^/          /' >&2
+  fi
+}
+
+# eval_primary_user — prints system.primaryUser of the configuration; on any
+# failure (or an empty value) prints the nix error and returns 1.
 eval_primary_user() {
-  local ref dir host
+  local ref dir host errf out rc=0
   ref=$(host_flake_ref); dir="${ref%#*}"; host="${ref##*#}"
-  nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.system.primaryUser" 2>/dev/null
+  errf=$(mktemp)
+  out=$(nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.system.primaryUser" 2>"$errf") || rc=$?
+  if [[ $rc -ne 0 || -z "$out" ]]; then
+    [[ $rc -ne 0 ]] || echo "(evaluated to an empty string)" >>"$errf"
+    eval_failed system.primaryUser "$errf"
+    rm -f "$errf"; return 1
+  fi
+  rm -f "$errf"
+  printf '%s' "$out"
+}
+
+# homebrew_enable_failed <flake_ref> — homebrew_managed answered "unknown" (2).
+# Re-runs the evaluation only to show why, then exits: whether brew runs at
+# all, and as whom, must never be guessed.
+homebrew_enable_failed() {
+  local dir="${1%#*}" host="${1##*#}" errf out
+  errf=$(mktemp)
+  if out=$(nix eval --json "${dir}#darwinConfigurations.\"${host}\".config.homebrew.enable" 2>"$errf"); then
+    echo "(evaluated to '$out', not true/false)" >>"$errf"
+  fi
+  eval_failed homebrew.enable "$errf"
+  rm -f "$errf"
+  exit 1
+}
+
+# require_nix_features — stops before any flake evaluation when nix-command or
+# flakes is off. The official installer leaves both off, and on macOS nothing
+# turns them on later: the darwin config sets nix.enable = false, so nix-darwin
+# never writes /etc/nix/nix.conf (only NixOS sets
+# nix.settings.experimental-features). Fixing the config — rather than passing
+# --extra-experimental-features to rebuild.sh's own nix calls — also covers the
+# nix calls in the libs/scripts it runs, darwin-rebuild, and every later
+# interactive `nix` use. Probed WITHOUT the flag (the flag would show up in the
+# answer); an error naming the feature as disabled is the "off" signal.
+require_nix_features() {
+  local out feats="" missing=()
+  if out=$(nix config show experimental-features 2>&1); then
+    feats="$out"
+  elif [[ "$out" != *"experimental Nix feature 'nix-command' is disabled"* ]] \
+    && out=$(nix show-config 2>&1); then
+    # Nix older than `nix config show`.
+    feats=$(awk -F' = ' '$1 == "experimental-features" { print $2 }' <<<"$out")
+  fi
+  [[ " $feats " == *" nix-command "* ]] || missing+=(nix-command)
+  [[ " $feats " == *" flakes "* ]] || missing+=(flakes)
+  [[ ${#missing[@]} -gt 0 ]] || return 0
+  err "Nix experimental feature(s) not enabled: ${missing[*]}. Nothing was evaluated, built or changed."
+  err "Enable them once, then open a new terminal and re-run:"
+  if [[ "$OS" == Darwin ]]; then
+    err "    echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon"
+  else
+    err "    echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf && sudo systemctl restart nix-daemon"
+    err "  (NixOS hosts get this from nix.settings.experimental-features after their first switch.)"
+  fi
+  exit 1
 }
 
 # brew_prefix — the Homebrew prefix on this Mac, or empty when there is none.
@@ -300,17 +366,15 @@ setup_brew_user() {
   [[ "$OS" == Darwin ]] || return 0
   local invoker prefix foreign managed_rc=0
   invoker=$(id -un)
-  if ! PRIMARY_USER=$(eval_primary_user) || [[ -z "$PRIMARY_USER" ]]; then
-    PRIMARY_USER=""
-    warn "Could not evaluate system.primaryUser for $(host_flake_ref) — Homebrew runs as $invoker"
-    return 0
+  if ! PRIMARY_USER=$(eval_primary_user); then
+    exit 1
   fi
   [[ "$PRIMARY_USER" != "$invoker" ]] || return 0
   ensure_declared_lib
   homebrew_managed "$(host_flake_ref)" || managed_rc=$?
-  # Only homebrew.enable = false (1) means nothing runs brew for her. An
-  # unknown answer (2) keeps the checks: running brew as the wrong account is
-  # the failure this guards against.
+  # homebrew.enable = false (1): nothing runs brew for her. Unknown (2) is
+  # fatal — running brew as the wrong account is what this guards against.
+  [[ $managed_rc -ne 2 ]] || homebrew_enable_failed "$(host_flake_ref)"
   [[ $managed_rc -ne 1 ]] || return 0
   if ! prefix=$(brew_prefix) || [[ -z "$prefix" ]]; then
     return 0   # no Homebrew yet: nothing to own or to run as her
@@ -524,8 +588,7 @@ cask_lifecycle_plan() {
     info "homebrew.enable = false for this host — no casks replaced or removed"
     return 0
   elif [[ $managed_rc -ne 0 ]]; then
-    warn "Could not evaluate homebrew.enable — no casks replaced or removed"
-    return 0
+    homebrew_enable_failed "$FLAKE_REF"
   fi
   if ! brew list --cask -1 >"$PLAN_TMP/installed_casks" 2>/dev/null; then
     warn "'brew list --cask' failed — install/replace/remove plan unavailable"
@@ -947,6 +1010,8 @@ if ! command -v nix &>/dev/null; then
     exit 1
   fi
 fi
+
+require_nix_features
 
 if [[ "$OS" == "Darwin" ]]; then
   ensure_jq || true
