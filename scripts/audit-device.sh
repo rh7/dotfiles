@@ -2555,6 +2555,15 @@ def parse_iso(s):
 
 restic_paths = []   # absolute roots of the latest fresh rh7-restic snapshot
 restic_snap = None  # its time (epoch)
+# restic --exclude-larger-than (status.json `exclude_larger_than`; the module
+# default before the field existed): a folder holding a bigger file is NOT
+# fully in any snapshot, so it is not reported restic-covered.
+def size_cap(v):
+    m = re.match(r'^\s*(\d+)\s*([KMGT]?)i?B?\s*$', str(v or ''), re.I)
+    if not m:
+        return None
+    return int(m.group(1)) * 1024 ** ' KMGT'.index((m.group(2) or ' ').upper())
+restic_cap = 100 * MB
 try:
     job = (os.path.exists(os.path.join(LIB, 'LaunchAgents/org.rh7.restic-backup.plist'))
            or bool(shutil.which('rh7-restic-backup')))
@@ -2563,6 +2572,7 @@ try:
     snap = parse_iso(st.get('last_snapshot_time') or '')
     if job and st.get('schema') == 1 and snap and NOW - snap < FRESH_HOURS * 3600:
         restic_snap = snap
+        restic_cap = size_cap(st.get('exclude_larger_than')) or restic_cap
         for p in st.get('paths') or []:
             if isinstance(p, str):
                 a = HOME + p[1:] if p == '~' or p.startswith('~/') else p
@@ -2608,7 +2618,7 @@ def born_before(p, epoch):
         return False
     return (getattr(st, 'st_birthtime', None) or st.st_ctime) < epoch
 
-def coverage_of(p, name=None):
+def coverage_of(p, max_file=None, notes=None):
     cov = []
     for root, token in CLOUD_ROOTS:
         if under(p, root) and token not in cov:
@@ -2620,7 +2630,11 @@ def coverage_of(p, name=None):
     if r is not None and not r.get('at_risk'):
         cov.append('git-remote')
     if any(under(p, rp) for rp in restic_paths) and born_before(p, restic_snap):
-        cov.append('restic')
+        if max_file is not None and max_file <= restic_cap:
+            cov.append('restic')
+        elif notes is not None:
+            notes.append('in the restic backup, but files over its size cap are not' if max_file is not None
+                         else 'in the restic backup; not confirmed complete (no full file scan for its size cap)')
     return cov
 
 # ── measuring: du for size, a bounded walk for files/newest, weekly cache ──
@@ -2655,14 +2669,14 @@ def du_bytes(p, timeout):
     return int(kb) * 1024, ('partial' if r.returncode != 0 else 'ok')
 
 def walk_stats(p, timeout):
-    """(files, newest mtime) or (None, None) when the walk did not finish."""
+    """(files, newest mtime, largest file bytes), or Nones when the walk did not finish."""
     end = time.monotonic() + timeout
-    files, newest, n = 0, None, 0
+    files, newest, biggest, n = 0, None, 0, 0
     stack = [p]
     try:
         dev = os.lstat(p).st_dev
     except Exception:
-        return None, None
+        return None, None, None
     while stack:
         d = stack.pop()
         try:
@@ -2673,7 +2687,7 @@ def walk_stats(p, timeout):
             for e in it:
                 n += 1
                 if n % 2000 == 0 and time.monotonic() > end:
-                    return None, None
+                    return None, None, None
                 try:
                     s = e.stat(follow_symlinks=False)
                 except Exception:
@@ -2683,15 +2697,16 @@ def walk_stats(p, timeout):
                         stack.append(e.path)
                 elif stat.S_ISREG(s.st_mode):
                     files += 1
+                    biggest = max(biggest, s.st_size)
                     if newest is None or s.st_mtime > newest:
                         newest = s.st_mtime
     if os.path.isfile(p):
         try:
             s = os.stat(p)
-            return 1, s.st_mtime
+            return 1, s.st_mtime, s.st_size
         except Exception:
-            return None, None
-    return files, newest
+            return None, None, None
+    return files, newest, biggest
 
 def measure(p):
     """Cached-or-fresh measurement of one path, within the section budget."""
@@ -2715,8 +2730,9 @@ def measure(p):
         return None, 'not sized: du exceeded %ds (retried weekly)' % int(DU_TIMEOUT)
     if state == 'error':
         return None, 'not sized: du failed'
-    files, newest = walk_stats(p, max(0.5, min(WALK_TIMEOUT, remaining())))
-    c = {'size_bytes': size, 'files': files, 'newest_mtime': newest, 'partial': state == 'partial',
+    files, newest, biggest = walk_stats(p, max(0.5, min(WALK_TIMEOUT, remaining())))
+    c = {'size_bytes': size, 'files': files, 'newest_mtime': newest, 'max_file_bytes': biggest,
+         'partial': state == 'partial',
          'measured_at': NOW, 'dir_mtime': mt}
     CACHE['items'][p] = c
     cache_dirty = True
@@ -2912,7 +2928,7 @@ for p, c in cands.items():
         notes.append('excludes Photos libraries' + (' (some unsized)' if lib_unknown else ''))
     if not c['always'] and (not inspected or (size is not None and size < c['min_size'])):
         continue   # too small to matter, or a size-gated candidate that could not be judged
-    cov = coverage_of(p)
+    cov = coverage_of(p, m.get('max_file_bytes') if isinstance(m, dict) else None, notes)
     if c['category'] == 'photos':
         if icloud_photos and 'icloud' not in cov:
             cov.append('icloud')

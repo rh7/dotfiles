@@ -97,7 +97,7 @@ check "exit 0" "$RC" 0
 check "last_result" "$(st .last_result)" '"not-configured"'
 check "configured false" "$(st .configured)" false
 check "restic never called" "$(called 'restic ')" 0
-check "contract keys present" "$(st 'keys_unsorted')" '["schema","enabled","configured","last_run_at","last_result","reason","last_snapshot_time","snapshot_id","files_new","bytes_added","paths","repo_host","approved_paths","skipped_paths","approved_source"]'
+check "contract keys present" "$(st 'keys_unsorted')" '["schema","enabled","configured","last_run_at","last_result","reason","last_snapshot_time","snapshot_id","files_new","bytes_added","paths","repo_host","exclude_larger_than","approved_paths","skipped_paths","approved_source"]'
 check "nothing fetched before setup: approved fields empty" "$(st '[.approved_paths,.skipped_paths,.approved_source]')" '[[],[],null]'
 check "schema 1, enabled, repo_host" "$(st '[.schema,.enabled,.repo_host]')" '[1,true,"studio"]'
 
@@ -116,6 +116,7 @@ check "REST password was set in env" "$(called 'restpw=set')" 1
 check "repository URL is the per-host private repo" "$(called 'repo=rest:http://studio:8000/test-mac/')" 1
 check "host + tag set" "$(called '--host test-mac --tag rh7-restic')" 1
 check "size cap applied" "$(called '--exclude-larger-than 100M')" 1
+check "size cap recorded for the audit's coverage check" "$(st .exclude_larger_than)" '"100M"'
 check "no temp files left in state dir" "$(find "$H/.local/state/rh7-restic" -name '.status.json.*' | wc -l | tr -d ' ')" 0
 check "status 0644" "$(ls -l "$STATUS" | cut -c1-10)" "-rw-r--r--"
 check "never forgets / prunes" "$(grep -cE '^restic (forget|prune)' "$CALLS")" 0

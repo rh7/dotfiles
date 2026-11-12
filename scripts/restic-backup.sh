@@ -29,7 +29,7 @@
 # STATUS CONTRACT (schema 1, atomic write, rh-device-management backup coverage):
 #   {schema, enabled, configured, last_run_at, last_result, reason,
 #    last_snapshot_time, snapshot_id, files_new, bytes_added, paths, repo_host,
-#    approved_paths, skipped_paths, approved_source}
+#    exclude_larger_than, approved_paths, skipped_paths, approved_source}
 #   last_result: ok | failed | skipped | not-configured
 #   reason:      on-battery | offline | auth-failed | repo-locked |
 #                permission-denied | unknown | null
@@ -38,6 +38,9 @@
 #                taken, as "~/…" under $HOME (absolute otherwise). A run that
 #                makes no snapshot carries the snapshot fields AND its paths
 #                forward (before the first snapshot: the existing paths).
+#   exclude_larger_than: the size cap the run used ("100M"): a file over it is
+#                in no snapshot, so the audit does not call a folder holding one
+#                restic-covered
 #   approved_paths:  owner-approved paths (control plane) that passed device
 #                    validation, "~/…" — given to restic, or already inside a
 #                    module path / another approved path
@@ -167,7 +170,7 @@ write_status() {
   if jq -n --argjson prev "$prev" --arg now "$(now_iso)" --arg result "$result" --arg reason "$reason" \
       --argjson conf "$conf" --argjson paths "$paths" --arg summary "$summary" --arg started "$started" \
       --arg host "$REPO_HOST" --argjson approved "$APPROVED_JSON" --argjson skipped "$SKIPPED_JSON" \
-      --arg asource "$APPROVED_SOURCE" '
+      --arg asource "$APPROVED_SOURCE" --arg cap "$EXCLUDE_LARGER" '
     ($summary | if . == "" then null else fromjson end) as $s
     | (if $s != null and ($s.snapshot_id // "") != "" then
          { last_snapshot_time: $started, snapshot_id: ($s.snapshot_id[0:8]),
@@ -185,7 +188,7 @@ write_status() {
         last_result: $result, reason: (if $reason == "" then null else $reason end),
         last_snapshot_time: $snap.last_snapshot_time, snapshot_id: $snap.snapshot_id,
         files_new: $snap.files_new, bytes_added: $snap.bytes_added,
-        paths: ($snap.paths // $paths), repo_host: $host,
+        paths: ($snap.paths // $paths), repo_host: $host, exclude_larger_than: $cap,
         approved_paths: (if $asource != "" then $approved else ($prev.approved_paths // []) end),
         skipped_paths: (if $asource != "" then $skipped else ($prev.skipped_paths // []) end),
         approved_source: (if $asource != "" then $asource else ($prev.approved_source // null) end) }' >"$tmp"; then

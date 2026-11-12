@@ -497,6 +497,9 @@ plane is unreachable the last good list
 (`~/.local/state/rh7-restic/approved-paths.json`) is used. `status.json` carries
 `approved_paths`, `skipped_paths` (`{path, reason}`) and `approved_source`
 (`control-plane` / `cache` / `none`); `fleet-fix.sh backup` lists them.
+The size cap still applies to approved folders: files over `excludeLargerThan`
+(100 MB) stay out of every snapshot, so the inventory does not report such a
+folder as restic-covered (status records the cap as `exclude_larger_than`).
 
 **~/Desktop, ~/Documents, ~/Downloads are not in the defaults.** macOS privacy
 protection (TCC) stops a launchd job from reading them (and iCloud Drive /
@@ -529,7 +532,9 @@ under Application Support / Containers / Group Containers, wallet data folders
 (size only, never opened), and git repos with work that exists only here. Each
 carries `category`, `size_bytes`, `files`, `newest_mtime`, `coverage`
 (`icloud`, `dropbox`, `cloud-storage`, `git-remote`, restic with a snapshot
-< 48 h, Time Machine backup < 48 h and the path not excluded) and `status`:
+< 48 h, Time Machine backup < 48 h and the path not excluded — a backup only
+counts for a folder that existed before it ran, and restic only for a folder
+fully scanned and holding no file over its size cap) and `status`:
 `covered`, `unprotected`, `reinstallable` (`~/.ollama`, toolchains, editor
 extensions, caches, Dropbox's own `~/.dropbox` state, WhatsApp) or
 `not-inspected`. Plus `largest_files`: the 20 largest files over 500 MB

@@ -114,7 +114,9 @@ PY
 # at SECONDS utc|local — a timestamp SECONDS from now (backups "just after"
 # the fixture was created, so the fixture predates them).
 at() { python3 -c 'import sys,time; t=time.time()+int(sys.argv[1]); print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if sys.argv[2]=="utc" else time.strftime("%Y-%m-%d-%H%M%S", time.localtime(t)))' "$1" "$2"; }
-restic_status() { printf '{"schema":1,"configured":true,"last_snapshot_time":"%s","paths":["~/Proton","~/.ssh"]}\n' "$1" >"$H/.local/state/rh7-restic/status.json"; }
+restic_status() { # restic_status SNAPSHOT_TIME [SIZE_CAP, default 1G: above the fixture's 600 MB file]
+  printf '{"schema":1,"configured":true,"last_snapshot_time":"%s","paths":["~/Proton","~/.ssh"],"exclude_larger_than":"%s"}\n' \
+    "$1" "${2:-1G}" >"$H/.local/state/rh7-restic/status.json"; }
 grant_fda() { chmod 644 "$AS/com.apple.TCC/TCC.db"; }
 GIT_REPOS_JSON='{"repos":[{"path":"~/code/clean","at_risk":false,"dirty":0,"has_remote":true,"unpushed":0},{"path":"~/code/dirty","at_risk":true,"dirty":3,"has_remote":true,"unpushed":1}]}'
 
@@ -176,6 +178,13 @@ check "~/Proton only Time Machine" "$(item '~/Proton')" "('covered', 'user-data'
 rm -f "$H/Library/LaunchAgents/org.rh7.restic-backup.plist"; restic_status "$(at 120 utc)"; inv
 check "status file left behind by a removed job is ignored" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
 
+echo "== coverage: restic's size cap — a folder holding a bigger file is not restic-covered =="
+mkfix; restic_status "$(at 120 utc)" 100M; inv
+check "~/Proton holds a 600 MB file, cap 100M: Time Machine only" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
+check "note says why" "$(note '~/Proton' | grep -c 'files over its size cap are not')" 1
+printf '{"schema":1,"configured":true,"last_snapshot_time":"%s","paths":["~/Proton"]}\n' "$(at 120 utc)" >"$H/.local/state/rh7-restic/status.json"; inv
+check "no cap recorded (older status file): module default 100M assumed" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
+
 echo "== coverage: a folder created after the latest backup is in neither backup =="
 mkfix; restic_status "$(at -3600 utc)"; TM_AT="$(at -3600 local)" inv
 check "~/Proton (created now, backups 1h old): not covered" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
@@ -210,7 +219,8 @@ echo "== budget: per-item du timeout and the total cap =="
 mkfix; echo 3 >"$H/Proton/.slow"
 START=$SECONDS; inv AUDIT_DATA_DU_TIMEOUT=1
 check "slow du is cut at its cap (run < 3s for that item)" "$([ $((SECONDS - START)) -lt 8 ] && echo fast || echo slow)" fast
-check "timed-out item: size null + note" "$(item '~/Proton')/$(note '~/Proton' | grep -c 'du exceeded')" "('covered', 'user-data', None, ['restic', 'time-machine'])/1"
+check "timed-out item: size null + note" "$(item '~/Proton')/$(note '~/Proton' | grep -c 'du exceeded')" "('covered', 'user-data', None, ['time-machine'])/1"
+check "unscanned folder: restic coverage not claimed, said so" "$(note '~/Proton' | grep -c 'not confirmed complete')" 1
 check "budget_exhausted set" "$(q "d['budget_exhausted']")" True
 : >"$DU_LOG"; inv AUDIT_DATA_DU_TIMEOUT=1
 check "timed-out folder not retried the next day" "$(grep -c '/Proton$' "$DU_LOG")" 0
