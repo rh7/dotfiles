@@ -1,4 +1,4 @@
-{ ... }:
+{ config, lib, ... }:
 
 {
   # ── Dock ─────────────────────────────────────────────────────────────────
@@ -83,7 +83,12 @@
     /bin/launchctl enable system/com.apple.screensharing 2>/dev/null || true
     /bin/launchctl kickstart system/com.apple.screensharing 2>/dev/null || true
 
-    killall Finder || true
+    # Relaunch Finder for the primary user only — the user whose Finder
+    # defaults were just written. A bare `killall Finder` (activation runs as
+    # root) would also kill every OTHER logged-in account's Finder on a shared
+    # Mac (modules/roles/household-mac.nix). Same scoping nix-darwin uses for
+    # its own Dock restart.
+    killall -u ${lib.escapeShellArg config.system.primaryUser} Finder 2>/dev/null || true
 
     # Keep automatic timezone on as the default. Replaces the hardcoded
     # `time.timeZone` declaration in flake.nix that used to override the

@@ -19,6 +19,7 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `rouvens-mac-mini` → `rouvens-mac-mini-m4` | Mac mini M4 (office) | workstation | `mac-mini-office.nix`, smart-home |
 | `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS `defaults.nix`, Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix`, `fleet-audit.nix` |
 | `Kassie-M5-Air13` | MacBook Air M5 (user `kassie`) | personal | `macbook.nix`; `needsSecrets = false` |
+| `kassie-mbp-m1` | MacBook Pro M1 Pro, shared (primary user `rouven`; `kassie` untouched) | household (adopted in place: firewall + update policy, no Dock, adopts hand-installed casks) | `kassie-mbp-m1.nix`; `needsSecrets = false` |
 | `nixos-vm` | UTM VM (aarch64) | workstation-linux (NixOS) | `vm.nix` |
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
 | `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
@@ -48,7 +49,7 @@ git clone https://github.com/rh7/dotfiles.git ~/dotfiles && ~/dotfiles/scripts/s
 
 Pick the hostname that matches a `flake.nix` attr — the rebuild selects the
 configuration by hostname. **Secrets hosts** (`needsSecrets = true`, every Mac
-except `Kassie-M5-Air13`) cannot decrypt on first activation until the new age
+except `Kassie-M5-Air13` and `kassie-mbp-m1`) cannot decrypt on first activation until the new age
 key is a recipient. Until `fix/310-sops-onboarding` merges, `setup.sh` does not
 stop for this: it activates anyway, treats the failure as non-fatal and still
 prints *Setup Complete* — do the manual recipient step in
@@ -231,6 +232,7 @@ modules/
     ai-inference.nix                   #   lm-studio (not imported by any host today)
     smart-home.nix                     #   sensibo, sonos, homey (Mac Mini)
     personal-mac.nix                   #   lighter setup for non-developers
+    household-mac.nix                  #   adopt a shared Mac in place: no Dock, no new apps
 
 configurations/
   macos/
@@ -238,6 +240,7 @@ configurations/
     macbook.nix                        # MacBook-specific overrides
     mac-mini-office.nix                # Mac Mini overrides
     mac-studio.nix                     # Mac Studio overrides
+    kassie-mbp-m1.nix                  # shared M1 Pro: adopted casks only
   nixos/
     home.nix                           # NixOS user config (imports dev + editor + docker + Search Light)
     vm.nix                             # UTM VM hardware

@@ -170,7 +170,7 @@ export SOPS_AGE_KEY_FILE=$HOME/.config/sops/age/keys.txt
 sops secrets/secrets.yaml
 ```
 
-Hosts with `needsSecrets = false` (today only `Kassie-M5-Air13`, personal role)
+Hosts with `needsSecrets = false` (today `Kassie-M5-Air13` and `kassie-mbp-m1`)
 don't import sops-nix and skip this section entirely.
 
 ---
@@ -211,7 +211,9 @@ has apps, settings and data. `$CS` as above.
       PR, merge.
 - [ ] **Dock:** the workstation and personal roles set
       `system.defaults.dock.persistent-apps`, which replaces the **whole** Dock
-      on activation. Anything not declared there disappears from it.
+      on activation. Anything not declared there disappears from it. The
+      household-mac role never sets it (see
+      [Adopting a shared household Mac](#adopting-a-shared-household-mac-without-wiping)).
 - [ ] **Secrets recipient added** for `needsSecrets` hosts — see
       [Secrets](#secrets-sops-nix); with `fix/310-sops-onboarding`,
       `./scripts/setup-secrets.sh` must report that it can decrypt (before it,
@@ -394,6 +396,53 @@ run `./scripts/collector-runner.sh --install` once (it also retires a legacy
 audit schedule; append `-s -- --status` to check only, `-s -- --role <role>`
 to set one of `personal`/`developer`/`server`/`ai-inference`/`smart-home`/`mobile`
 — that PATCH is admin-gated, so it only succeeds from an admin tailnet identity).
+
+---
+
+## Adopting a shared household Mac without wiping
+
+For a Mac other people use day to day — several macOS accounts, hand-installed
+apps, their own Dock — brought under nix-darwin in place. Example:
+`kassie-mbp-m1` (accounts `rouven` = maintainer, `kassie` = main user).
+
+- **Role `modules/roles/household-mac.nix`.** Firewall + update policy only; no
+  Dock list, no profiles, no new apps. It asserts Homebrew `cleanup = "none"`
+  and an unset Dock list, so neither can creep in from a host file. Its header
+  lists exactly what first activation changes system-wide, for the maintainer,
+  and for everybody else.
+- **`username` = the maintainer.** nix-darwin's `system.primaryUser` gets the
+  home-manager shell (existing `~/.zshrc` etc. move to `*.hm-backup` — e.g. a
+  `conda init` block stops loading) and the per-user `defaults` (Finder, keyboard,
+  Dock autohide/size). Other accounts get **nothing per-user**; they only see
+  system-wide effects: declared apps in `/Applications`, the firewall, Remote
+  Login / Screen Sharing, Touch ID for sudo, the update policy and App Store
+  auto-update.
+- **Adopt, don't add.** The host file declares only casks for apps already in
+  `/Applications` (exact cask, not deprecated-and-disabled). Keep crypto
+  wallets, licensed vendor installers (Adobe/Maxon) and Tailscale manual, and
+  declare no Mac App Store apps — `mas` would install them under the
+  maintainer's Apple ID.
+- **Needs rh7/dotfiles#116.** `rebuild.sh` must replace each hand-installed
+  bundle with the Homebrew copy before activation; without it `brew bundle`
+  fails on `already an App at '/Applications/X.app'`.
+
+Order, all from the maintainer's account in a GUI session:
+
+```bash
+ls -ld /opt/homebrew         # must be owned by the maintainer: brew bundle runs as primaryUser
+# install Nix (official installer, GUI session — see Path A), then:
+git clone https://github.com/rh7/dotfiles.git ~/dotfiles
+./scripts/audit-device.sh --run   # inventory before anything changes
+# PR the host file (adopted casks only), merge, then:
+~/dotfiles/scripts/rebuild.sh     # one auth: replace hand-installed apps → switch
+```
+
+If `/opt/homebrew` belongs to the other account, fix ownership first
+(`sudo chown -R <maintainer>:admin /opt/homebrew`), otherwise every cask fails
+with a permission error. Do the first switch with `rebuild.sh`, not `setup.sh`
+— setup.sh's raw `darwin-rebuild switch` skips the app-replacement step. After
+the switch, check from the other account that their Dock, shell and apps are
+as they were.
 
 ---
 

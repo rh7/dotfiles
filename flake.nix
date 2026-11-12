@@ -214,6 +214,18 @@
         needsSecrets = false;
         extraModules = [ ./configurations/macos/macbook.nix ];
       };
+
+      # ── Shared household MacBook Pro M1 (adopted in place, NOT wiped) ──
+      # primaryUser is the maintainer (rouven); Kassie's account gets nothing
+      # per-user from nix. See modules/roles/household-mac.nix.
+      "kassie-mbp-m1" = mkMac {
+        hostname = "kassie-mbp-m1";
+        username = "rouven";
+        autoUpdate = "fleet/stable";
+        role = ./modules/roles/household-mac.nix;
+        needsSecrets = false;
+        extraModules = [ ./configurations/macos/kassie-mbp-m1.nix ];
+      };
     };
 
     # ── NixOS configurations ─────────────────────────────────────────────────

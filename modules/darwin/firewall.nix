@@ -2,7 +2,7 @@
 
 {
   # ── Application firewall — CLIENT Macs only ──────────────────────────────────
-  # Imported by the workstation-mac and personal-mac roles, NOT server-mac. It is
+  # Imported by the workstation-mac, personal-mac and household-mac roles, NOT server-mac. It is
   # deliberately kept OFF the Mac Studio (config-service host): enabling the macOS
   # application firewall there can block incoming tailnet connections to the
   # config service (the node process is unsigned). See rh7/rh-device-management#93.
