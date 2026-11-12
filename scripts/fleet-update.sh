@@ -39,7 +39,8 @@
 #                     the list in state.dock_protect). An unreadable Dock plist
 #                     holds too (fail safe). Additions only, or an unmanaged
 #                     Dock, proceed. Only rebuild.sh, which shows the drift and
-#                     asks, may remove Dock items.
+#                     asks, may remove Dock items. The Dock is compared again
+#                     after the build, right before activation (step 7).
 #                     evaluation fails             -> failed / build-failed
 #   6. build          darwinConfigurations.<attr>.system, <attr> baked in by
 #                     the module, never derived from the runtime hostname
@@ -476,10 +477,16 @@ current_dock() {
 
 # check_dock — 0: activation removes nothing from the primary user's Dock
 # (unmanaged, or additions/reorders only). 1: hold; DOCK_PROTECT_JSON is set.
-# 2: the declaration could not be evaluated.
+# 2: the declaration could not be evaluated. Run twice: before the build and
+# again right before activation (she may pin an app during an hours-long
+# build); the declaration is evaluated once, the Dock re-read each time.
+DOCK_DECL=""
 check_dock() {
   local decl user declared current removals
-  decl=$(dock_declaration) || { log "could not evaluate the Dock declaration of $TARGET"; return 2; }
+  if [[ -z "$DOCK_DECL" ]]; then
+    DOCK_DECL=$(dock_declaration) || { DOCK_DECL=""; log "could not evaluate the Dock declaration of $TARGET"; return 2; }
+  fi
+  decl=$DOCK_DECL
   jq -e 'type == "object" and has("apps") and (.apps == null or (.apps | type == "array"))' \
     <<<"$decl" >/dev/null 2>&1 || { log "unexpected Dock declaration: $decl"; return 2; }
   if jq -e '.apps == null' <<<"$decl" >/dev/null; then
@@ -715,10 +722,18 @@ main() {
   log "built $out"
 
   # Re-check right before touching the system profile: a manual rebuild may
-  # have started during the (possibly hours-long) build. This narrows the race
-  # to the activation itself; closing it fully needs rebuild.sh to honour
-  # $LOCK_DIR (follow-up — rebuild.sh is outside this change).
+  # have started, or the user pinned an app, during the (possibly hours-long)
+  # build. This narrows the race to the activation itself; closing it fully
+  # needs rebuild.sh to honour $LOCK_DIR (follow-up — rebuild.sh is outside
+  # this change).
   if rebuild_in_progress; then finish skipped rebuild-in-progress; fi
+  drc=0
+  check_dock || drc=$?
+  case $drc in
+    0) ;;
+    1) finish skipped dock-protect ;;
+    *) finish failed build-failed ;;
+  esac
   close_user_sudo_window
   local reason gen_before
   gen_before=$(current_generation)

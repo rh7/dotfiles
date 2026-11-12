@@ -159,6 +159,12 @@ if [[ " $* " == *" eval "* ]]; then
 fi
 [[ " $* " == *" build "* ]] || exit 0
 if [[ -n "${STUB_BUILD_FAIL:-}" ]]; then echo "error: builder for '/nix/store/x.drv' failed" >&2; exit 1; fi
+if [[ -n "${STUB_PIN_DURING_BUILD:-}" ]]; then
+  # The user pins an app while the (hours-long) build runs.
+  dp="$FLEET_UPDATE_ROOT/Users/tester/Library/Preferences/com.apple.dock.plist"
+  jq --arg u "$STUB_PIN_DURING_BUILD" '.["persistent-apps"] += [{"tile-data": {"file-data": {"_CFURLString": $u}}, "tile-type": "file-tile"}]' \
+    "$dp" >"$dp.tmp" && mv "$dp.tmp" "$dp"
+fi
 out="$STUB_STORE/system-$(git -C "$FLEET_UPDATE_ROOT/var/lib/rh7-fleet-update/dotfiles" rev-parse --short HEAD)"
 mkdir -p "$out"
 cat >"$out/activate" <<ACT
@@ -556,6 +562,15 @@ fresh; refs "$C2" "$C2"
 STUB_EVAL_FAIL=1 run_fu
 expect "Dock declaration does not evaluate" 1 failed build-failed
 check "eval fails: nothing built" "$(builds)" "0"
+
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"
+STUB_PIN_DURING_BUILD="file:///Applications/Canva.app/" STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "app pinned during the build: re-checked before activation, held" 0 skipped dock-protect
+check "pinned during build: lists it" "$(dockp would_remove)" '["/Applications/Canva.app"]'
+check "pinned during build: built once" "$(builds)" "1"
+check "pinned during build: declaration evaluated once" "$(grep -c ' eval ' "$ROOT/stub.log")" "1"
+[[ ! -e "$ROOT/nix/var/nix/profiles/system" ]] && good "pinned during build: profile untouched" \
+  || bad "pinned during build: profile untouched" "$(readlink "$ROOT/nix/var/nix/profiles/system")"
 
 fresh; refs "$C2" "$C2"
 TMPDIR="$W/does-not-exist" run_fu

@@ -63,9 +63,10 @@
 #     checkout (fleet-audit.nix, weekly-update.nix) keep running whatever it
 #     holds.
 #   - It never removes a Dock item. persistent-apps REPLACES the primary
-#     user's whole Dock, so before building the daemon evaluates the new
-#     commit's declaration and compares it with her current Dock (read-only,
-#     from her com.apple.dock.plist). Any app that would vanish holds the
+#     user's whole Dock, so the daemon evaluates the new commit's declaration
+#     and compares it with her current Dock (read-only, from her
+#     com.apple.dock.plist) before building and again right before
+#     activating. Any app that would vanish holds the
 #     update: skipped/dock-protect, the paths in state `dock_protect`. An
 #     unreadable Dock holds too. Additions, reorders and an unmanaged Dock
 #     (persistent-apps unset) proceed. Resolve by declaring the apps, or by a
