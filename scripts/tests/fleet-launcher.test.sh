@@ -57,6 +57,7 @@ echo "== environment is rebuilt, not inherited =="
 E="$T/rh7-fleet-audit.env"
 check "HOME from the password database" "$(sed -n 's/^HOME=//p' "$E")" "$(cd ~ && pwd -P 2>/dev/null || echo ~)"
 check "USER from the password database" "$(sed -n 's/^USER=//p' "$E")" "$(id -un)"
+check "SHELL from the password database" "$(sed -n 's/^SHELL=//p' "$E")" "$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_shell)')"
 check "fixed PATH" "$(sed -n 's/^PATH=//p' "$E")" "/usr/bin:/bin:/usr/sbin:/sbin"
 check "locale passed through" "$(sed -n 's/^LANG=//p' "$E")" "en_US.UTF-8"
 check "BASH_ENV dropped" "$(grep -c '^BASH_ENV=' "$E")" 0

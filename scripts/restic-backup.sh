@@ -294,14 +294,17 @@ apply_approved() {
   if body="$(fetch_approved "$host")"; then
     APPROVED_SOURCE=control-plane
     if mkdir -p "$STATE_DIR" && tmp="$(mktemp "$STATE_DIR/.approved.XXXXXX")"; then
-      printf '%s\n' "$body" >"$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$APPROVED_CACHE" || rm -f "$tmp"
+      # Stamped with the identity it was fetched for: after a re-setup under
+      # another name the old host's approvals must not be reused.
+      jq --arg h "$host" '. + {hostname: $h}' <<<"$body" >"$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$APPROVED_CACHE" || rm -f "$tmp"
     fi
-  elif jq -e 'type == "object" and (.paths | type) == "array"' "$APPROVED_CACHE" >/dev/null 2>&1; then
+  elif jq -e --arg h "$host" 'type == "object" and (.paths | type) == "array"
+      and ((.hostname // "") | ascii_downcase) == ($h | ascii_downcase)' "$APPROVED_CACHE" >/dev/null 2>&1; then
     APPROVED_SOURCE=cache; body="$(cat "$APPROVED_CACHE")"
     log "approved paths: control plane unavailable — using the last good list (updated $(jq -r '.updated_at // "?"' <<<"$body"))"
   else
     APPROVED_SOURCE=none; body='{"paths":[]}'
-    log "approved paths: control plane unavailable and no list cached — module paths only"
+    log "approved paths: control plane unavailable and no list cached for $host — module paths only"
   fi
   while IFS=$'\t' read -r kind p; do
     [ -n "$kind" ] || continue

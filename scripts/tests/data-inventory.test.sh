@@ -200,6 +200,12 @@ PY
 inv
 check "Photos covered by iCloud" "$(item '~/Pictures/Photos Library.photoslibrary')" "('covered', 'photos', 1073741824, ['icloud'])"
 
+echo "== FDA revoked: names found with access are never reported again =="
+chmod 000 "$AS/com.apple.TCC/TCC.db"; inv
+check "protected_access back to denied" "$(q "d['protected_access']")" denied
+check "cached largest list from the FDA run not reused" "$(q "[f['path'] for f in d['largest_files']]")" "['~/Proton/big.bin']"
+check "Downloads not-inspected again (cached size not reported)" "$(item '~/Downloads')" "('not-inspected', 'downloads', None, [])"
+
 echo "== budget: per-item du timeout and the total cap =="
 mkfix; echo 3 >"$H/Proton/.slow"
 START=$SECONDS; inv AUDIT_DATA_DU_TIMEOUT=1

@@ -2857,7 +2857,12 @@ for p, c in cands.items():
         c['notes'].append('holds %d git repo(s), %d at risk' % (len(held), risky))
 
 # ── measure (unmeasured first, so a short budget fills in over a few days) ──
+# The largest-files list is cached per access scope: names found WITH access
+# to protected folders must never be reported once that access is gone.
+LARGEST_SCOPE = 'all' if MAY_TOUCH_PROTECTED else 'unprotected'
 largest_cached = CACHE.get('largest') if isinstance(CACHE.get('largest'), dict) else None
+if largest_cached and largest_cached.get('scope') != LARGEST_SCOPE:
+    largest_cached = None
 largest_fresh = bool(largest_cached and NOW - largest_cached.get('measured_at', 0) < REUSE_SECS)
 if not largest_fresh:
     DEADLINE = T0 + max(BUDGET * 0.5, BUDGET - LARGEST_TIMEOUT)   # leave room for the find
@@ -3003,8 +3008,13 @@ else:
         if not largest and largest_cached:
             largest = largest_cached.get('files') or []
     else:
-        CACHE['largest'] = {'measured_at': NOW, 'files': largest}
+        CACHE['largest'] = {'measured_at': NOW, 'scope': LARGEST_SCOPE, 'files': largest}
         cache_dirty = True
+
+# Belt and braces: whatever the source, no protected path leaves this Mac
+# while this run may not look there.
+if not MAY_TOUCH_PROTECTED:
+    largest = [f for f in largest if not is_protected(HOME + f['path'][1:] if f['path'].startswith('~/') else f['path'])]
 
 # ── cache write (atomic, 0600: it holds folder and file names) ──────────────
 if cache_dirty:

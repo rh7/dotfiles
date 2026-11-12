@@ -20,7 +20,7 @@
  * from its caller that could steer what runs under the grant:
  *   - one argument, a job NAME; the target and its argv are fixed below, and
  *     both targets are root-owned paths in the system profile;
- *   - a rebuilt environment: HOME/USER/LOGNAME from the password database,
+ *   - a rebuilt environment: HOME/USER/LOGNAME/SHELL from the password database,
  *     TMPDIR from confstr, a fixed PATH, and only locale variables passed
  *     through — no BASH_ENV, exported bash functions, DYLD_*, CONFIG_SERVICE_URL
  *     or PATH from whoever wrote the plist;
@@ -98,6 +98,7 @@ int main(int argc, char **argv) {
   env[e++] = kv("HOME", pw->pw_dir);
   env[e++] = kv("USER", pw->pw_name);
   env[e++] = kv("LOGNAME", pw->pw_name);
+  if (pw->pw_shell && pw->pw_shell[0]) env[e++] = kv("SHELL", pw->pw_shell);
   env[e++] = kv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
 #ifdef _CS_DARWIN_USER_TEMP_DIR
   {

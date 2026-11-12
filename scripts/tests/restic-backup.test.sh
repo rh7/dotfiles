@@ -309,6 +309,11 @@ if [ "$(id -u)" != 0 ]; then
   check "unlistable folder refused up front (no failed run)" "$(st '[.last_result,.skipped_paths[0].reason]')" '["ok","permission-denied"]'
   chmod 755 "$H/locked"
 fi
+rb "${CS[@]}" APPROVED_BODY='{"paths":["~/code/p"]}' -- run
+check "cache stamped with the identity it was fetched for" "$(jq -c '[.hostname,.paths]' "$H/.local/state/rh7-restic/approved-paths.json")" '["test-mac",["~/code/p"]]'
+printf other-mac >"$CONF/server-user"; rb CONFIG_SERVICE_URL=http://cs -- run
+check "re-setup under another name: the old host's cached approvals are not used" "$(st '[.approved_source,.approved_paths]')" '["none",[]]'
+printf test-mac >"$CONF/server-user"
 rm -rf "$T/outside"
 
 echo "== audit-device.sh: rh7-restic entry in backup_posture =="
