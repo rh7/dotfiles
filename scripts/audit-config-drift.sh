@@ -13,6 +13,10 @@
 # Snapshot/diff catches changes you haven't yet enumerated as "key knobs"
 # (e.g. mouse speed, custom keyboard shortcuts, hidden defaults).
 #
+# BREW_CMD (env): the command that runs Homebrew, word-split, e.g.
+# "sudo -n -u kassie -H /opt/homebrew/bin/brew". rebuild.sh sets it when the
+# Homebrew prefix belongs to system.primaryUser, not to you. Default: brew.
+#
 # Exit codes: 0 = no drift, 1 = drift detected, 2 = error.
 
 set -euo pipefail
@@ -46,6 +50,23 @@ BENIGN=0
 INFORMATIONAL=0
 CURRENT_SECTION=""
 JSON_ITEMS='[]'
+APPS_DIR="${DRIFT_APPS_DIR:-/Applications}"
+
+# Every Homebrew call goes through here. rebuild.sh runs Homebrew as the
+# prefix owner (system.primaryUser) through a shell function, which a child
+# process like this audit does not inherit: here it ran as the invoker. From
+# another account `brew list` still works (a bash fast path that only lists
+# the Caskroom), but `brew info` runs Homebrew's Ruby — and its failure was
+# swallowed, so every declared app read as "unmanaged" while the cask section
+# looked right (kassie-mbp-m1, run by rouven). BREW_CMD runs it as the owner.
+brew() {
+  if [[ -n "${BREW_CMD:-}" ]]; then
+    # shellcheck disable=SC2086  # BREW_CMD is a command line, split on purpose
+    ( cd / && $BREW_CMD "$@" )
+  else
+    command brew "$@"
+  fi
+}
 
 fail() {
   local reason="$1"
@@ -376,9 +397,16 @@ APPLE_APPS_RE='^(Safari|GarageBand|iMovie|Keynote|Numbers|Pages|Utilities|Nix Ap
 #  2. Apps declared via MAS (resolved via `mas list`)
 #  3. Manual overrides for Pkg-based casks
 expected_apps=""
+unresolved_casks=""
 for c in $declared_casks; do
   # Handle direct ".app (App)" artifacts AND "Installer.app -> Real.app (App)" rename arrows.
-  apps=$({ brew info --cask "$c" 2>/dev/null || true; } \
+  # A failed `brew info` is remembered, not read as "this cask has no app":
+  # that silently turned every app of the cask into an "unmanaged" finding.
+  if ! info_out=$(brew info --cask "$c" 2>/dev/null); then
+    unresolved_casks+=" $c"
+    info_out=""
+  fi
+  apps=$(printf '%s\n' "$info_out" \
     | awk '/^==> Artifacts/{flag=1; next} /^==>/{flag=0}
            flag && /\.app \(App\)$/ {
              line=$0
@@ -395,6 +423,10 @@ for c in $declared_casks; do
     expected_apps+=$'\n'"$pkg_app"
   fi
 done
+if [[ -n "$unresolved_casks" ]]; then
+  note "brew info failed for:$unresolved_casks — their apps cannot be matched, so"
+  note "  they may be listed below as unmanaged. Check: ${BREW_CMD:-brew} info --cask <name>"
+fi
 
 # Add MAS-installed apps (declared OR Apple stock — both are "expected" on this machine).
 for id in $declared_mas $APPLE_STOCK_MAS_IDS; do
@@ -410,7 +442,8 @@ done
 expected_apps=$(echo "$expected_apps" | sort -u | sed '/^$/d')
 
 unknown_count=0
-for app in /Applications/*.app; do
+for app in "$APPS_DIR"/*.app; do
+  [[ -e "$app" ]] || continue
   name=$(basename "$app")
   echo "$name" | grep -qE "$APPLE_APPS_RE" && continue
   echo "$expected_apps" | grep -qxF "$name" && continue

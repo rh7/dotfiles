@@ -14,6 +14,21 @@
 
 set -euo pipefail
 
+# The whole script is main(), called on the last line: bash parses all of it
+# before running any of it, so an edit to this file mid-run (the checkout sync
+# below can fast-forward it) cannot splice new lines into the running one.
+main() {
+
+# Captured before anything else, for the re-exec after the checkout sync.
+ORIG_ARGS=("$@")
+SELF=""; SELF_SUM=""
+if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
+  SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  SELF_SUM=$(cksum <"$SELF") || SELF_SUM=""
+fi
+REEXECED="${RH7_REBUILD_REEXECED:-}"
+unset RH7_REBUILD_REEXECED
+
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
 HOSTNAME=$(hostname -s)
 AUTO_CONFIRM=false
@@ -181,8 +196,15 @@ fi
 # bundle / activation can be grepped after the fact. Keeps last 20 per host.
 LOG_DIR="${REBUILD_LOG_DIR:-$HOME/.local/state/dotfiles/rebuild}"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/${HOSTNAME}-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+if [[ -n "$REEXECED" && -n "${RH7_REBUILD_LOG_FILE:-}" ]]; then
+  # Re-executed after the sync updated this script: stdout/stderr still go
+  # through the first run's tee, into its log — keep that one log per run.
+  LOG_FILE="$RH7_REBUILD_LOG_FILE"
+else
+  LOG_FILE="$LOG_DIR/${HOSTNAME}-$(date +%Y%m%d-%H%M%S).log"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+unset RH7_REBUILD_LOG_FILE
 while IFS= read -r _old_log; do rm -f "$_old_log"; done < <(
   ls -1t "$LOG_DIR/${HOSTNAME}-"*.log 2>/dev/null | tail -n +21
 )
@@ -1182,9 +1204,10 @@ homebrew_plan() {
   echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
   echo ""
   # Cross-user: the plan's brew commands already run as the primary user,
-  # which needs root — so the run's one authentication happens here, in the
-  # parent shell (it starts the keep-alive the EXIT trap must see).
-  if $BREW_AS_PRIMARY; then
+  # which needs root — so the run's one authentication happens here (unless
+  # the drift audit already took it), in the parent shell (it starts the
+  # keep-alive the EXIT trap must see).
+  if $BREW_AS_PRIMARY && ! $SUDO_AUTHENTICATED; then
     info "Homebrew belongs to $PRIMARY_USER — authenticating now to run it as $PRIMARY_USER"
     info "  (this one authentication also covers the activation later)."
     authenticate_once ""
@@ -1396,6 +1419,26 @@ if ! sync_dotfiles_checkout "$ALLOW_UNMERGED" "rebuild.sh --allow-unmerged" "$FL
   warn "is for the checkout above, NOT origin/main. A real rebuild would refuse."
   echo ""
 fi
+
+# ── Re-run the updated script ──
+# The sync may have just fast-forwarded THIS file, but bash keeps executing
+# the version it already parsed: kassie-mbp-m1 pulled the /etc preflight fix
+# and then ran without it, failing exactly the way the fix prevents. So when
+# the file changed, exec it — same interpreter, same arguments. Nothing has
+# been authenticated, changed or created yet (no sudo, no temp dirs), so the
+# exec loses nothing and the run still authenticates once. --allow-unmerged
+# never touches the checkout, so it re-execs only if the file really changed.
+# Once per run: a second change means origin moved mid-run — stop, not loop.
+if [[ -n "$SELF" ]] && new_sum=$(cksum <"$SELF" 2>/dev/null) && [[ "$new_sum" != "$SELF_SUM" ]]; then
+  if [[ -n "$REEXECED" ]]; then
+    err "rebuild.sh changed again during this run's checkout sync. Nothing was built or changed — re-run it."
+    exit 1
+  fi
+  info "rebuild.sh was updated by the sync — restarting the updated version."
+  echo ""
+  RH7_REBUILD_REEXECED=1 RH7_REBUILD_LOG_FILE="$LOG_FILE" \
+    exec "$BASH" "$SELF" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+fi
 cd "$DOTFILES_DIR"
 
 # ── Step 2: Audit drift ──
@@ -1454,7 +1497,22 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
   AUDIT_HOST="${FLAKE_REF##*#}"
   audit_log=$(mktemp -t audit-log.XXXXXX)
   audit_rc=0
-  "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" 2>&1 \
+  # Cross-user, the audit's Homebrew calls must run as $PRIMARY_USER too: it
+  # is a child process, so the brew() wrapper above does not reach it, and
+  # `brew info` as the invoker failed — every declared app read as unmanaged.
+  # Its sudo -n needs the run's one authentication, so that moves up to here
+  # (the plan would take it next anyway). --build-only authenticates for
+  # nothing; there the audit reports the casks it could not resolve.
+  audit_brew_cmd=""
+  if ${BREW_AS_PRIMARY:-false}; then
+    if ! ${BUILD_ONLY:-false}; then
+      info "Homebrew belongs to $PRIMARY_USER — authenticating now so the drift audit can run it as $PRIMARY_USER"
+      info "  (this one authentication also covers the plan and the activation later)."
+      authenticate_once ""
+    fi
+    audit_brew_cmd="sudo -n -u $PRIMARY_USER -H $BREW_BIN"
+  fi
+  BREW_CMD="$audit_brew_cmd" "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" 2>&1 \
     | tee "$audit_log" || audit_rc=${PIPESTATUS[0]}
 
   # Parse risky/benign counts from audit's machine-readable summary line.
@@ -1977,3 +2035,6 @@ rm -f "$RESULT_LINK"
 echo -e "${GREEN}${BOLD}Done.${NC} Run 'darwin-rebuild list' to see available generations."
 echo "Log: $LOG_FILE"
 echo ""
+}
+
+main "$@"; exit

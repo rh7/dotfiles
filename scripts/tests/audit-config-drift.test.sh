@@ -104,6 +104,60 @@ for sh in "${shells[@]}"; do
     || good "a crash prints no summary"
 done
 
+# kassie-mbp-m1, run by rouven, Homebrew owned by kassie: the cask section was
+# right but /Applications listed 25 declared, brew-installed apps as
+# unmanaged. `brew list` (a bash fast path) works from any account; `brew
+# info` (Ruby) here only as the owner — so the stub fails it unless sudo -u
+# kassie ran it. rebuild.sh hands the owner's invocation over as BREW_CMD.
+mkdir -p "$W/xuser" "$W/apps/Firefox.app" "$W/apps/Stray.app"
+cat >"$W/xuser/brew" <<'EOF'
+#!/bin/sh
+echo "brew[${STUB_AS_USER:-invoker}] $*" >>"$STUB_LOG"
+case "$1 $2" in
+  "list --cask") printf 'firefox\nzoom\n' ;;
+  "info --cask")
+    [ "${STUB_AS_USER:-}" = kassie ] || { echo "Error: Permission denied @ rb_sysopen" >&2; exit 1; }
+    case "$3" in firefox) printf '==> Artifacts\nFirefox.app (App)\n' ;; *) printf '==> Artifacts\n' ;; esac ;;
+esac
+EOF
+cat >"$W/xuser/sudo" <<'EOF'
+#!/bin/sh
+# sudo -n -u <user> -H <cmd…> → <cmd…> as <user>
+user=""
+while [ $# -gt 0 ]; do
+  case "$1" in -n|-H) shift ;; -u) user="$2"; shift 2 ;; *) break ;; esac
+done
+STUB_AS_USER="$user" exec "$@"
+EOF
+chmod +x "$W/xuser"/*
+run_xuser() { # run_xuser <bash> [BREW_CMD]
+  : >"$W/xlog"
+  ( env PATH="$W/xuser:$W/stubs:/usr/bin:/bin" HOME="$W" XDG_CACHE_HOME="$W/cache" \
+      DOTFILES="$W/flake" DRIFT_APPS_DIR="$W/apps" STUB_LOG="$W/xlog" BREW_CMD="${2:-}" \
+      "$1" "$AUDIT" kassie-mbp-m1 >"$W/out" 2>&1 )
+}
+for sh in "${shells[@]}"; do
+  echo ""
+  echo "Homebrew owned by another account ($sh)"
+  run_xuser "$sh"
+  grep -q 'Firefox.app (unmanaged' "$W/out" && good "reproduced: as the invoker, a declared app reads as unmanaged" \
+    || bad "reproduced: as the invoker, a declared app reads as unmanaged" "$(cat "$W/out")"
+  grep -q 'brew info failed for: firefox zoom' "$W/out" && good "as the invoker: the failed lookup is reported" \
+    || bad "as the invoker: the failed lookup is reported" "$(cat "$W/out")"
+
+  run_xuser "$sh" "sudo -n -u kassie -H brew"
+  grep -q 'Firefox.app' "$W/out" && bad "BREW_CMD: a declared app is not unmanaged" "$(cat "$W/out")" \
+    || good "BREW_CMD: a declared app is not unmanaged"
+  grep -q 'Stray.app (unmanaged' "$W/out" && good "BREW_CMD: an undeclared app still is" \
+    || bad "BREW_CMD: an undeclared app still is" "$(cat "$W/out")"
+  grep -q 'brew info failed' "$W/out" && bad "BREW_CMD: no failed lookups" "$(cat "$W/out")" \
+    || good "BREW_CMD: no failed lookups"
+  grep -q 'all casks match' "$W/out" && good "BREW_CMD: cask section unchanged" || bad "BREW_CMD: cask section" "$(cat "$W/out")"
+  n=$(grep -c '^brew\[invoker\]' "$W/xlog" || true)
+  [[ "$n" == 0 ]] && good "BREW_CMD: every brew call (list and info) ran as kassie" \
+    || bad "BREW_CMD: every brew call ran as kassie" "$(cat "$W/xlog")"
+done
+
 echo ""
 echo "bash 3.2 compatibility (static)"
 # The scripts a household Mac runs before nix-darwin puts a newer bash on PATH.

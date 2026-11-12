@@ -467,9 +467,12 @@ apps, their own Dock — brought under nix-darwin in place. Example:
 Done from the **owner's admin account** (`rouven`), in a **GUI session** at
 the Mac — Kassie does not need to be there. `rebuild.sh` evaluates
 `system.primaryUser` (`kassie`); because it differs from you, it runs **every
-Homebrew command** — plan, replacing hand-installed apps, upgrades, retired
-casks — as her (`sudo -u kassie -H`), inside the run's **one** Touch ID. The
-same-user path (you rebuilding your own Mac) is unchanged.
+Homebrew command** — plan, drift audit, replacing hand-installed apps,
+upgrades, retired casks — as her (`sudo -u kassie -H`), inside the run's
+**one** Touch ID (taken at the drift audit; `--build-only` takes none, and its
+audit then lists the casks it could not resolve). The same-user path (you
+rebuilding your own Mac) is unchanged. Running `audit-config-drift.sh` by hand
+from your account: `BREW_CMD="sudo -u kassie -H brew" ./scripts/audit-config-drift.sh`.
 
 **What `rebuild.sh` will ask you** on a fresh Mac — each a single `[y/N]`
 question (default No; `--yes` never answers them), each fixed inside the
