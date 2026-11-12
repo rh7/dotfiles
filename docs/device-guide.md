@@ -444,6 +444,12 @@ with a permission error. Do the first switch with `rebuild.sh`, not `setup.sh`
 the switch, check from the other account that their Dock, shell and apps are
 as they were.
 
+Keep the maintainer logged in in the background (fast user switching). The
+nightly fleet-update runs home-manager via `launchctl asuser`, and the daily
+audit is a `gui`-domain LaunchAgent: with no maintainer session the update
+records `failed/activation-failed` (retried nightly) and the device's audits —
+and so its `last_seen` — go stale.
+
 ---
 
 ## Fixing issues on a device

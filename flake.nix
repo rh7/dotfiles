@@ -218,6 +218,11 @@
       # ── Shared household MacBook Pro M1 (adopted in place, NOT wiped) ──
       # primaryUser is the maintainer (rouven); Kassie's account gets nothing
       # per-user from nix. See modules/roles/household-mac.nix.
+      # Caveat: the nightly fleet-update's home-manager step and the daily
+      # audit agent need a rouven LOGIN SESSION (launchctl gui domain). Kassie
+      # is the day-to-day user, so keep rouven logged in in the background
+      # (fast user switching); otherwise nightly runs record
+      # failed/activation-failed (harmless, retried) and audits go stale.
       "kassie-mbp-m1" = mkMac {
         hostname = "kassie-mbp-m1";
         username = "rouven";

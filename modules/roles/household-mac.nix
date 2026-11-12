@@ -20,6 +20,12 @@
   # other accounts get nothing per-user from nix (multi-user home-manager is a
   # deliberate later step).
   #
+  # The primary user should stay LOGGED IN in the background (fast user
+  # switching): fleet-update activation reaches home-manager through
+  # `launchctl asuser`, and the daily audit (com.rh7.collector-runner) is a
+  # gui-domain LaunchAgent. Without that session the nightly update records
+  # failed/activation-failed (retried nightly) and audits stop arriving.
+  #
   # ── What FIRST activation changes ────────────────────────────────────────
   # Derived from what mkMac (flake.nix) imports for EVERY Mac: modules/darwin/
   # {defaults,homebrew,mas,xcode-license,fleet-update,restic-backup,
