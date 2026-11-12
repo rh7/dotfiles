@@ -478,10 +478,20 @@ rebuilding your own Mac) is unchanged.
 3. **Install Nix** with the official installer, from your GUI session (a
    headless/SSH-only session cannot create the Nix APFS volume) — NOT
    `setup.sh`, which turns Remote Login on and does a raw `darwin-rebuild`.
-   Open a new terminal afterwards.
 
    ```bash
    sh <(curl -L https://nixos.org/nix/install) --daemon
+   ```
+
+   Then **enable flakes** — the official installer leaves `nix-command` and
+   `flakes` off, and nothing else turns them on for a Mac (the darwin config
+   sets `nix.enable = false`, so nix-darwin never writes `/etc/nix/nix.conf`).
+   `rebuild.sh` stops with this exact command if you skip it. Open a new
+   terminal afterwards.
+
+   ```bash
+   echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf \
+     && sudo launchctl kickstart -k system/org.nixos.nix-daemon
    ```
 
 4. **Hand Homebrew to Kassie** (skip if `ls -ld /opt/homebrew` already shows

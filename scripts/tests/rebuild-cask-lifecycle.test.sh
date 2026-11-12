@@ -30,8 +30,9 @@ APP_MGMT_PANE="x-test:pane"
 source "$ROOT/lib/declared-packages.sh"
 # shellcheck disable=SC1090
 eval "$(sed -n '/^app_bundle_modifiable() {/,/^}/p; /^cask_app_targets() {/,/^}/p;
-               /^cask_lifecycle_plan() {/,/^}/p; /^ensure_app_management() {/,/^}/p' "$SCRIPT")"
-for f in app_bundle_modifiable cask_app_targets cask_lifecycle_plan ensure_app_management; do
+               /^cask_lifecycle_plan() {/,/^}/p; /^ensure_app_management() {/,/^}/p;
+               /^host_flake_ref() {/,/^}/p' "$SCRIPT")"
+for f in app_bundle_modifiable cask_app_targets cask_lifecycle_plan ensure_app_management host_flake_ref; do
   if ! declare -F "$f" >/dev/null; then
     echo "FATAL: could not extract $f from $SCRIPT" >&2
     exit 1
@@ -105,9 +106,10 @@ HB_MANAGED_RC=1; cask_lifecycle_plan >/dev/null
 check "homebrew.enable = false adopts nothing" "" "$ADOPT_CASKS"
 check "homebrew.enable = false installs nothing" "" "$NEW_CASKS"
 check "homebrew.enable = false removes nothing" "" "$RETIRE_CASKS"
-HB_MANAGED_RC=2; cask_lifecycle_plan >/dev/null
-check "unevaluable homebrew.enable removes nothing" "" "$RETIRE_CASKS"
-check "unevaluable homebrew.enable adopts nothing" "" "$ADOPT_CASKS"
+homebrew_enable_failed() { echo "FATAL homebrew.enable"; exit 1; }
+HB_MANAGED_RC=2; out=$( brew() { echo "BREW CALLED"; }; cask_lifecycle_plan 2>&1 ); rc=$?
+check "unevaluable homebrew.enable is fatal (rc 1)" "1" "$rc"
+check "unevaluable homebrew.enable stops before any brew call" "FATAL homebrew.enable" "$out"
 HB_MANAGED_RC=0
 
 XATTR_MODE=allow; RETIRED_FAILS=true; cask_lifecycle_plan >/dev/null

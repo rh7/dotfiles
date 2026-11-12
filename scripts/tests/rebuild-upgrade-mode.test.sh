@@ -23,8 +23,8 @@ ensure_declared_lib() { :; }
 FLAKE_REF="unused#host"
 
 # shellcheck disable=SC1090
-eval "$(sed -n '/^load_critical_names() {/,/^}/p; /^select_by_mode() {/,/^}/p' "$SCRIPT")"
-for f in load_critical_names select_by_mode; do
+eval "$(sed -n '/^load_critical_names() {/,/^}/p; /^select_by_mode() {/,/^}/p; /^host_flake_ref() {/,/^}/p' "$SCRIPT")"
+for f in load_critical_names select_by_mode host_flake_ref; do
   if ! declare -F "$f" >/dev/null; then
     echo "FATAL: could not extract $f from $SCRIPT" >&2
     exit 1
