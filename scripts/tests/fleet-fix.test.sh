@@ -313,6 +313,11 @@ printf '{"last_result": "no-op", "last_success_at": "2020-01-01T00:00:00Z"}\n' >
 ff SUDO_N_EXIT=0 -- fleet-update
 check "old last_success_at stays unresolved (stale)" "$RC" 1
 has "says how stale" "last successful fleet update"
+printf '{"last_result": "skipped", "reason": "channel-behind", "last_success_at": "2020-01-01T00:00:00Z"}\n' \
+  >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
+ff SUDO_N_EXIT=0 -- fleet-update
+check "skipped/channel-behind (hand-rebuilt from newer main) -> ok, not stale" "$RC" 0
+has "says it waits for the channel" "waiting for the channel"
 
 echo "== backup: restic status (scripts/restic-backup.sh status file) =="
 RS_DIR="$TEST_ROOT/home/.local/state/rh7-restic"

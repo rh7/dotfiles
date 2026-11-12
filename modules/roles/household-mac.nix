@@ -32,11 +32,13 @@ in
   #     audit agent, nothing else — the user's own dotfiles stay.
   #
   # nix-darwin's system.primaryUser (mkMac `username`) is the person who uses
-  # the Mac DAILY: nightly fleet-update reaches home-manager through
-  # `launchctl asuser`, and the daily audit (com.rh7.collector-runner) is a
-  # gui-domain LaunchAgent — both need that account to be logged in, which
-  # the daily user is. Other accounts (e.g. the maintainer's) get nothing
-  # per-user from nix.
+  # the Mac DAILY: the daily audit (com.rh7.collector-runner) is a gui-domain
+  # LaunchAgent that runs only while that account is logged in, which the
+  # daily user is. Activation does NOT need her logged in: when she has no GUI
+  # session (the owner adopting the Mac from his account, the nightly
+  # fleet-update while she is logged out) home-household.nix's guard installs
+  # the agent and launchd loads it at her next login. Other accounts (e.g. the
+  # maintainer's) get nothing per-user from nix.
   #
   # ── What FIRST activation changes ────────────────────────────────────────
   # Derived from what mkMac (flake.nix) imports for EVERY Mac: modules/darwin/
@@ -46,7 +48,9 @@ in
   # fleet-audit.nix).
   #
   # (a) SYSTEM-WIDE (affects every account on the Mac):
-  #   - application firewall ON + stealth mode (firewall.nix);
+  #   - application firewall ON + stealth mode (firewall.nix), with built-in
+  #     and downloaded SIGNED software allowed automatically (below) — no
+  #     "accept incoming network connections?" prompt for signed apps;
   #   - software-update policy in /Library/Preferences: check + download
   #     automatically, security responses / XProtect data install
   #     automatically, macOS updates staged but NOT installed, and App Store
@@ -93,6 +97,16 @@ in
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
     ../darwin/software-update.nix   # macOS update policy (client Macs only)
   ];
+
+  # Signed software never triggers the firewall's "Do you want the application
+  # to accept incoming network connections?" dialog — a prompt nobody in the
+  # household should have to answer. Both are the macOS defaults; pinning them
+  # keeps a stray toggle from bringing the prompts back. Unsigned apps still
+  # ask. Workstations keep firewall.nix as is (household-only on purpose).
+  networking.applicationFirewall = {
+    allowSigned = true;      # socketfilterfw --setallowsigned on (built-in software)
+    allowSignedApp = true;   # socketfilterfw --setallowsignedapp on (downloaded signed apps)
+  };
 
   # Keep the stock macOS zsh look for every account: nix-darwin's /etc/zshrc
   # would otherwise switch the default prompt to `prompt suse` and drop the

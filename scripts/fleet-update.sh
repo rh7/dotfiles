@@ -22,8 +22,14 @@
 #                       - be ancestor-or-equal of origin/main
 #                                                    -> refused / not-in-main
 #                       - be descendant-or-equal of the last applied commit
-#                         AND of the running generation's
-#                         configurationRevision (first run, manual rebuilds)
+#                                                    -> refused / not-fast-forward
+#                       - be descendant-or-equal of the running generation's
+#                         configurationRevision R (first run, manual rebuilds),
+#                         EXCEPT when T is an ancestor of a clean R that is
+#                         itself in origin/main (hand-rebuilt from NEWER merged
+#                         main: wait for the channel)
+#                                                    -> skipped / channel-behind
+#                         R unmerged/local/-dirty, or T and R diverged
 #                                                    -> refused / not-fast-forward
 #   4. no-op          T already applied and the system is still that generation
 #   5. build          darwinConfigurations.<attr>.system, <attr> baked in by
@@ -32,6 +38,8 @@
 #   6. activate       set the system profile, run <out>/activate, stdin closed
 #                                                    -> failed / activation-failed
 #                                                       (brew-failed)
+#                     primary user logged out on a household Mac: agents
+#                     installed for her next login -> applied, note logged
 #   7. state          /var/lib/rh7-fleet-update/state.json, atomic (contract:
 #                     rh7/rh-device-management, audit key `fleet_update`)
 #
@@ -137,13 +145,13 @@ system_is_out() {
 }
 
 # Commit the running generation was built from (system.configurationRevision,
-# set by mkMac for auto-updated hosts), or empty. "-dirty" builds count as
-# their HEAD commit.
+# set by mkMac for auto-updated hosts), or empty. Printed with its "-dirty"
+# suffix kept: the caller treats a dirty build as its HEAD commit for the
+# rewind floor, but never as "built from merged main".
 installed_revision() {
   local rev
   rev=$(jq -r '.configurationRevision // ""' "$CURRENT_SYSTEM/darwin-version.json" 2>/dev/null) || return 0
-  rev=${rev%-dirty}
-  if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "$rev"; fi
+  if [[ "$rev" =~ ^[0-9a-f]{40}(-dirty)?$ ]]; then printf '%s' "$rev"; fi
 }
 
 # ── State file ───────────────────────────────────────────────────────────────
@@ -157,7 +165,7 @@ STATE_CONTRACT='
   def sha: type == "string" and test("^[0-9a-f]{40}$");
   def reasons: {
     "applied": [null], "no-op": [null],
-    "skipped": ["on-battery", "lock-held", "rebuild-in-progress"],
+    "skipped": ["on-battery", "lock-held", "rebuild-in-progress", "channel-behind"],
     "failed": ["fetch-failed", "build-failed", "activation-failed", "brew-failed", "unknown"],
     "refused": ["signature-invalid", "signer-key-expired", "not-fast-forward", "not-in-main"] };
   type == "object"
@@ -438,6 +446,13 @@ activate_system() {
     rm -f "$act_log"
     return 1
   fi
+  # The primary user was logged out: home-manager's household guard
+  # (configurations/macos/home-household.nix) installed her LaunchAgents
+  # without loading them. A success — they load at her next GUI login — so
+  # the run stays `applied`; the note is for whoever reads the log.
+  if grep -q 'LaunchAgents installed; they load at the next login' "$act_log"; then
+    log "note: ${PRIMARY_USER:-the primary user} had no GUI login session — LaunchAgents installed, they load at the next login (applied)"
+  fi
   rm -f "$act_log"
   if ! system_is_out "$out"; then
     log "activation exited 0 but the profile / $CURRENT_SYSTEM are not $out"
@@ -528,24 +543,33 @@ main() {
     *) finish refused signature-invalid ;;
   esac
   is_ancestor "$TARGET" refs/remotes/origin/main || finish refused not-in-main
-  # No rewinds. T must descend from BOTH the last commit this daemon applied
-  # and the commit the running generation was built from. The second floor
-  # covers a host's first run (no state yet: a lagging channel must not roll
-  # it back, possibly to before this daemon existed) and a manual rebuild.sh
-  # from a newer main (the night after must not undo it). A running revision
-  # the checkout does not know (built from an unmerged local commit) refuses
-  # until the channel contains it.
-  local floor installed checked=0
+  # No rewinds. T must descend from the last commit this daemon applied: a tip
+  # below it means the signed channel itself went backwards -> refused.
+  if [[ -n "$PREV_APPLIED" ]] && ! is_ancestor "$PREV_APPLIED" "$TARGET"; then
+    log "channel tip $TARGET does not descend from the applied commit $PREV_APPLIED"
+    finish refused not-fast-forward
+  fi
+  # Nor may it roll back the commit the running generation was built from (R).
+  # This floor covers a host's first run (no state yet: a lagging channel must
+  # not roll it back, possibly to before this daemon existed) and a manual
+  # rebuild.sh. A clean R that is in origin/main with T behind it means a human
+  # rebuilt from NEWER merged main: nothing to apply until the channel catches
+  # up -> skipped / channel-behind, not a trust failure. An R the checkout does
+  # not know or main does not contain (an unmerged/local build), a -dirty R,
+  # or a T that diverged from R refuses until the channel contains R.
+  local installed rev
   installed=$(installed_revision)
-  for floor in "$PREV_APPLIED" "$installed"; do
-    [[ -n "$floor" ]] || continue
-    checked=1
-    if ! g cat-file -e "$floor^{commit}" 2>/dev/null || ! is_ancestor "$floor" "$TARGET"; then
-      log "channel tip $TARGET does not descend from $floor (applied=${PREV_APPLIED:-none} running=${installed:-unknown})"
-      finish refused not-fast-forward
+  rev=${installed%-dirty}
+  if [[ -n "$rev" ]] && ! is_ancestor "$rev" "$TARGET"; then
+    if [[ "$installed" == "$rev" ]] && is_ancestor "$TARGET" "$rev" \
+       && is_ancestor "$rev" refs/remotes/origin/main; then
+      log "running generation was built from $rev (in main, ahead of channel tip $TARGET) — waiting for the channel to catch up"
+      finish skipped channel-behind
     fi
-  done
-  [[ $checked -eq 1 ]] || log "warning: no applied commit and no configurationRevision in $CURRENT_SYSTEM — no rewind floor for this run"
+    log "channel tip $TARGET does not descend from the running revision $installed (not in main, -dirty, or diverged)"
+    finish refused not-fast-forward
+  fi
+  [[ -n "$PREV_APPLIED$rev" ]] || log "warning: no applied commit and no configurationRevision in $CURRENT_SYSTEM — no rewind floor for this run"
 
   if [[ "$TARGET" == "$PREV_APPLIED" && -n "$PREV_GENERATION" \
         && "$(current_generation)" == "$PREV_GENERATION" ]] && system_is_current; then

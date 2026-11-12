@@ -771,6 +771,7 @@ fix_fleet_update() {
     sed 's/^/           /' "$FU_STATE"; echo
     case "$(tr -d ' \n' <"$FU_STATE")" in
       *'"last_result":"refused"'*) st_manual "last run REFUSED a commit (trust check) — treat as a security event; inspect the log" ;;
+      *'"reason":"channel-behind"'*) st_ok "waiting for the channel: this Mac runs a NEWER merged main commit (hand-rebuilt); the daemon resumes once the channel reaches it" ;;
       *'"last_result":"applied"'*|*'"last_result":"no-op"'*|*'"last_result":"skipped"'*)
         local sage; sage="$(fu_success_age_hours)"
         case "$sage" in

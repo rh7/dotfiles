@@ -121,7 +121,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --build-only   Build only, don't activate"
       echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
       echo "                 activation, no upgrades, no root. Does refresh brew"
-      echo "                 metadata (network + Homebrew repo state)."
+      echo "                 metadata (network + Homebrew repo state). Run from"
+      echo "                 another account than system.primaryUser, it takes"
+      echo "                 one authentication to run Homebrew as that user."
       echo "  --allow-unmerged"
       echo "                 Build/activate the checkout as it is on disk even"
       echo "                 when it is not clean main at origin/main (feature"
@@ -178,6 +180,182 @@ ensure_declared_lib() {
   # shellcheck source=lib/declared-packages.sh
   source "$lib"
   DECLARED_LIB_SOURCED=true
+}
+
+# ── jq ──
+# The cask plan, the declared-package helpers and the drift audit all need jq,
+# and a household Mac's profile installs no CLI tools — so instead of skipping
+# those checks, take jq from nixpkgs for this run. PATH is exported so the
+# drift audit (a child process) sees it too.
+ensure_jq() {
+  if command -v jq &>/dev/null; then return 0; fi
+  info "jq not found — taking it from nixpkgs for this run (nix shell nixpkgs#jq)..."
+  local jq_path
+  if jq_path=$(nix --extra-experimental-features 'nix-command flakes' \
+       shell nixpkgs#jq -c sh -c 'command -v jq' 2>/dev/null) \
+     && [[ -n "$jq_path" && -x "$jq_path" ]]; then
+    PATH="$(dirname "$jq_path"):$PATH"
+    export PATH
+    return 0
+  fi
+  warn "Could not get jq from nixpkgs — the cask plan and drift audit will be incomplete"
+  return 1
+}
+
+# ── Homebrew owner: rebuilding from ANOTHER account than system.primaryUser ──
+# nix-darwin runs `brew bundle` as system.primaryUser, so on a household Mac
+# (primaryUser = the daily user) /opt/homebrew belongs to her — and the owner
+# rebuilds from his own admin account. Homebrew run as him would then fail on
+# her prefix, or worse, create files there she can no longer update. So when
+# the evaluated primaryUser differs from the invoking user, EVERY Homebrew
+# command of this run (plan, adoption, upgrades, retirement) runs as her via
+# `sudo -u <primary> -H` — the same form nix-darwin's activation uses — inside
+# the run's one authentication. The same-user path is untouched: `brew` stays
+# the plain command and nothing below runs.
+#
+# The prefix must already be hers. Checked before anything else (before the
+# plan, the drift audit and the build): a foreign-owned prefix fails halfway
+# through activation otherwise, so stop with the exact fix instead.
+PRIMARY_USER=""
+BREW_AS_PRIMARY=false
+BREW_BIN=""
+
+# eval_primary_user — prints system.primaryUser of FLAKE_REF's configuration.
+eval_primary_user() {
+  local dir="${FLAKE_REF%#*}" host="${FLAKE_REF##*#}"
+  nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.system.primaryUser" 2>/dev/null
+}
+
+# brew_prefix — the Homebrew prefix on this Mac, or empty when there is none.
+# Derived from where `brew` is (<prefix>/bin/brew; on Intel /usr/local/bin/brew
+# is a symlink, and its own location is still the prefix), not by running it:
+# cross-user, no Homebrew command may run as the invoker.
+brew_prefix() {
+  local b p
+  if b=$(command -v brew 2>/dev/null) && [[ "$b" == /* ]]; then
+    dirname "$(dirname "$b")"; return 0
+  fi
+  for p in /opt/homebrew /usr/local; do
+    if [[ -x "$p/bin/brew" ]]; then echo "$p"; return 0; fi
+  done
+  return 1
+}
+
+# brew_prefix_foreign <prefix> — prints "<dir> (owner)" for each Homebrew
+# directory NOT owned by PRIMARY_USER; nothing when all are hers. /usr/local
+# itself is root's on Intel Macs — only Homebrew's own directories count there.
+brew_prefix_foreign() {
+  local prefix="$1" d owner dirs=()
+  [[ "$prefix" == /usr/local ]] || dirs+=("$prefix")
+  dirs+=("$prefix/Cellar" "$prefix/Caskroom" "$prefix/bin")
+  for d in "${dirs[@]}"; do
+    [[ -e "$d" ]] || continue
+    owner=$(stat -f %Su "$d" 2>/dev/null) || owner="unknown"
+    if [[ "$owner" != "$PRIMARY_USER" ]]; then echo "$d ($owner)"; fi
+  done
+}
+
+# brew_as_primary <args...> — Homebrew as PRIMARY_USER. `sudo -n`: it runs
+# only inside the run's authentication (authenticate_once), so it can fail but
+# never prompt. From / because the invoker's cwd (~/dotfiles in HIS home) may
+# not be readable by her. sudo resets the environment, so the HOMEBREW_*
+# switches this script sets are passed through explicitly.
+brew_as_primary() {
+  local envs=() v
+  for v in HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ENV_HINTS; do
+    if [[ -n "${!v:-}" ]]; then envs+=("$v=${!v}"); fi
+  done
+  ( cd / && exec sudo -n -u "$PRIMARY_USER" -H env ${envs[@]+"${envs[@]}"} "$BREW_BIN" "$@" )
+}
+
+# setup_brew_user — decides who runs Homebrew; exits on a foreign-owned prefix.
+setup_brew_user() {
+  [[ "$OS" == Darwin ]] || return 0
+  local invoker prefix foreign managed_rc=0
+  invoker=$(id -un)
+  if ! PRIMARY_USER=$(eval_primary_user) || [[ -z "$PRIMARY_USER" ]]; then
+    PRIMARY_USER=""
+    warn "Could not evaluate system.primaryUser for $FLAKE_REF — Homebrew runs as $invoker"
+    return 0
+  fi
+  [[ "$PRIMARY_USER" != "$invoker" ]] || return 0
+  ensure_declared_lib
+  homebrew_managed "$FLAKE_REF" || managed_rc=$?
+  # 1 = homebrew.enable is false (nothing runs brew), 2 = unknown: the
+  # activation then decides, exactly as on the same-user path.
+  [[ $managed_rc -eq 0 ]] || return 0
+  if ! prefix=$(brew_prefix) || [[ -z "$prefix" ]]; then
+    return 0   # no Homebrew yet: nothing to own or to run as her
+  fi
+  foreign=$(brew_prefix_foreign "$prefix")
+  if [[ -n "$foreign" ]]; then
+    err "This configuration's system.primaryUser is '$PRIMARY_USER' (you are '$invoker')."
+    err "nix-darwin runs Homebrew as $PRIMARY_USER, but these are not owned by $PRIMARY_USER:"
+    sed 's/^/          /' <<<"$foreign" >&2
+    err "Nothing was built or changed. Fix, then re-run:"
+    err "    sudo chown -R $PRIMARY_USER:admin $prefix"
+    err "Afterwards other accounts run Homebrew as $PRIMARY_USER:"
+    err "    sudo -u $PRIMARY_USER brew …"
+    exit 1
+  fi
+  BREW_BIN="$prefix/bin/brew"
+  BREW_AS_PRIMARY=true
+  # Every `brew` below — plan, adoption, upgrades, retirement — goes through
+  # this. Defined only on this path, so the same-user run keeps the command.
+  brew() { brew_as_primary "$@"; }
+  info "system.primaryUser is '$PRIMARY_USER', you are '$invoker': every Homebrew command"
+  info "  in this run runs as $PRIMARY_USER (sudo -u $PRIMARY_USER -H), inside its one authentication."
+  echo ""
+}
+
+# ── One authentication for the whole run ──
+# Without this, the prompts arrive one-per-root-requiring-cask from inside
+# `brew bundle` (nix-darwin drops root back to the user to run brew), each
+# giving no clue what it is for. Authenticating once — after the plan, or
+# before it when Homebrew must run as the primary user — means the single
+# prompt you get is one you can actually attribute.
+#
+# Requires `Defaults:<user> timestamp_type=global` to cover brew's children;
+# see modules/darwin/sudo-rebuild.nix. Without that module this still works,
+# it just may not suppress every downstream prompt.
+#
+# Idempotent: the second call (Step 5b after a cross-user plan) is a no-op.
+# <hint> is printed after a failed or cancelled authentication.
+SUDO_AUTHENTICATED=false
+authenticate_once() {
+  local hint="${1:-}"
+  if $SUDO_AUTHENTICATED; then return 0; fi
+  # Set BEFORE the first sudo call, not after. Setting it afterwards left a
+  # race: a signal arriving between a successful `sudo -v` and the assignment
+  # would run cleanup with SUDO_TOUCHED still false, leaving a just-renewed
+  # timestamp live. Claiming it early is the safe direction — if we die before
+  # sudo ever succeeds, the worst case is a `sudo -k` that revokes nothing (or
+  # costs one extra prompt).
+  SUDO_TOUCHED=true
+  if sudo -n true 2>/dev/null; then
+    info "sudo already authenticated — no prompt needed"
+  else
+    info "Authenticating once for the entire rebuild (Touch ID)..."
+    if ! sudo -v; then
+      err "Authentication failed or cancelled — nothing was applied."
+      if [[ -n "$hint" ]]; then err "$hint"; fi
+      exit 1
+    fi
+  fi
+  # Refresh the timestamp every 60s so a long run (large casks, multi-GB MAS
+  # downloads) never lapses mid-flight and re-prompts. Dies with this script
+  # via the EXIT trap, and self-exits if the parent disappears or sudo is
+  # revoked.
+  (
+    while kill -0 "$$" 2>/dev/null; do
+      sudo -n -v 2>/dev/null || exit 0
+      sleep 60
+    done
+  ) &
+  SUDO_KEEPALIVE_PID=$!
+  SUDO_AUTHENTICATED=true
+  ok "Authenticated — you should not be prompted again for this run"
+  echo ""
 }
 
 # ── Declared Mac App Store apps that are outdated ────────────────────────────
@@ -513,6 +691,14 @@ homebrew_plan() {
   fi
   echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
   echo ""
+  # Cross-user: the plan's brew commands already run as the primary user,
+  # which needs root — so the run's one authentication happens here, in the
+  # parent shell (it starts the keep-alive the EXIT trap must see).
+  if $BREW_AS_PRIMARY; then
+    info "Homebrew belongs to $PRIMARY_USER — authenticating now to run it as $PRIMARY_USER"
+    info "  (this one authentication also covers the activation later)."
+    authenticate_once ""
+  fi
   info "Refreshing Homebrew metadata..."
   brew update --quiet &>/dev/null || warn "brew update failed (preview may be stale)"
 
@@ -734,11 +920,20 @@ if ! command -v nix &>/dev/null; then
   fi
 fi
 
+if [[ "$OS" == "Darwin" ]]; then
+  ensure_jq || true
+fi
+# Who runs Homebrew — and, cross-user, a prefix the primary user does not own
+# stops the run here, before the plan, the drift audit and the build.
+setup_brew_user
+
 # ── --plan-only: preview the Homebrew plan and stop ──
 # Placed after the nix-in-PATH setup (the plan evaluates the flake) but before
 # the drift audit and build, so it stays fast. Nothing below this point runs:
-# no build, no activation, no sudo. (The plan itself does refresh Homebrew
-# metadata — see homebrew_plan.)
+# no build, no activation, no sudo — except that from another account than
+# system.primaryUser the plan's brew commands run as that user, which takes
+# the one authentication. (The plan itself does refresh Homebrew metadata —
+# see homebrew_plan.)
 if $PLAN_ONLY; then
   homebrew_plan
   ok "Plan complete (--plan-only). Nothing was built, upgraded, or activated."
@@ -919,25 +1114,15 @@ if ! $AUTO_CONFIRM; then
 fi
 
 # ── Step 5b: Authenticate ONCE for the whole run ──
-# Without this, the prompts arrive one-per-root-requiring-cask from inside
-# `brew bundle` (nix-darwin drops root back to the user to run brew), each
-# giving no clue what it is for. Authenticating here — after the plan above —
-# means the single prompt you get is one you can actually attribute.
+# See authenticate_once. A cross-user run already authenticated before its
+# plan (Homebrew runs as the primary user from the first `brew update`); the
+# summary still lists what that one authentication covers.
 #
-# Requires `Defaults:<user> timestamp_type=global` to cover brew's children;
-# see modules/darwin/sudo-rebuild.nix. Without that module this still works,
-# it just may not suppress every downstream prompt.
-# Set BEFORE the first sudo call, not after. Setting it afterwards left a race:
-# a signal arriving between a successful `sudo -v` and the assignment would run
-# cleanup with SUDO_TOUCHED still false, leaving a just-renewed timestamp live.
-# Claiming it early is the safe direction — if we die before sudo ever succeeds,
-# the worst case is a `sudo -k` that revokes nothing (or costs one extra prompt).
-SUDO_TOUCHED=true
-
 # Say what the one prompt is for, so it can be attributed — and so a SECOND
 # prompt during the run stands out as something to report, not to tap through.
 info "One authentication covers this entire run:"
 echo "    • activation: system settings, launchd services, /etc links"
+if $BREW_AS_PRIMARY; then echo "    • every Homebrew command, run as $PRIMARY_USER"; fi
 if [[ -n "$NEW_CASKS" ]]; then echo "    • install: $NEW_CASKS"; fi
 if [[ -n "$ADOPT_CASKS" ]]; then echo "    • replace hand-installed: $ADOPT_CASKS"; fi
 if [[ -n "$BREW_UPGRADE_FORMULAE$BREW_UPGRADE_CASKS" ]]; then
@@ -946,29 +1131,7 @@ fi
 if [[ -n "$RETIRE_CASKS" ]]; then echo "    • uninstall retired: $RETIRE_CASKS"; fi
 echo "    Any further prompt during this run is unexpected — the log will show what asked."
 
-if sudo -n true 2>/dev/null; then
-  info "sudo already authenticated — no prompt needed"
-else
-  info "Authenticating once for the entire rebuild (Touch ID)..."
-  if ! sudo -v; then
-    err "Authentication failed or cancelled — nothing was applied."
-    err "Build result is in ./result for inspection."
-    exit 1
-  fi
-fi
-
-# Refresh the timestamp every 60s so a long run (large casks, multi-GB MAS
-# downloads) never lapses mid-flight and re-prompts. Dies with this script via
-# the EXIT trap, and self-exits if the parent disappears or sudo is revoked.
-(
-  while kill -0 "$$" 2>/dev/null; do
-    sudo -n -v 2>/dev/null || exit 0
-    sleep 60
-  done
-) &
-SUDO_KEEPALIVE_PID=$!
-ok "Authenticated — you should not be prompted again for this run"
-echo ""
+authenticate_once "Build result is in ./result for inspection."
 
 # ── Step 6: Activate (requires sudo) ──
 # Classify darwin-rebuild exit into success / known-harmless / real failure.
@@ -984,6 +1147,11 @@ run_darwin_rebuild() {
 
   if [[ $rc -eq 0 ]]; then
     ok "System updated"
+    # Household guard (configurations/macos/home-household.nix): the primary
+    # user had no GUI session, so her LaunchAgents were installed, not loaded.
+    if grep -q 'LaunchAgents installed; they load at the next login' "$log"; then
+      info "The primary user is not logged in: her LaunchAgents (daily audit) load at her next login."
+    fi
     rm -f "$log"
     return 0
   fi
@@ -1042,9 +1210,29 @@ run_darwin_rebuild() {
 # (see cask_lifecycle_plan). --force overwrites the existing bundle; the plan
 # already confirmed App Management allows it. A failure here is left for
 # activation to report rather than aborting the run.
-if [[ "$OS" == "Darwin" && -n "$ADOPT_CASKS" ]]; then
+#
+# Cross-user: brew runs as the primary user, and a bundle she does not own
+# (installed by hand from another account, or root's) makes Homebrew fall back
+# to its OWN `sudo` to remove it — as her, i.e. a prompt for HER password,
+# outside this run's authentication. The bundle is replaced by hers anyway, so
+# it is handed to her first, as root, inside the authentication.
+replace_hand_installed() {
+  local cask app owner
   echo -e "${BOLD}━━━ Replacing hand-installed apps ━━━${NC}"
   echo ""
+  if $BREW_AS_PRIMARY; then
+    while IFS= read -r app; do
+      [[ -n "$app" && -e "$app" ]] || continue
+      owner=$(stat -f %Su "$app" 2>/dev/null) || owner=""
+      if [[ "$owner" != "$PRIMARY_USER" ]]; then
+        if sudo -n chown -R "$PRIMARY_USER" "$app"; then
+          info "$app: owner ${owner:-unknown} → $PRIMARY_USER (it is being replaced by her Homebrew copy)"
+        else
+          warn "$app: could not hand it to $PRIMARY_USER — Homebrew may prompt for her password"
+        fi
+      fi
+    done <<<"$ADOPT_APPS"
+  fi
   for cask in $ADOPT_CASKS; do
     if HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask --force "$cask"; then
       ok "$cask now managed by Homebrew"
@@ -1053,6 +1241,9 @@ if [[ "$OS" == "Darwin" && -n "$ADOPT_CASKS" ]]; then
     fi
   done
   echo ""
+}
+if [[ "$OS" == "Darwin" && -n "$ADOPT_CASKS" ]]; then
+  replace_hand_installed
 fi
 
 info "Activating configuration..."

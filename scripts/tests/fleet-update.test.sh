@@ -105,6 +105,18 @@ gw checkout -q --detach "$C2"
 EXPIRED=$(commit expiring "signed by a since-expired key")
 gw checkout -q --detach "$C2"
 SIDE=$(commit pinned "signed, but never merged to main")
+gw checkout -q --detach "$C2"
+C3=$(commit pinned "c3: newer main")
+gw checkout -q --detach "$C2"
+LOCAL=$(commit pinned "local build, never pushed")
+# Two signed branches off C2, merged on main: DIV_A and DIV_B are both in main,
+# neither is an ancestor of the other.
+gw checkout -q --detach "$C2"
+DIV_A=$(commit pinned "div a")
+gw checkout -q --detach "$C2"
+DIV_B=$(commit pinned "div b")
+gw -c gpg.program="$W/sign-pinned" merge -q --no-ff -m "merge div a" -S"$(cat "$W/pinned.fpr")" "$DIV_A"
+DIV_MAIN=$(gw rev-parse HEAD)
 
 # ── Stubs ────────────────────────────────────────────────────────────────────
 STUBS="$W/stubs"; mkdir -p "$STUBS"
@@ -151,6 +163,10 @@ if [[ -n "\${STUB_BREW_FAIL:-}" ]]; then
 fi
 echo "\\\`brew bundle\\\` complete! 3 Brewfile dependencies now installed."
 if [[ -n "\${STUB_ACTIVATE_FAIL:-}" ]]; then echo "postActivation: boom"; exit 1; fi
+if [[ -n "\${STUB_NO_GUI:-}" ]]; then
+  echo "Activating home-manager configuration for tester"
+  echo "rh7: no GUI login session for tester — LaunchAgents installed; they load at the next login"
+fi
 if [[ -n "\${STUB_RACE:-}" ]]; then
   # A manual rebuild switched profile + current-system to ITS generation
   # while this activation ran; both links agree, neither is ours.
@@ -198,12 +214,13 @@ validate_state() {
     and (.last_run_at | iso)
     and (.last_result | IN("applied", "no-op", "skipped", "failed", "refused"))
     and (.reason == null or (.reason | IN("on-battery", "lock-held", "rebuild-in-progress",
-          "fetch-failed", "signature-invalid", "signer-key-expired", "not-fast-forward",
-          "not-in-main", "build-failed", "activation-failed", "brew-failed", "unknown")))
+          "channel-behind", "fetch-failed", "signature-invalid", "signer-key-expired",
+          "not-fast-forward", "not-in-main", "build-failed", "activation-failed",
+          "brew-failed", "unknown")))
     and (if .last_result == "refused" then (.reason | IN("signature-invalid",
           "signer-key-expired", "not-fast-forward", "not-in-main"))
          elif .last_result == "skipped" then (.reason | IN("on-battery", "lock-held",
-          "rebuild-in-progress"))
+          "rebuild-in-progress", "channel-behind"))
          elif .last_result == "failed" then .reason != null
          else .reason == null end)
     and (.target_commit == null or (.target_commit | sha))
@@ -288,17 +305,55 @@ installed() { # installed <configurationRevision>
 }
 fresh; refs "$C2" "$C1"; installed "$C2"
 run_fu
-expect "first run: channel behind the installed revision" 3 refused not-fast-forward
+expect "first run: hand-rebuilt from newer main, channel behind" 0 skipped channel-behind
 check "first run behind: nothing built" "$(builds)" "0"
+check "first run behind: target_commit is the tip" "$(field target_commit)" "$C1"
+check "first run behind: applied_commit stays null" "$(field applied_commit)" "null"
+check "first run behind: not counted as a failure" "$(field consecutive_failures)" "0"
 fresh; refs "$C2" "$C2"; installed "$C1-dirty"
 run_fu
 expect "first run: channel ahead of a -dirty installed revision" 0 applied null
+fresh; refs "$C3" "$C2"; installed "$C3-dirty"
+run_fu
+expect "first run: -dirty build ahead of the channel is not merged main" 3 refused not-fast-forward
+fresh; refs "$C2" "$C1"; installed "$LOCAL"
+run_fu
+expect "first run: running an unmerged local build" 3 refused not-fast-forward
+check "local build: nothing built" "$(builds)" "0"
+fresh; refs "$DIV_MAIN" "$DIV_A"; installed "$DIV_B"
+run_fu
+expect "first run: channel tip diverged from the running revision" 3 refused not-fast-forward
+fresh; refs "$C3" "$C1"
+run_fu                     # fetches C3 into the daemon's checkout, applies C1
+refs "$C2" "$C1"           # main force-rewound: C3 known locally, no longer in main
+installed "$C3"
+run_fu
+expect "running revision known locally but no longer in main" 3 refused not-fast-forward
+
 fresh; refs "$C2" "$C1"
 run_fu
 installed "$C2"   # a human rebuilt from newer main after the daemon applied C1
 run_fu
-expect "manual rebuild ahead of the channel is not undone" 3 refused not-fast-forward
+expect "manual rebuild ahead of the channel waits for it" 0 skipped channel-behind
 check "manual rebuild: only the daemon's own run built" "$(builds)" "1"
+check "manual rebuild: applied_commit kept" "$(field applied_commit)" "$C1"
+check "manual rebuild: generation kept" "$(field generation)" "1"
+refs "$C3" "$C2"  # the channel catches up
+run_fu
+expect "channel caught up with the manual rebuild" 0 applied null
+check "caught up: applied_commit is the tip" "$(field applied_commit)" "$C2"
+
+fresh; refs "$C3" "$C2"
+run_fu
+refs "$C3" "$C1"; installed "$C3"
+run_fu
+expect "channel rewound below applied, even with a newer manual rebuild" 3 refused not-fast-forward
+
+fresh; refs "$C2" "$C1"; installed "$C2"
+run_fu --dry-run
+check "dry-run, channel behind: exit 0" "$RC" "0"
+grep -q 'dry-run result: skipped (channel-behind)' <<<"$OUT" && good "dry-run reports channel-behind" \
+  || bad "dry-run reports channel-behind" "$OUT"
 
 echo ""
 echo "fleet-update — preconditions (skipped, nothing fetched)"
@@ -369,6 +424,12 @@ check "brew fails: new nix generation still recorded" "$(field generation)" "2"
 fresh; refs "$C2" "$C2"
 STUB_ACTIVATE_FAIL=1 run_fu
 expect "activation fails after brew" 1 failed activation-failed
+
+fresh; refs "$C2" "$C2"
+STUB_NO_GUI=1 run_fu
+expect "primary user logged out (agents installed, load at next login)" 0 applied null
+grep -q 'note: tester had no GUI login session' <<<"$OUT" && good "logged out: success logged with a note" \
+  || bad "logged out: success logged with a note" "$OUT"
 
 fresh; refs "$C2" "$C2"
 STUB_RACE=1 run_fu
@@ -448,11 +509,15 @@ check "valid state -> exactly the contract fields" \
   "$(jq -c 'keys' <<<"$got")" \
   '["applied_commit","channel","consecutive_failures","enabled","generation","last_result","last_run_at","last_success_at","reason","schema","target_commit"]'
 check "valid state -> values passed through" "$(jq -r '.applied_commit' <<<"$got")" "$C2"
+jq '.last_result = "skipped" | .reason = "channel-behind"' "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/behind.json"
+check "skipped/channel-behind -> accepted and passed through" \
+  "$(collect_fleet_update "$A/plist" "$A/behind.json" | jq -r '"\(.last_result)/\(.reason)"')" "skipped/channel-behind"
 jq '.reason = "made-up"' "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
 check "reason outside the closed set -> state-unreadable" \
   "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
 for bad_state in '.last_run_at = "garbage"' '.reason = "fetch-failed"' \
-                 '.last_result = "refused" | .reason = "on-battery"' 'del(.target_commit)' \
+                 '.last_result = "refused" | .reason = "on-battery"' \
+                 '.last_result = "refused" | .reason = "channel-behind"' 'del(.target_commit)' \
                  '.applied_commit = "abc"' '.consecutive_failures = -1' '.generation = -1'; do
   jq "$bad_state" "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
   check "contract violation ($bad_state) -> state-unreadable" \

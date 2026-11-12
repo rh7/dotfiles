@@ -415,10 +415,11 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   home-manager file in the primary user's home. Its header lists exactly what
   first activation changes system-wide, for the primary user and for everybody
   else.
-- **`username` = the daily user** (as on `Kassie-M5-Air13`). The nightly
-  fleet-update reaches home-manager via `launchctl asuser`, and the daily audit
-  is a `gui`-domain LaunchAgent — both need the primary user logged in, and
-  the daily user is. Adopted casks end up owned by her.
+- **`username` = the daily user** (as on `Kassie-M5-Air13`). The daily audit
+  is a `gui`-domain LaunchAgent, so it runs only while she is logged in — and
+  the daily user is. Activation itself does **not** need her logged in (see
+  [What Kassie experiences](#what-kassie-experiences)). Adopted casks end up
+  owned by her.
 - **`homeProfile = "household"`** (mkMac switch,
   `configurations/macos/home-household.nix`). Her home-manager is the audit
   agent (`com.rh7.collector-runner`) and nothing else: no zsh/starship/git/
@@ -434,7 +435,9 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   2000/2000 and shared across sessions unless `~/.zshrc` sets its own.
 - **Other accounts** (the maintainer's) get **nothing per-user**. Everybody
   sees the system-wide effects: declared apps in `/Applications`, the
-  firewall, Touch ID for sudo, the update policy and App Store auto-update.
+  firewall (signed apps allowed automatically — no "accept incoming network
+  connections?" dialog for them), Touch ID for sudo, the update policy and
+  App Store auto-update.
   Remote Login and Screen Sharing stay as set in System Settings → General →
   Sharing (both off on `kassie-mbp-m1` — the 2026-11-12 audit reports
   `remote_login: false`).
@@ -447,32 +450,112 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   bundle with the Homebrew copy before activation; without it `brew bundle`
   fails on `already an App at '/Applications/X.app'`.
 
-Prerequisites, then the first switch from the **primary user's** account in a
-GUI session (she is the one `brew bundle`, `brew upgrade` and home-manager run
-as):
+### Adopt `kassie-mbp-m1` from the owner's account
 
-```bash
-dseditgroup -o checkmember -m kassie admin   # must be an admin: sudo + /Applications
-ls -ld /opt/homebrew                         # must be owned by her: brew bundle runs as primaryUser
-# if not: sudo chown -R kassie:admin /opt/homebrew
-#   (afterwards other accounts' `brew` needs `sudo -u kassie brew …`)
-# install Nix with the official installer itself — NOT setup.sh, which turns
-# Remote Login on and does a raw darwin-rebuild:
-sh <(curl -L https://nixos.org/nix/install) --daemon
-git clone https://github.com/rh7/dotfiles.git ~/dotfiles
-~/dotfiles/scripts/audit-device.sh --run   # inventory before anything changes
-# PR the host file (adopted casks only), merge, then:
-nix shell nixpkgs#jq -c ~/dotfiles/scripts/rebuild.sh   # one auth: replace hand-installed apps → switch
-```
+Done from the **owner's admin account** (`rouven`), in a **GUI session** at
+the Mac — Kassie does not need to be there. `rebuild.sh` evaluates
+`system.primaryUser` (`kassie`); because it differs from you, it runs **every
+Homebrew command** — plan, replacing hand-installed apps, upgrades, retired
+casks — as her (`sudo -u kassie -H`), inside the run's **one** Touch ID. Before
+anything else it checks that `/opt/homebrew` is hers and stops with the exact
+`chown` if not. The same-user path (you rebuilding your own Mac) is unchanged.
 
-`jq` comes from `nix shell` because the household profile installs no CLI
-tools; without it `rebuild.sh`'s advisory drift check is skipped. After the
-switch, check from every account that Dock, Finder, shell and apps are as
-they were. Later rebuilds are the nightly fleet-update's job.
+1. **Ask Kassie to log out** (best) or at least quit her apps. The declared
+   apps are replaced while they may be open in her session.
+2. **Prerequisites:**
 
-If the primary user is logged out (e.g. only the maintainer's session is
-open), the nightly update records `failed/activation-failed` (retried
-nightly) and audits — and so `last_seen` — go stale until she logs in again.
+   ```bash
+   dseditgroup -o checkmember -m kassie admin   # she must be an admin (casks write /Applications)
+   ls -ld /opt/homebrew                         # must be owned by kassie
+   ```
+
+3. **Install Nix** with the official installer, from your GUI session (a
+   headless/SSH-only session cannot create the Nix APFS volume) — NOT
+   `setup.sh`, which turns Remote Login on and does a raw `darwin-rebuild`.
+   Open a new terminal afterwards.
+
+   ```bash
+   sh <(curl -L https://nixos.org/nix/install) --daemon
+   ```
+
+4. **Hand Homebrew to Kassie** (skip if `ls -ld /opt/homebrew` already shows
+   `kassie`):
+
+   ```bash
+   sudo chown -R kassie:admin /opt/homebrew
+   ```
+
+   From now on every other account runs Homebrew as her:
+   `sudo -u kassie brew …`.
+5. **Clone dotfiles into your own home:**
+
+   ```bash
+   git clone https://github.com/rh7/dotfiles.git ~/dotfiles
+   cd ~/dotfiles
+   ```
+
+6. **Preview** — one Touch ID (Homebrew runs as kassie), then the plan: the
+   apps it will REPLACE (with a "Quit these first" list if any is running in
+   her session), what it would install, upgrade or uninstall. Nothing is
+   built, activated or upgraded.
+
+   ```bash
+   ./scripts/rebuild.sh --plan-only
+   ```
+
+   No `jq` on the Mac is fine: `rebuild.sh` takes it from `nix shell
+   nixpkgs#jq` for the run. If App Management blocks a replacement, it opens
+   the Settings page and tells you which app (your terminal) to allow.
+7. **Adopt** — build, show the changes, confirm, one Touch ID for everything
+   (replace hand-installed apps → activate → upgrades):
+
+   ```bash
+   ./scripts/rebuild.sh
+   ```
+
+8. **Verify:**
+
+   ```bash
+   darwin-version --configuration-revision            # = git rev-parse origin/main
+   sudo -u kassie brew list --cask                    # the host file's casks
+   stat -f '%Su %N' /Applications/Firefox.app         # kassie (a replaced app)
+   /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate   # enabled
+   /usr/libexec/ApplicationFirewall/socketfilterfw --getallowsigned   # built-in + downloaded signed: ENABLED
+   /usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode   # on
+   sudo ls -l ~kassie/Library/LaunchAgents/com.rh7.collector-runner.plist
+   sudo rh7-fleet-update --dry-run                    # see the channel note below
+   ```
+
+   After Kassie's next login:
+   `sudo launchctl print gui/$(id -u kassie)/com.rh7.collector-runner | head -3`
+   shows the audit agent loaded. Check from both accounts that Dock, Finder,
+   shell and apps are as they were.
+
+Later rebuilds are the nightly fleet-update's job (`fleet/stable`). Because
+you just built from `main`, which is usually ahead of `fleet/stable`, the
+nightly run records `skipped` / `channel-behind` — not a failure — until the
+channel reaches that commit; then it applies normally.
+
+### What Kassie experiences
+
+- **During adoption:** nothing on screen if she is logged out. The only change
+  she can notice is that each declared app in `/Applications` was replaced by
+  the Homebrew copy of the same app (possibly a newer version); settings and
+  data in her `~/Library` are kept. If she stayed logged in with an app open,
+  that app was replaced underneath her — quit and reopen it.
+- **First login afterwards:** launchd loads the audit agent
+  (`com.rh7.collector-runner`) silently; it does not run at login, only daily
+  at 08:17. Activation while she was logged out could not load it (her `gui`
+  domain did not exist), so home-manager's household guard installed the
+  plist and skipped the load instead of failing — `rebuild.sh` says so, and a
+  nightly run records `applied` with a note in its log.
+- **No prompts from the adoption itself:** no password or Touch ID (Homebrew
+  ran inside your authentication; hand-installed bundles were handed to her
+  first so Homebrew never asks for her password), no "accept incoming network
+  connections?" dialog for signed apps, no Dock/Finder/keyboard change, no
+  dotfile touched. One macOS behaviour remains: Homebrew marks downloaded
+  apps as quarantined, so the **first** open of each replaced app shows
+  Gatekeeper's one-time "downloaded from the Internet — Open?" confirmation.
 
 ---
 

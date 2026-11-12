@@ -14,7 +14,9 @@
 #   - fast-forwards from BOTH the last applied commit and the commit the
 #     running generation was built from (configurationRevision, set by mkMac),
 #     so neither a lagging channel nor the night after a manual rebuild.sh from
-#     a newer main rolls a host back.
+#     a newer main rolls a host back. A host hand-rebuilt from a NEWER merged
+#     main commit records skipped/channel-behind and waits for the channel;
+#     an unmerged/local/-dirty build or a diverged tip is refused.
 # It builds darwinConfigurations.<flakeAttr>.system, sets the system profile
 # and runs the generation's `activate` as root. Result -> /var/lib/
 # rh7-fleet-update/state.json (collected into the daily audit as
@@ -60,9 +62,12 @@
 #   - It does not pull ~/dotfiles. User agents that run scripts from that
 #     checkout (fleet-audit.nix, weekly-update.nix) keep running whatever it
 #     holds.
-# Activation also runs home-manager via `launchctl asuser`; if the primary user
-# has no login session at that moment, agent reloads may fail and the run
-# records failed/activation-failed.
+# Activation also runs home-manager via `launchctl asuser`. If the primary user
+# has no GUI login session, home-manager's LaunchAgent bootstrap into gui/<uid>
+# fails and aborts activation (failed/activation-failed) — except on hosts with
+# the household home profile, whose guard installs the agents for her next
+# login instead (configurations/macos/home-household.nix); the run is then
+# `applied` and the log carries a note.
 #
 # Every external step is bounded (fetch 10 min, build 3 h, activation 1 h) and
 # runs with stdin closed, so a prompt can only ever fail, never block.
