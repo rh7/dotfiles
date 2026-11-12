@@ -758,6 +758,36 @@ print(int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() // 
 PY
 }
 
+# Prints a held run's Dock items one per line, or "unreadable".
+fu_dock_held() {
+  have_python || return 0
+  python3 - "$FU_STATE" <<'PY' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1])).get("dock_protect") or {}
+if d.get("error"):
+    print("unreadable")
+for p in d.get("would_remove") or []:
+    print(p)
+PY
+}
+
+fu_explain_dock_held() {
+  local items
+  items="$(fu_dock_held)"
+  if [ "$items" = unreadable ]; then
+    st_manual "update HELD (dock-protect): the daemon could not read the primary user's Dock (com.apple.dock.plist missing or unreadable) — it holds rather than risk wiping it; have that user log in once, then re-run the dry-run below"
+    return 0
+  fi
+  st_manual "update HELD (dock-protect): activating it would REMOVE these items from the primary user's Dock — nothing was built or changed"
+  [ -n "$items" ] && printf '%s\n' "$items" | sed 's/^/             - /'
+  info "resolve with ONE of:"
+  info "  1. keep them: add them to this host's declared Dock (system.defaults.dock.persistent-apps,"
+  info "     or persistent-others for folders/stacks/files, in its role/host config in"
+  info "     rh7/dotfiles), merge to main; the next run proceeds"
+  info "  2. drop them: run ./scripts/rebuild.sh here — it shows the Dock drift and asks before"
+  info "     removing anything; once the Dock matches, the daemon proceeds"
+}
+
 fix_fleet_update() {
   if [ "$OS" != "Darwin" ]; then st_ok "fleet-update is nix-darwin only — not applicable on $OS"; return 0; fi
   if ! command -v rh7-fleet-update >/dev/null 2>&1 && [ ! -e "$FU_STATE" ]; then
@@ -772,6 +802,7 @@ fix_fleet_update() {
     case "$(tr -d ' \n' <"$FU_STATE")" in
       *'"last_result":"refused"'*) st_manual "last run REFUSED a commit (trust check) — treat as a security event; inspect the log" ;;
       *'"reason":"channel-behind"'*) st_ok "waiting for the channel: this Mac runs a NEWER merged main commit (hand-rebuilt); the daemon resumes once the channel reaches it" ;;
+      *'"reason":"dock-protect"'*) fu_explain_dock_held ;;
       *'"last_result":"applied"'*|*'"last_result":"no-op"'*|*'"last_result":"skipped"'*)
         local sage; sage="$(fu_success_age_hours)"
         case "$sage" in
@@ -793,17 +824,21 @@ fix_fleet_update() {
     st_manual "rh7-fleet-update is not on PATH but state.json exists — the module was removed or the system profile is broken" "darwin-rebuild --list-generations | tail -3"
     return 0
   fi
-  local rc
+  local rc out
   if sudo -n true 2>/dev/null; then
-    sudo -n rh7-fleet-update --dry-run </dev/null 2>&1 | tail -30 | sed 's/^/           /'; rc=${PIPESTATUS[0]}
+    out="$(sudo -n rh7-fleet-update --dry-run </dev/null 2>&1)"; rc=$?
   elif [ "$APPLY" -eq 1 ] && confirm "Run 'sudo rh7-fleet-update --dry-run' (read-only trust/build check)?"; then
-    with_tty sudo rh7-fleet-update --dry-run 2>&1 | tail -30 | sed 's/^/           /'; rc=${PIPESTATUS[0]}
+    out="$(with_tty sudo rh7-fleet-update --dry-run 2>&1)"; rc=$?
   else
     st_manual "the dry-run needs root (it reads the daemon's checkout) — run it yourself" "sudo rh7-fleet-update --dry-run"
     return 0
   fi
+  printf '%s\n' "$out" | tail -30 | sed 's/^/           /'
   case "$rc" in
-    0) st_ok "rh7-fleet-update --dry-run: ok" ;;
+    0) case "$out" in
+         *'skipped (dock-protect)'*) st_manual "rh7-fleet-update --dry-run: would be HELD (dock-protect) — it would remove Dock items listed above; add them to the declared Dock or confirm via rebuild.sh" ;;
+         *) st_ok "rh7-fleet-update --dry-run: ok" ;;
+       esac ;;
     3) st_manual "rh7-fleet-update --dry-run: REFUSED (exit 3) — see output above" ;;
     *) st_manual "rh7-fleet-update --dry-run exited $rc — see output above" ;;
   esac

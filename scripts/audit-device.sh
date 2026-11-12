@@ -3515,6 +3515,11 @@ print(json.dumps(result) if result else '{}')
 #     or not a valid schema-1 file -> {"enabled": true, "error": "state-unreadable"}
 #   - otherwise                    -> the state file, restricted to the contract
 #                                     fields (nothing else is ever forwarded).
+#                                     A skipped/dock-protect state also carries
+#                                     `dock_protect` (would_remove entries: app
+#                                     folders verbatim, the user's home as ~
+#                                     without the user name, anything else
+#                                     basename only).
 # Linux has no such daemon -> {"enabled": false}. Paths are parameters so the
 # test suite can point them at fixtures.
 collect_fleet_update() {
@@ -3531,7 +3536,7 @@ UNREADABLE = {"enabled": True, "error": "state-unreadable"}
 SHA = re.compile(r"^[0-9a-f]{40}$")
 ISO = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 REFUSED = {"signature-invalid", "signer-key-expired", "not-fast-forward", "not-in-main"}
-SKIPPED = {"on-battery", "lock-held", "rebuild-in-progress", "channel-behind"}
+SKIPPED = {"on-battery", "lock-held", "rebuild-in-progress", "channel-behind", "dock-protect"}
 FAILED = {"fetch-failed", "build-failed", "activation-failed", "brew-failed", "unknown"}
 # result -> the reasons it may carry (None = reason must be null)
 RESULT_REASONS = {"applied": {None}, "no-op": {None}, "skipped": SKIPPED,
@@ -3540,6 +3545,30 @@ RESULT_REASONS = {"applied": {None}, "no-op": {None}, "skipped": SKIPPED,
 KEYS = ("schema", "enabled", "channel", "last_run_at", "last_result", "reason",
         "target_commit", "applied_commit", "last_success_at", "generation",
         "consecutive_failures")
+DOCK_MAX = 30
+USER_HOME = re.compile(r"^/Users/[^/]+/(.+)$")
+
+def dock_path(p):
+    # App folders are relayed verbatim; a path in a user's home loses the user
+    # name (~/...); anything else (or any ".." trick) keeps only its basename.
+    if "/../" not in p and not p.endswith("/.."):
+        if p.startswith(("/Applications/", "/System/Applications/")):
+            return p
+        m = USER_HOME.match(p)
+        if m:
+            return "~/" + m.group(1)
+    return p.rstrip("/").rsplit("/", 1)[-1]
+
+def valid_dock(d):
+    if not isinstance(d, dict) or set(d) - {"error"} != {"would_remove", "checked_at"}:
+        return False
+    if "error" in d and d["error"] != "unreadable":
+        return False
+    if not (isinstance(d["checked_at"], str) and ISO.match(d["checked_at"])):
+        return False
+    w = d["would_remove"]
+    return isinstance(w, list) and len(w) <= DOCK_MAX and all(
+        isinstance(p, str) and 0 < len(p) <= 1024 and not any(ord(c) < 32 for c in p) for p in w)
 
 def valid(s):
     if not isinstance(s, dict) or any(k not in s for k in KEYS):
@@ -3551,6 +3580,11 @@ def valid(s):
     if not (isinstance(s["last_run_at"], str) and ISO.match(s["last_run_at"])):
         return False
     if s["last_result"] not in RESULT_REASONS or s["reason"] not in RESULT_REASONS[s["last_result"]]:
+        return False
+    # dock_protect exists exactly on a dock-protect hold.
+    if ("dock_protect" in s) != (s["reason"] == "dock-protect"):
+        return False
+    if "dock_protect" in s and not valid_dock(s["dock_protect"]):
         return False
     for k in ("target_commit", "applied_commit"):
         v = s.get(k)
@@ -3575,7 +3609,14 @@ except Exception:
 if not valid(state):
     print(json.dumps(UNREADABLE))
 else:
-    print(json.dumps({k: state[k] for k in KEYS}))
+    out = {k: state[k] for k in KEYS}
+    if "dock_protect" in state:
+        d = state["dock_protect"]
+        out["dock_protect"] = {"would_remove": [dock_path(p) for p in d["would_remove"]],
+                               "checked_at": d["checked_at"]}
+        if "error" in d:
+            out["dock_protect"]["error"] = d["error"]
+    print(json.dumps(out))
 PYEOF
 }
 

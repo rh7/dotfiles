@@ -318,6 +318,24 @@ printf '{"last_result": "skipped", "reason": "channel-behind", "last_success_at"
 ff SUDO_N_EXIT=0 -- fleet-update
 check "skipped/channel-behind (hand-rebuilt from newer main) -> ok, not stale" "$RC" 0
 has "says it waits for the channel" "waiting for the channel"
+printf '{"last_result": "skipped", "reason": "dock-protect", "last_success_at": "2020-01-01T00:00:00Z", "dock_protect": {"would_remove": ["/Applications/Canva.app", "/Applications/Google Chrome.app"], "checked_at": "2026-11-11T03:30:00Z"}}\n' \
+  >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
+ff SUDO_N_EXIT=0 -- fleet-update
+check "skipped/dock-protect -> MANUAL (held until a human decides)" "$RC" 1
+has "says the update is held" "update HELD (dock-protect)"
+has "lists the Dock items" "- /Applications/Google Chrome.app"
+has "resolution 1: declare them" "add them to this host's declared Dock"
+has "resolution 2: rebuild.sh confirms removal" "run ./scripts/rebuild.sh here"
+printf '{"last_result": "skipped", "reason": "dock-protect", "dock_protect": {"would_remove": [], "error": "unreadable", "checked_at": "2026-11-11T03:30:00Z"}}\n' \
+  >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
+ff SUDO_N_EXIT=0 -- fleet-update
+has "unreadable Dock: explains the fail-safe hold" "could not read the primary user's Dock"
+printf '{"last_result": "applied", "last_success_at": "%s"}\n' "$recent" >"$TEST_ROOT/fu/var/lib/rh7-fleet-update/state.json"
+stub rh7-fleet-update 'echo "dry-run result: skipped (dock-protect) target=abc — state not written"'
+ff SUDO_N_EXIT=0 -- fleet-update
+check "dry-run would be held by dock-protect -> MANUAL" "$RC" 1
+has "dry-run hold is explained" "would be HELD (dock-protect)"
+stub rh7-fleet-update 'echo "dry-run result: no-op"'
 
 echo "== backup: restic status (scripts/restic-backup.sh status file) =="
 RS_DIR="$TEST_ROOT/home/.local/state/rh7-restic"

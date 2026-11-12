@@ -150,8 +150,26 @@ EOF
 cat >"$STUBS/nix" <<'EOF'
 #!/usr/bin/env bash
 echo "nix $*" >>"$STUB_LOG"
+if [[ " $* " == *" eval "* ]]; then
+  # The Dock declaration of the checked-out commit: STUB_DOCK_APPS / _OTHERS
+  # are the evaluated persistent-apps / -others (unset = null = unmanaged).
+  [[ -z "${STUB_EVAL_FAIL:-}" ]] || { echo "error: evaluation aborted" >&2; exit 1; }
+  echo "{\"user\":\"tester\",\"apps\":${STUB_DOCK_APPS:-null},\"others\":${STUB_DOCK_OTHERS:-null}}"
+  exit 0
+fi
 [[ " $* " == *" build "* ]] || exit 0
 if [[ -n "${STUB_BUILD_FAIL:-}" ]]; then echo "error: builder for '/nix/store/x.drv' failed" >&2; exit 1; fi
+if [[ -n "${STUB_PIN_DURING_BUILD:-}" ]]; then
+  # The user pins an app while the (hours-long) build runs.
+  dp="$FLEET_UPDATE_ROOT/Users/tester/Library/Preferences/com.apple.dock.plist"
+  jq --arg u "$STUB_PIN_DURING_BUILD" '.["persistent-apps"] += [{"tile-data": {"file-data": {"_CFURLString": $u}}, "tile-type": "file-tile"}]' \
+    "$dp" >"$dp.tmp" && mv "$dp.tmp" "$dp"
+fi
+if [[ -n "${STUB_PIN_OTHERS_DURING_BUILD:-}" ]]; then
+  dp="$FLEET_UPDATE_ROOT/Users/tester/Library/Preferences/com.apple.dock.plist"
+  jq --arg u "$STUB_PIN_OTHERS_DURING_BUILD" '.["persistent-others"] += [{"tile-data": {"file-data": {"_CFURLString": $u}}, "tile-type": "directory-tile"}]' \
+    "$dp" >"$dp.tmp" && mv "$dp.tmp" "$dp"
+fi
 out="$STUB_STORE/system-$(git -C "$FLEET_UPDATE_ROOT/var/lib/rh7-fleet-update/dotfiles" rev-parse --short HEAD)"
 mkdir -p "$out"
 cat >"$out/activate" <<ACT
@@ -181,6 +199,16 @@ ACT
 chmod +x "$out/activate"
 echo "$out"
 EOF
+cat >"$STUBS/plutil" <<'EOF'
+#!/usr/bin/env bash
+# plutil -extract <keypath> raw -o - <file>, over a JSON stand-in for the
+# binary plist: scalars print, arrays/dicts print their count (as plutil does).
+[[ "$1" == -extract && "$3" == raw && "$4" == -o && "$5" == - ]] || exit 2
+jq -er --arg kp "$2" '
+  getpath($kp | split(".") | map(if test("^[0-9]+$") then tonumber else . end))
+  | if . == null then error("no value") elif type == "array" or type == "object" then length else . end' \
+  "$6" 2>/dev/null
+EOF
 chmod +x "$STUBS"/*
 
 # ── Harness ──────────────────────────────────────────────────────────────────
@@ -207,22 +235,26 @@ validate_state() {
   jq -e '
     def iso: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
     def sha: type == "string" and test("^[0-9a-f]{40}$");
-    (keys == ["applied_commit","channel","consecutive_failures","enabled","generation",
+    ((keys - ["dock_protect"]) == ["applied_commit","channel","consecutive_failures","enabled","generation",
               "last_result","last_run_at","last_success_at","reason","schema","target_commit"])
     and .schema == 1 and .enabled == true
     and (.channel | IN("main", "fleet/stable"))
     and (.last_run_at | iso)
     and (.last_result | IN("applied", "no-op", "skipped", "failed", "refused"))
     and (.reason == null or (.reason | IN("on-battery", "lock-held", "rebuild-in-progress",
-          "channel-behind", "fetch-failed", "signature-invalid", "signer-key-expired",
+          "channel-behind", "dock-protect", "fetch-failed", "signature-invalid", "signer-key-expired",
           "not-fast-forward", "not-in-main", "build-failed", "activation-failed",
           "brew-failed", "unknown")))
     and (if .last_result == "refused" then (.reason | IN("signature-invalid",
           "signer-key-expired", "not-fast-forward", "not-in-main"))
          elif .last_result == "skipped" then (.reason | IN("on-battery", "lock-held",
-          "rebuild-in-progress", "channel-behind"))
+          "rebuild-in-progress", "channel-behind", "dock-protect"))
          elif .last_result == "failed" then .reason != null
          else .reason == null end)
+    and (has("dock_protect") == (.reason == "dock-protect"))
+    and (if has("dock_protect") then (.dock_protect | (keys - ["error"]) == ["checked_at", "would_remove"]
+          and (.checked_at | iso) and (.would_remove | type == "array" and length <= 30))
+         else true end)
     and (.target_commit == null or (.target_commit | sha))
     and (.applied_commit == null or (.applied_commit | sha))
     and (.last_success_at == null or (.last_success_at | iso))
@@ -436,6 +468,150 @@ STUB_RACE=1 run_fu
 expect "manual rebuild replaced the system mid-activation" 1 failed activation-failed
 check "race: applied_commit not claimed" "$(field applied_commit)" "null"
 
+echo ""
+echo "fleet-update — Dock protection (never silently removes a Dock item)"
+# tile <url|SPACER> — one Dock entry; decl/dock wrap them as the evaluated
+# declaration (nix-darwin's shape) and tester's current Dock plist (apps
+# side); others <url>... sets its right-hand side (directory tiles; a
+# "WEB:<url>" argument is a web-link tile).
+TILES='def tile: if . == "SPACER" then {"tile-data": {}, "tile-type": "spacer-tile"}
+  elif startswith("WEB:") then {"tile-data": {"url": {"_CFURLString": .[4:], "_CFURLStringType": 15}}, "tile-type": "url-tile"}
+  else {"tile-data": {"file-data": {"_CFURLString": ., "_CFURLStringType": 0}}, "tile-type": "file-tile"} end;'
+decl() { jq -cn "$TILES"' $ARGS.positional | map(tile)' --args "$@"; }
+DOCK_PLIST_REL="Users/tester/Library/Preferences/com.apple.dock.plist"
+dock() {
+  mkdir -p "$(dirname "$ROOT/$DOCK_PLIST_REL")"
+  jq -n "$TILES"' {"persistent-apps": ($ARGS.positional | map(tile))}' --args "$@" >"$ROOT/$DOCK_PLIST_REL"
+}
+others() {
+  jq "$TILES"' .["persistent-others"] = ($ARGS.positional | map(tile | .["tile-type"] |= (if . == "file-tile" then "directory-tile" else . end)))' \
+    --args "$@" <"$ROOT/$DOCK_PLIST_REL" >"$ROOT/$DOCK_PLIST_REL.tmp" && mv "$ROOT/$DOCK_PLIST_REL.tmp" "$ROOT/$DOCK_PLIST_REL"
+}
+dockp() { jq -c --arg k "$1" '.dock_protect | getpath($k | split("."))' "$STATE" 2>/dev/null; }
+
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Canva.app/"
+run_fu
+expect "Dock unmanaged (persistent-apps unset): proceeds" 0 applied null
+check "unmanaged: no dock_protect in the state" "$(field dock_protect)" "null"
+fresh; refs "$C2" "$C2"   # no Dock plist at all
+run_fu
+expect "Dock unmanaged, plist unreadable: proceeds (nothing to protect)" 0 applied null
+
+fresh; refs "$C2" "$C2"
+dock "file:///Applications/Arc.app/" SPACER "file:///Applications/Google%20Chrome.app/" "/Applications/Ghostty.app"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app "/Applications/Google Chrome.app" SPACER \
+  /Applications/Ghostty.app /Applications/Slack.app) run_fu
+expect "additions only (Dock URLs %-decoded, trailing / dropped): proceeds" 0 applied null
+check "additions only: built" "$(builds)" "1"
+check "additions only: no dock_protect in the state" "$(field dock_protect)" "null"
+
+fresh; refs "$C1" "$C1"; dock "file:///Applications/Arc.app/"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "Dock unchanged by the update: proceeds" 0 applied null
+refs "$C2" "$C2"
+STUB_BUILD_FAIL=1 STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "a failed run before the hold" 1 failed build-failed
+dock "file:///Applications/Arc.app/" "file:///Applications/Canva.app/" SPACER \
+  "file:///Applications/Google%20Chrome.app/" "file:///Applications/Canva.app/"
+plist_before=$(cksum <"$ROOT/$DOCK_PLIST_REL")
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "update would remove Dock items" 0 skipped dock-protect
+check "held: would_remove is exactly the removed apps, decoded, once each" \
+  "$(dockp would_remove)" '["/Applications/Canva.app","/Applications/Google Chrome.app"]'
+check "held: no error" "$(dockp error)" "null"
+[[ "$(jq -r '.dock_protect.checked_at' "$STATE")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] \
+  && good "held: checked_at is ISO-8601 UTC" || bad "held: checked_at is ISO-8601 UTC" "$(cat "$STATE")"
+check "held: nothing built (only the earlier two runs)" "$(builds)" "2"
+check "held: consecutive_failures not incremented" "$(field consecutive_failures)" "1"
+check "held: applied_commit unchanged" "$(field applied_commit)" "$C1"
+check "held: generation unchanged" "$(field generation)" "1"
+check "held: target_commit is the tip" "$(field target_commit)" "$C2"
+check "held: Dock plist untouched (read-only)" "$(cksum <"$ROOT/$DOCK_PLIST_REL")" "$plist_before"
+grep -q "would remove from tester's Dock: /Applications/Canva.app, /Applications/Google Chrome.app" <<<"$OUT" \
+  && good "held: the removals are logged" || bad "held: the removals are logged" "$OUT"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app /Applications/Canva.app "/Applications/Google Chrome.app") run_fu
+expect "the apps are declared: the held update proceeds" 0 applied null
+check "released: dock_protect cleared" "$(field dock_protect)" "null"
+check "released: applied_commit is the tip" "$(field applied_commit)" "$C2"
+
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"
+STUB_DOCK_APPS='[]' run_fu
+expect "managed Dock declared empty: every app would go" 0 skipped dock-protect
+check "declared empty: lists them" "$(dockp would_remove)" '["/Applications/Arc.app"]'
+
+fresh; refs "$C2" "$C2"
+many=(); for i in $(seq 1 35); do many+=("$(printf 'file:///Applications/App%02d.app/' "$i")"); done
+dock "${many[@]}"
+STUB_DOCK_APPS='[]' run_fu
+expect "35 removals" 0 skipped dock-protect
+check "35 removals: reported list capped at 30" "$(jq '.dock_protect.would_remove | length' "$STATE")" "30"
+
+fresh; refs "$C2" "$C2"   # managed Dock, but no plist to compare against
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "Dock plist missing: held (fail safe)" 0 skipped dock-protect
+check "missing plist: error unreadable" "$(dockp error)" '"unreadable"'
+check "missing plist: would_remove empty" "$(dockp would_remove)" '[]'
+check "missing plist: nothing built" "$(builds)" "0"
+check "missing plist: not a failure" "$(field consecutive_failures)" "0"
+fresh; refs "$C2" "$C2"; mkdir -p "$(dirname "$ROOT/$DOCK_PLIST_REL")"; echo garbage >"$ROOT/$DOCK_PLIST_REL"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "Dock plist corrupt: held" 0 skipped dock-protect
+check "corrupt plist: error unreadable" "$(dockp error)" '"unreadable"'
+fresh; refs "$C2" "$C2"; mkdir -p "$(dirname "$ROOT/$DOCK_PLIST_REL")"
+echo '{"persistent-apps": [{"tile-data": {}, "tile-type": "file-tile"}]}' >"$ROOT/$DOCK_PLIST_REL"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "Dock entry without a URL that is not a spacer: held" 0 skipped dock-protect
+check "URL-less entry: error unreadable" "$(dockp error)" '"unreadable"'
+
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Canva.app/"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu --dry-run
+check "dry-run, Dock removal: exit 0" "$RC" "0"
+grep -q 'dry-run result: skipped (dock-protect)' <<<"$OUT" && good "dry-run reports dock-protect" \
+  || bad "dry-run reports dock-protect" "$OUT"
+[[ ! -e "$STATE" ]] && good "dry-run, Dock removal: no state written" || bad "dry-run, Dock removal: no state written" "$(cat "$STATE")"
+
+fresh; refs "$C2" "$C2"
+STUB_EVAL_FAIL=1 run_fu
+expect "Dock declaration does not evaluate" 1 failed build-failed
+check "eval fails: nothing built" "$(builds)" "0"
+
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"
+STUB_PIN_DURING_BUILD="file:///Applications/Canva.app/" STUB_DOCK_APPS=$(decl /Applications/Arc.app) run_fu
+expect "app pinned during the build: re-checked before activation, held" 0 skipped dock-protect
+check "pinned during build: lists it" "$(dockp would_remove)" '["/Applications/Canva.app"]'
+check "pinned during build: built once" "$(builds)" "1"
+check "pinned during build: declaration evaluated once" "$(grep -c ' eval ' "$ROOT/stub.log")" "1"
+[[ ! -e "$ROOT/nix/var/nix/profiles/system" ]] && good "pinned during build: profile untouched" \
+  || bad "pinned during build: profile untouched" "$(readlink "$ROOT/nix/var/nix/profiles/system")"
+
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"; others "file:///Users/tester/Downloads/"
+run_fu
+expect "right side unmanaged (persistent-others unset): proceeds" 0 applied null
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"; others "file:///Users/tester/Downloads/"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) STUB_DOCK_OTHERS='[]' run_fu
+expect "Downloads stack added by the user, persistent-others declared []" 0 skipped dock-protect
+check "Downloads stack: listed" "$(dockp would_remove)" '["/Users/tester/Downloads"]'
+check "Downloads stack: nothing built" "$(builds)" "0"
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"; others "file:///Users/tester/Downloads/"
+STUB_DOCK_OTHERS='[]' run_fu
+expect "only the right side managed: still protected" 0 skipped dock-protect
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/" "file:///Applications/Canva.app/"
+others "file:///Users/tester/Documents%20Old/" "WEB:https://user@news.example.com/a?b"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) STUB_DOCK_OTHERS=$(decl "file:///Users/tester/Downloads") run_fu
+expect "both sides would lose items" 0 skipped dock-protect
+check "both sides: apps first, then folders and web links (host only)" "$(dockp would_remove)" \
+  '["/Applications/Canva.app","/Users/tester/Documents Old","web link: news.example.com"]'
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"; others "file:///Users/tester/Downloads/"
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) STUB_DOCK_OTHERS=$(decl "file:///Users/tester/Downloads" "file:///Users/tester/Projects") run_fu
+expect "right side: additions only (declared file:// URLs normalised)" 0 applied null
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"   # no persistent-others key at all
+STUB_DOCK_APPS=$(decl /Applications/Arc.app) STUB_DOCK_OTHERS='[]' run_fu
+expect "no persistent-others key = empty right side: proceeds" 0 applied null
+fresh; refs "$C2" "$C2"; dock "file:///Applications/Arc.app/"; others "file:///Users/tester/Downloads/"
+STUB_PIN_OTHERS_DURING_BUILD="file:///Users/tester/Desktop/" STUB_DOCK_OTHERS=$(decl "file:///Users/tester/Downloads") run_fu
+expect "folder added during the build: held before activation" 0 skipped dock-protect
+check "folder during build: listed" "$(dockp would_remove)" '["/Users/tester/Desktop"]'
+
 fresh; refs "$C2" "$C2"
 TMPDIR="$W/does-not-exist" run_fu
 expect "isolated GNUPGHOME cannot be created" 3 refused signature-invalid
@@ -515,10 +691,35 @@ check "skipped/channel-behind -> accepted and passed through" \
 jq '.reason = "made-up"' "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
 check "reason outside the closed set -> state-unreadable" \
   "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
+jq '.last_result = "skipped" | .reason = "dock-protect"
+    | .dock_protect = {"checked_at": "2026-11-11T03:30:00Z", "would_remove": ["/Applications/Canva.app",
+        "/Users/kassie/Applications/CC.app", "/System/Applications/Messages.app",
+        "/Users/kassie/Projects/Secret Thing.app", "/Applications/../Users/kassie/x.app", "relative.app",
+        "/Users/kassie/Downloads", "/Volumes/Backup/Stuff", "web link: news.example.com"]}' \
+  "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/dock.json"
+got=$(collect_fleet_update "$A/plist" "$A/dock.json")
+check "skipped/dock-protect -> accepted" "$(jq -r '"\(.last_result)/\(.reason)"' <<<"$got")" "skipped/dock-protect"
+check "dock-protect: app paths relayed, home paths as ~/..., others basename only" \
+  "$(jq -c '.dock_protect.would_remove' <<<"$got")" \
+  '["/Applications/Canva.app","~/Applications/CC.app","/System/Applications/Messages.app","~/Projects/Secret Thing.app","x.app","relative.app","~/Downloads","Stuff","web link: news.example.com"]'
+check "dock-protect: checked_at relayed" "$(jq -r '.dock_protect.checked_at' <<<"$got")" "2026-11-11T03:30:00Z"
+jq '.last_result = "skipped" | .reason = "dock-protect"
+    | .dock_protect = {"would_remove": [], "error": "unreadable", "checked_at": "2026-11-11T03:30:00Z"}' \
+  "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/dock.json"
+check "dock-protect, unreadable plist -> error relayed" \
+  "$(collect_fleet_update "$A/plist" "$A/dock.json" | jq -c '.dock_protect | {error, would_remove}')" \
+  '{"error":"unreadable","would_remove":[]}'
 for bad_state in '.last_run_at = "garbage"' '.reason = "fetch-failed"' \
                  '.last_result = "refused" | .reason = "on-battery"' \
                  '.last_result = "refused" | .reason = "channel-behind"' 'del(.target_commit)' \
-                 '.applied_commit = "abc"' '.consecutive_failures = -1' '.generation = -1'; do
+                 '.applied_commit = "abc"' '.consecutive_failures = -1' '.generation = -1' \
+                 '.last_result = "refused" | .reason = "dock-protect" | .dock_protect = {"would_remove": [], "checked_at": "2026-11-11T03:30:00Z"}' \
+                 '.last_result = "skipped" | .reason = "dock-protect"' \
+                 '.dock_protect = {"would_remove": [], "checked_at": "2026-11-11T03:30:00Z"}' \
+                 '.last_result = "skipped" | .reason = "dock-protect" | .dock_protect = {"would_remove": [1], "checked_at": "2026-11-11T03:30:00Z"}' \
+                 '.last_result = "skipped" | .reason = "dock-protect" | .dock_protect = {"would_remove": [range(31) | "/Applications/A.app"], "checked_at": "2026-11-11T03:30:00Z"}' \
+                 '.last_result = "skipped" | .reason = "dock-protect" | .dock_protect = {"would_remove": [], "error": "boom", "checked_at": "2026-11-11T03:30:00Z"}' \
+                 '.last_result = "skipped" | .reason = "dock-protect" | .dock_protect = {"would_remove": [], "checked_at": "2026-11-11T03:30:00Z", "user": "kassie"}'; do
   jq "$bad_state" "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
   check "contract violation ($bad_state) -> state-unreadable" \
     "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'

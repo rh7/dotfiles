@@ -210,9 +210,14 @@ has apps, settings and data. `$CS` as above.
       `modules/darwin/profiles/*.nix` (or the host's `configurations/macos/*.nix`),
       PR, merge.
 - [ ] **Dock:** the workstation and personal roles set
-      `system.defaults.dock.persistent-apps`, which replaces the **whole** Dock
-      on activation. Anything not declared there disappears from it. The
-      household-mac role never sets it (see
+      `system.defaults.dock.persistent-apps` and `persistent-others`, which
+      replace the **whole** Dock (apps and the right-hand folders) on
+      activation. Anything not declared there disappears from it — on an
+      interactive `rebuild.sh` (which shows the Dock drift and asks). The
+      unattended fleet-update never does it: a commit that would remove a Dock
+      item is held (`skipped`/`dock-protect`, `./scripts/fleet-fix.sh
+      fleet-update` lists the items) until they are declared or a human
+      `rebuild.sh` confirms. The household-mac role never sets either (see
       [Adopting a shared household Mac](#adopting-a-shared-household-mac-without-wiping)).
 - [ ] **Secrets recipient added** for `needsSecrets` hosts — see
       [Secrets](#secrets-sops-nix); with `fix/310-sops-onboarding`,
