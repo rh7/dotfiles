@@ -28,6 +28,9 @@ UPGRADE_MODE=critical
 # Build/activate a checkout that is NOT origin/main (branch, dirty, ahead,
 # offline). See scripts/lib/dotfiles-checkout.sh for why the default refuses.
 ALLOW_UNMERGED=false
+# Lets the /etc preflight overwrite an existing <file>.before-nix-darwin when
+# it moves a recognised stock file aside (see etc_preflight). Nothing else.
+FORCE=false
 FLAKE_REF="${DOTFILES_DIR}#${HOSTNAME}"
 
 # ── Colors ──
@@ -103,13 +106,16 @@ while [[ $# -gt 0 ]]; do
     --upgrade)       UPGRADE_MODE="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
     --no-upgrade)    UPGRADE_MODE=none; shift ;;
     --allow-unmerged) ALLOW_UNMERGED=true; shift ;;
+    --force)         FORCE=true; shift ;;
     --flake)         FLAKE_REF="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--allow-unmerged] [--flake REF]"
+      echo "Usage: rebuild.sh [--yes] [--upgrade=critical|all|none] [--build-only|--plan-only] [--allow-unmerged] [--force] [--flake REF]"
       echo ""
       echo "  --yes, -y      Auto-confirm (skip interactive approval). Skips"
       echo "                 App Store upgrades unless --upgrade-mas is given,"
-      echo "                 since those must not run unattended."
+      echo "                 since those must not run unattended. It does NOT"
+      echo "                 answer the first-adoption fix questions (flakes,"
+      echo "                 Homebrew owner, /etc files): those stop the run."
       echo "  --upgrade-mas  Upgrade declared App Store apps even with --yes."
       echo "                 Only pass this when you are at the machine."
       echo "  --upgrade=MODE Which declared outdated packages to upgrade:"
@@ -130,6 +136,9 @@ while [[ $# -gt 0 ]]; do
       echo "                 branch, local edits, unpushed commits, or offline)."
       echo "                 The machine then runs UNMERGED config, and the drift"
       echo "                 audit compares against it. Default: refuse."
+      echo "  --force        Only for the /etc preflight: when moving a recognised"
+      echo "                 /etc file aside, overwrite an existing"
+      echo "                 <file>.before-nix-darwin (refused by default)."
       echo "  --flake REF    Override flake reference (default: ~/dotfiles#\$HOSTNAME)"
       echo ""
       echo "Logs: every run is mirrored to \$REBUILD_LOG_DIR (default:"
@@ -221,9 +230,9 @@ ensure_jq() {
 # the run's one authentication. The same-user path is untouched: `brew` stays
 # the plain command and nothing below runs.
 #
-# The prefix must already be hers. Checked before anything else (before the
-# plan, the drift audit and the build): a foreign-owned prefix fails halfway
-# through activation otherwise, so stop with the exact fix instead.
+# The prefix must be hers. Checked before anything else (before the plan, the
+# drift audit and the build): a foreign-owned prefix fails halfway through
+# activation otherwise, so setup_brew_user offers the chown, or stops.
 PRIMARY_USER=""
 BREW_AS_PRIMARY=false
 BREW_BIN=""
@@ -279,17 +288,41 @@ homebrew_enable_failed() {
   exit 1
 }
 
-# require_nix_features — stops before any flake evaluation when nix-command or
-# flakes is off. The official installer leaves both off, and on macOS nothing
-# turns them on later: the darwin config sets nix.enable = false, so nix-darwin
-# never writes /etc/nix/nix.conf (only NixOS sets
-# nix.settings.experimental-features). Fixing the config — rather than passing
-# --extra-experimental-features to rebuild.sh's own nix calls — also covers the
-# nix calls in the libs/scripts it runs, darwin-rebuild, and every later
-# interactive `nix` use. Probed WITHOUT the flag (the flag would show up in the
-# answer); an error naming the feature as disabled is the "off" signal.
-require_nix_features() {
-  local out feats="" missing=()
+# ── First-adoption fixes ──
+# Three things a freshly-Nix-installed Mac reliably has wrong, each of which
+# used to stop the run (or fail activation) with a command to paste:
+# experimental features off, a Homebrew prefix owned by the wrong account, and
+# installer-modified /etc shell files nix-darwin refuses to replace. rebuild.sh
+# now fixes each one itself after ONE explicit question (default No), inside
+# the run's single authentication. --plan-only / --build-only only report them.
+#
+# Paths are globals so the tests can point them at a temp root.
+NIX_CONF=/etc/nix/nix.conf
+ETC_DIR=/etc
+PROMPT_TTY=/dev/tty
+FLAKES_LINE='experimental-features = nix-command flakes'
+
+# ask_fix <question> — 0 only on an explicit y/Y. --yes does not count: these
+# change system files, and its premise ("nothing here needs a human") is the
+# opposite of a first adoption. An unreadable terminal reads as No.
+ask_fix() {
+  local answer=""
+  if $AUTO_CONFIRM; then
+    warn "--yes does not answer this question — treating it as No."
+    return 1
+  fi
+  echo -en "${BOLD}  $1 [y/N] ${NC}"
+  { read -r answer <"$PROMPT_TTY"; } 2>/dev/null || answer=""
+  echo ""
+  [[ "$answer" == y || "$answer" == Y ]]
+}
+
+# nix_missing_features — prints which of nix-command/flakes are off
+# (space-separated), nothing when both are on. Probed WITHOUT the flag (the
+# flag would show up in the answer); an error naming the feature as disabled
+# is the "off" signal.
+nix_missing_features() {
+  local out feats="" missing=""
   if out=$(nix config show experimental-features 2>&1); then
     feats="$out"
   elif [[ "$out" != *"experimental Nix feature 'nix-command' is disabled"* ]] \
@@ -297,15 +330,92 @@ require_nix_features() {
     # Nix older than `nix config show`.
     feats=$(awk -F' = ' '$1 == "experimental-features" { print $2 }' <<<"$out")
   fi
-  [[ " $feats " == *" nix-command "* ]] || missing+=(nix-command)
-  [[ " $feats " == *" flakes "* ]] || missing+=(flakes)
-  [[ ${#missing[@]} -gt 0 ]] || return 0
-  err "Nix experimental feature(s) not enabled: ${missing[*]}. Nothing was evaluated, built or changed."
-  err "Enable them once, then open a new terminal and re-run:"
+  [[ " $feats " == *" nix-command "* ]] || missing+=" nix-command"
+  [[ " $feats " == *" flakes "* ]] || missing+=" flakes"
+  echo "${missing# }"
+}
+
+# restart_nix_daemon — so the daemon picks up the changed nix.conf too.
+restart_nix_daemon() {
   if [[ "$OS" == Darwin ]]; then
-    err "    echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon"
+    sudo -n launchctl kickstart -k system/org.nixos.nix-daemon
   else
-    err "    echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf && sudo systemctl restart nix-daemon"
+    sudo -n systemctl restart nix-daemon
+  fi
+}
+
+# nix_conf_append — appends FLAKES_LINE as root, on a line of its own.
+nix_conf_append() {
+  local sep=""
+  if [[ -s "$NIX_CONF" && -n "$(tail -c 1 "$NIX_CONF")" ]]; then sep=$'\n'; fi
+  printf '%s%s\n' "$sep" "$FLAKES_LINE" | sudo -n tee -a "$NIX_CONF" >/dev/null
+}
+
+# require_nix_features — before any flake evaluation, nix-command and flakes
+# must be on. The official installer leaves both off, and on macOS nothing
+# turns them on later: the darwin config sets nix.enable = false, so nix-darwin
+# never writes /etc/nix/nix.conf (only NixOS sets
+# nix.settings.experimental-features). Fixing the config — rather than passing
+# --extra-experimental-features to rebuild.sh's own nix calls — also covers the
+# nix calls in the libs/scripts it runs, darwin-rebuild, and every later
+# interactive `nix` use.
+#
+# Offers to append the line only when nix.conf does not set the key yet: a
+# second `experimental-features` line silently REPLACES the first one's list,
+# and a symlinked nix.conf (NixOS, nix-darwin-managed) is not ours to edit.
+require_nix_features() {
+  local missing restart can_append=true nl=$'\n'
+  missing=$(nix_missing_features)
+  [[ -n "$missing" ]] || return 0
+  if [[ "$OS" == Darwin ]]; then restart="launchctl kickstart -k system/org.nixos.nix-daemon"
+  else restart="systemctl restart nix-daemon"; fi
+  if [[ -L "$NIX_CONF" ]] \
+     || grep -qE '^[[:space:]]*experimental-features[[:space:]]*=' "$NIX_CONF" 2>/dev/null; then
+    can_append=false
+  fi
+  warn "Nix experimental feature(s) not enabled: $missing (the official installer leaves them off)."
+  if $PLAN_ONLY; then
+    if $can_append; then
+      info "  will fix: rebuild.sh (without --plan-only) offers to append '$FLAKES_LINE'"
+      info "  to $NIX_CONF and restart nix-daemon."
+    else
+      warn "  rebuild.sh will STOP here: $NIX_CONF already sets experimental-features (or is a symlink) — edit it by hand."
+    fi
+    # The preview itself evaluates the flake: enable them for this process
+    # only. NIX_CONFIG is read by every nix command this run spawns.
+    NIX_CONFIG="${NIX_CONFIG:+$NIX_CONFIG$nl}extra-experimental-features = nix-command flakes"
+    export NIX_CONFIG
+    echo ""
+    return 0
+  fi
+  if $can_append; then
+    echo "    Fix (as root): append '$FLAKES_LINE' to $NIX_CONF, then $restart"
+    if ask_fix "Enable them now?"; then
+      authenticate_once "Nothing was evaluated, built or changed."
+      if ! nix_conf_append; then
+        err "Could not append to $NIX_CONF. Nothing was evaluated, built or changed."
+        exit 1
+      fi
+      restart_nix_daemon || warn "Could not restart nix-daemon ($restart) — continuing; the client reads $NIX_CONF itself."
+      missing=$(nix_missing_features)
+      if [[ -n "$missing" ]]; then
+        err "Still not enabled after the change: $missing. Check $NIX_CONF (and any !include). Nothing was built or changed."
+        exit 1
+      fi
+      ok "nix-command and flakes enabled in $NIX_CONF"
+      echo ""
+      return 0
+    fi
+    err "Nix experimental feature(s) not enabled: $missing. Nothing was evaluated, built or changed."
+    err "Enable them once, then open a new terminal and re-run:"
+    err "    echo '$FLAKES_LINE' | sudo tee -a $NIX_CONF && sudo $restart"
+  else
+    err "Nix experimental feature(s) not enabled: $missing. Nothing was evaluated, built or changed."
+    err "$NIX_CONF already sets experimental-features (or is a symlink), so rebuild.sh will not"
+    err "append a second line (it would replace the first). Add 'nix-command flakes' to that"
+    err "setting by hand, run 'sudo $restart', open a new terminal and re-run."
+  fi
+  if [[ "$OS" != Darwin ]]; then
     err "  (NixOS hosts get this from nix.settings.experimental-features after their first switch.)"
   fi
   exit 1
@@ -338,9 +448,10 @@ brew_owned_dirs() {
   done
 }
 
-# brew_prefix_foreign <prefix> — prints "<path> (owner)" for paths ANYWHERE in
-# those trees not owned by PRIMARY_USER (the first 5, then a count); nothing
-# when all are hers. Nested paths count: one foreign tap, keg or
+# brew_prefix_foreign <prefix> — paths ANYWHERE in those trees not owned by
+# PRIMARY_USER; nothing when all are hers. First line "<count><TAB><owners>"
+# (owners comma-separated), then "<path> (owner)" for the first 5 and
+# "… and N more". Nested paths count: one foreign tap, keg or
 # Library/Homebrew is enough for `brew update` or an install to fail later,
 # after the authentication — so the whole tree is walked, once, up front.
 brew_prefix_foreign() {
@@ -352,8 +463,16 @@ brew_prefix_foreign() {
   { find "${dirs[@]}" -xdev -exec stat -f '%Su %N' {} + 2>/dev/null || true; } \
     | awk -v u="$PRIMARY_USER" '
         { owner = $1; path = substr($0, length($1) + 2) }
-        owner != u { n++; if (n <= 5) print path " (" owner ")" }
-        END { if (n > 5) print "… and " n - 5 " more" }'
+        owner != u {
+          n++; if (n <= 5) shown[n] = path " (" owner ")"
+          if (!(owner in seen)) { seen[owner] = 1; owners = owners (owners == "" ? "" : ", ") owner }
+        }
+        END {
+          if (n == 0) exit
+          print n "\t" owners
+          for (i = 1; i <= n && i <= 5; i++) print shown[i]
+          if (n > 5) print "… and " n - 5 " more"
+        }'
 }
 
 # brew_as_primary <args...> — Homebrew as PRIMARY_USER. `sudo -n`: it runs
@@ -369,10 +488,12 @@ brew_as_primary() {
   ( cd / && exec sudo -n -u "$PRIMARY_USER" -H env ${envs[@]+"${envs[@]}"} "$BREW_BIN" "$@" )
 }
 
-# setup_brew_user — decides who runs Homebrew; exits on a foreign-owned prefix.
+# setup_brew_user — decides who runs Homebrew. Cross-user, a prefix the
+# primary user does not own is offered a chown (one question); declined, the
+# run stops before anything is built.
 setup_brew_user() {
   [[ "$OS" == Darwin ]] || return 0
-  local invoker prefix foreign managed_rc=0
+  local invoker prefix foreign count owners dirs managed_rc=0
   invoker=$(id -un)
   if ! PRIMARY_USER=$(eval_primary_user); then
     exit 1
@@ -389,14 +510,41 @@ setup_brew_user() {
   fi
   foreign=$(brew_prefix_foreign "$prefix")
   if [[ -n "$foreign" ]]; then
-    err "This configuration's system.primaryUser is '$PRIMARY_USER' (you are '$invoker')."
-    err "nix-darwin runs Homebrew as $PRIMARY_USER, but these are not owned by $PRIMARY_USER:"
-    sed 's/^/          /' <<<"$foreign" >&2
-    err "Nothing was built or changed. Fix, then re-run:"
-    err "    sudo chown -R $PRIMARY_USER:admin $(brew_owned_dirs "$prefix" | xargs)"
-    err "Afterwards other accounts run Homebrew as $PRIMARY_USER:"
-    err "    sudo -u $PRIMARY_USER brew …"
-    exit 1
+    IFS=$'\t' read -r count owners <<<"$(head -1 <<<"$foreign")"
+    dirs=$(brew_owned_dirs "$prefix" | xargs)
+    warn "This configuration's system.primaryUser is '$PRIMARY_USER' (you are '$invoker')."
+    warn "nix-darwin runs Homebrew as $PRIMARY_USER, but $count path(s) under $prefix belong to $owners:"
+    tail -n +2 <<<"$foreign" | sed 's/^/          /'
+    warn "Left like this, Homebrew fails partway through activation."
+    echo "    Fix (as root): chown -R $PRIMARY_USER:admin $dirs"
+    echo "    Afterwards Homebrew belongs to $PRIMARY_USER: every other account (you included) runs"
+    echo "    it as 'sudo -u $PRIMARY_USER brew …' — a plain 'brew' from another account fails."
+    if $PLAN_ONLY || $BUILD_ONLY; then
+      info "  will fix: rebuild.sh offers this chown before the plan of a full run."
+      echo ""
+    elif ask_fix "Hand Homebrew to $PRIMARY_USER now (chown -R $PRIMARY_USER:admin $dirs)?"; then
+      authenticate_once "Nothing was built or changed."
+      # shellcheck disable=SC2086  # $dirs: one or more prefix trees, no spaces
+      if ! sudo -n chown -R "$PRIMARY_USER:admin" $dirs; then
+        err "chown failed. Nothing was built or changed."
+        exit 1
+      fi
+      foreign=$(brew_prefix_foreign "$prefix")
+      if [[ -n "$foreign" ]]; then
+        err "Still not owned by $PRIMARY_USER after the chown:"
+        tail -n +2 <<<"$foreign" | sed 's/^/          /' >&2
+        err "Nothing was built or changed."
+        exit 1
+      fi
+      ok "Homebrew under $prefix now belongs to $PRIMARY_USER"
+      echo ""
+    else
+      err "Nothing was built or changed. Fix, then re-run:"
+      err "    sudo chown -R $PRIMARY_USER:admin $dirs"
+      err "Afterwards other accounts run Homebrew as $PRIMARY_USER:"
+      err "    sudo -u $PRIMARY_USER brew …"
+      exit 1
+    fi
   fi
   BREW_BIN="$prefix/bin/brew"
   BREW_AS_PRIMARY=true
@@ -455,6 +603,226 @@ authenticate_once() {
   SUDO_KEEPALIVE_PID=$!
   SUDO_AUTHENTICATED=true
   ok "Authenticated — you should not be prompted again for this run"
+  echo ""
+}
+
+# ── /etc files nix-darwin will refuse to replace ──
+# nix-darwin's activation `checks` (modules/system/etc.nix in the pinned
+# nix-darwin) abort the WHOLE activation with "Unexpected files in /etc" when
+# a file the configuration links into /etc exists, is not already its
+# /etc/static link, and its sha256 is not in that entry's knownSha256Hashes
+# (the stock macOS files plus a few installer-modified ones). It only ever
+# moved files with a KNOWN hash aside itself. On kassie-mbp-m1 /etc/bashrc and
+# /etc/zshrc were stock macOS plus the official Nix installer's
+# `# Nix` … `# End Nix` block in a layout the list does not cover — and the
+# failure came AFTER 25 apps had been replaced. So the same rule runs here,
+# from the evaluated configuration (no build needed, so --plan-only sees it),
+# before anything is changed:
+#   - stock + only the installer block (the block removed, the rest hashes to
+#     one of nix-darwin's own known hashes) → offer to move it to
+#     <file>.before-nix-darwin, exactly what nix-darwin asks for. The move
+#     happens after the switch is confirmed, inside its one authentication,
+#     BEFORE any app is replaced: moving /etc/zshrc earlier would drop nix
+#     from new shells' PATH for a run the user may still cancel.
+#   - anything else → stop now, with the unexpected lines and the manual step.
+ETC_RENAMES=""   # "<path><TAB><sha256>" lines confirmed for moving aside
+ETC_RENAMED=""   # paths actually moved (for the restore hint)
+ETC_MATCH_EB=0; ETC_MATCH_EA=0   # blank-line variant that matched (see below)
+
+# etc_managed_targets — "<target><TAB><known hashes>" for every enabled
+# environment.etc entry: exactly the links nix-darwin's check walks.
+etc_managed_targets() {
+  local ref dir host errf out rc=0
+  ref=$(host_flake_ref); dir="${ref%#*}"; host="${ref##*#}"
+  errf=$(mktemp)
+  out=$(nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.environment.etc" --apply \
+    'etc: builtins.concatStringsSep "" (map (f: f.target + "\t" + builtins.concatStringsSep " " f.knownSha256Hashes + "\n") (builtins.filter (f: f.enable) (builtins.attrValues etc)))' \
+    2>"$errf") || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    eval_failed environment.etc "$errf"
+    rm -f "$errf"; return 1
+  fi
+  rm -f "$errf"
+  printf '%s' "$out"
+}
+
+sha256_of() { local o; o=$(shasum -a 256 "$1") || return 1; echo "${o%% *}"; }
+
+# nix_block_stripped <file> <eat_blank_before> <eat_blank_after> — the file
+# without the official Nix installer's block(s); fails (printing nothing) if
+# there is none or a block holds anything but the installer's nix-daemon.sh
+# sourcing. The installer prepends (current) or appends (older) the block
+# with blank lines around it, hence the blank-line variants.
+nix_block_stripped() {
+  awk -v eb="$2" -v ea="$3" -v q="'" '
+    BEGIN {
+      re_if  = "^if \\[ -e " q "[^" q "]*/nix-daemon\\.sh" q " \\]; then$"
+      re_src = "^[ \t]*\\. " q "[^" q "]*/nix-daemon\\.sh" q "$"
+    }
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (!inb) {
+          if (line[i] == "# Nix") { inb = 1; start = i }
+          continue
+        }
+        if (line[i] == "# End Nix") {
+          inb = 0; blocks++
+          for (j = start; j <= i; j++) drop[j] = 1
+          if (eb && start > 1 && line[start - 1] == "") drop[start - 1] = 1
+          if (ea && i < NR && line[i + 1] == "") drop[i + 1] = 1
+        } else if (line[i] !~ re_if && line[i] !~ re_src && line[i] != "fi") {
+          bad = 1
+        }
+      }
+      if (inb || !blocks || bad) exit 1
+      for (i = 1; i <= NR; i++) if (!(i in drop)) print line[i]
+    }' "$1"
+}
+
+# etc_stock_with_nix_block <file> <known hashes> — 0 when the file minus the
+# installer block hashes to one of nix-darwin's known hashes for it; sets
+# ETC_MATCH_EB/EA to the variant that matched.
+etc_stock_with_nix_block() {
+  local f="$1" known=" $2 " eb ea h
+  nix_block_stripped "$f" 0 0 >/dev/null 2>&1 || return 1
+  for eb in 0 1; do
+    for ea in 0 1; do
+      h=$(nix_block_stripped "$f" "$eb" "$ea" | shasum -a 256) || continue
+      if [[ "$known" == *" ${h%% *} "* ]]; then
+        ETC_MATCH_EB=$eb; ETC_MATCH_EA=$ea
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# etc_body <file> — its content outside a well-formed installer block.
+etc_body() { nix_block_stripped "$1" 1 1 2>/dev/null || cat "$1"; }
+
+# etc_unexpected_lines <file> — what is in it beyond a stock file: a diff
+# against the official installer's own backup of the original
+# (<file>.backup-before-nix) when there is one, else the content itself.
+etc_unexpected_lines() {
+  local f="$1" ref="$1.backup-before-nix"
+  if [[ -f "$f" && -f "$ref" ]]; then
+    echo "      Differences from the Nix installer's backup of the original ($ref):"
+    { diff "$ref" <(etc_body "$f") | sed -n 's/^< \{0,1\}/      - /p; s/^> \{0,1\}/      + /p' | head -40; } || true
+  elif [[ -f "$f" ]]; then
+    echo "      No stock file has this checksum and there is no installer backup ($ref)"
+    echo "      to compare with. Its content (outside a Nix installer block):"
+    { etc_body "$f" | head -40 | sed 's/^/      | /'; } || true
+  else
+    echo "      Not a regular file ($(stat -f %HT "$f" 2>/dev/null || echo unknown type)) — nix-darwin rejects it unconditionally."
+  fi
+}
+
+# etc_restore_hint — how to undo the moves, for a run that stops after them.
+etc_restore_hint() {
+  local f
+  [[ -n "$ETC_RENAMED" ]] || return 0
+  warn "Moved aside this run (nix-darwin's version is not in place until a switch succeeds):"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo "      $f → $f.before-nix-darwin   (undo: sudo mv $f.before-nix-darwin $f)"
+  done <<<"$ETC_RENAMED"
+}
+
+# etc_preflight — classifies every /etc file nix-darwin's check would reject;
+# asks once to move the recognised ones aside, stops on anything else.
+# --plan-only / --build-only only report.
+etc_preflight() {
+  [[ "$OS" == Darwin ]] || return 0
+  local targets t known f h dest fixable="" stop=false preview=false
+  if $PLAN_ONLY || $BUILD_ONLY; then preview=true; fi
+  if ! targets=$(etc_managed_targets); then exit 1; fi
+  while IFS=$'\t' read -r t known; do
+    [[ -n "$t" ]] || continue
+    f="$ETC_DIR/$t"; h=""
+    # The same rule as nix-darwin's check, in the same order.
+    [[ -e "$f" ]] || continue
+    [[ "$(readlink "$f" 2>/dev/null)" != "$ETC_DIR/static/$t" ]] || continue
+    if [[ -f "$f" ]]; then
+      h=$(sha256_of "$f") || h=""
+      # Known hash: nix-darwin moves it aside itself.
+      if [[ -n "$h" && " $known " == *" $h "* ]]; then continue; fi
+    fi
+    dest="$f.before-nix-darwin"
+    if [[ -n "$h" ]] && etc_stock_with_nix_block "$f" "$known"; then
+      warn "$f: stock macOS file + the Nix installer's block — nix-darwin would abort activation on it."
+      echo "      Differs from the stock file only by:"
+      { diff <(nix_block_stripped "$f" "$ETC_MATCH_EB" "$ETC_MATCH_EA") "$f" \
+          | sed -n 's/^> \{0,1\}/      + /p'; } || true
+      if [[ -e "$dest" || -L "$dest" ]] && { ! $FORCE || [[ -d "$dest" ]]; }; then
+        err "  $dest already exists — refusing to overwrite it."
+        err "  Compare it (diff $dest $f), remove or rename it yourself, or re-run with --force to overwrite it."
+        stop=true
+      else
+        fixable+="$f"$'\t'"$h"$'\n'
+      fi
+    else
+      warn "$f: unexpected content — nix-darwin would abort activation on it."
+      etc_unexpected_lines "$f"
+      err "  Keep what you need from it elsewhere, then move it aside yourself and re-run:"
+      err "    sudo mv $f $dest"
+      stop=true
+    fi
+  done <<<"$targets"
+  if $stop; then
+    if $preview; then
+      warn "rebuild.sh will STOP before changing anything until the /etc file(s) above are dealt with."
+      echo ""
+      return 0
+    fi
+    err "Nothing was built or changed. Deal with the /etc file(s) above, then re-run."
+    exit 1
+  fi
+  [[ -n "$fixable" ]] || return 0
+  if $preview; then
+    info "  will fix: rebuild.sh offers to move them to *.before-nix-darwin before activation."
+    echo ""
+    return 0
+  fi
+  if ask_fix "Move them aside (sudo mv <file> <file>.before-nix-darwin) after you confirm the switch?"; then
+    ETC_RENAMES="$fixable"
+    info "They are moved inside the run's one authentication, before any app is replaced."
+    echo ""
+    return 0
+  fi
+  err "Not moved — nix-darwin would abort activation on them. Nothing was built or changed."
+  err "Move them aside yourself, then re-run:"
+  while IFS=$'\t' read -r f h; do
+    [[ -n "$f" ]] && err "    sudo mv $f $f.before-nix-darwin"
+  done <<<"$fixable"
+  exit 1
+}
+
+# etc_apply_renames — performs the confirmed moves. Re-checks each file first
+# (unchanged since it was classified, destination still free), and stops on
+# any failure before an app is replaced or activation starts.
+etc_apply_renames() {
+  local f h dest now
+  [[ -n "$ETC_RENAMES" ]] || return 0
+  while IFS=$'\t' read -r f h; do
+    [[ -n "$f" ]] || continue
+    dest="$f.before-nix-darwin"
+    now=$(sha256_of "$f" 2>/dev/null) || now=""
+    if [[ "$now" != "$h" ]]; then
+      err "$f changed since it was checked — not moving it. Stopping before any app is replaced or activation."
+      etc_restore_hint; exit 1
+    fi
+    if [[ -e "$dest" || -L "$dest" ]] && { ! $FORCE || [[ -d "$dest" ]]; }; then
+      err "$dest appeared since the check — not overwriting it. Stopping before any app is replaced or activation."
+      etc_restore_hint; exit 1
+    fi
+    if ! sudo -n mv -f "$f" "$dest"; then
+      err "Could not move $f. Stopping before any app is replaced or activation."
+      etc_restore_hint; exit 1
+    fi
+    ETC_RENAMED+="$f"$'\n'
+    ok "$f → $dest"
+  done <<<"$ETC_RENAMES"
   echo ""
 }
 
@@ -1019,14 +1387,22 @@ if ! command -v nix &>/dev/null; then
   fi
 fi
 
+# ── First-adoption preflight ──
+# Each check below either passes, fixes itself after one question (default
+# No), or stops — all before the plan, the drift audit and the build, so a
+# first adoption cannot fail halfway with some apps already replaced.
+# --plan-only reports them as "will fix" and changes nothing; --build-only
+# does the same for the Homebrew and /etc checks (it needs flakes to build).
 require_nix_features
 
 if [[ "$OS" == "Darwin" ]]; then
   ensure_jq || true
 fi
-# Who runs Homebrew — and, cross-user, a prefix the primary user does not own
-# stops the run here, before the plan, the drift audit and the build.
+# Who runs Homebrew — and, cross-user, whether the primary user owns it.
 setup_brew_user
+# /etc files nix-darwin's activation would reject (moved, if confirmed, only
+# after the switch is confirmed — see etc_apply_renames).
+etc_preflight
 
 # ── --plan-only: preview the Homebrew plan and stop ──
 # Placed after the nix-in-PATH setup (the plan evaluates the flake) but before
@@ -1070,6 +1446,19 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
   # Read the line once and tolerate its absence, so a failed audit stays
   # advisory the way the case statement always intended.
   drift_summary=$(grep -E "^DRIFT_RESULT:" "$audit_log" || true)
+  # A crash must never read as "no drift". Exit 0/1 is a RESULT only together
+  # with the summary line: on kassie-mbp-m1 the audit died under macOS's bash
+  # 3.2 ("tailscale: unbound variable", exit 1 — the drift code) and this
+  # block reported "Drift is non-destructive (0 … pending)". Exit 0/1 without
+  # the summary is a failure, shown with the audit's own error.
+  if [[ ( "$audit_rc" == 0 || "$audit_rc" == 1 ) && -z "$drift_summary" ]]; then
+    audit_rc="$audit_rc, no DRIFT_RESULT line"
+  fi
+  audit_error=$(sed $'s/\033\\[[0-9;]*m//g' "$audit_log" | grep -v '^DRIFT_RESULT:' \
+    | grep -iE 'error|unbound|line [0-9]+:|aborted|not found|unable|fail' | tail -5 || true)
+  if [[ -z "$audit_error" ]]; then
+    audit_error=$(sed $'s/\033\\[[0-9;]*m//g' "$audit_log" | sed '/^[[:space:]]*$/d' | tail -3 || true)
+  fi
   rm -f "$audit_log"
   risky=$(sed -nE 's/.*risky=([0-9]+).*/\1/p' <<<"$drift_summary")
   benign=$(sed -nE 's/.*benign=([0-9]+).*/\1/p' <<<"$drift_summary")
@@ -1097,7 +1486,14 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
         info "Drift is non-destructive ($benign declared item(s) pending, $informational informational item(s) preserved) — proceeding."
       fi
       ;;
-    *) warn "Audit failed (exit $audit_rc) — proceeding without drift check" ;;
+    *)
+      warn "Audit failed (exit $audit_rc) — drift is UNKNOWN, not zero. Proceeding without a drift check."
+      if [[ -n "$audit_error" ]]; then
+        warn "Its error:"
+        sed 's/^/          /' <<<"$audit_error"
+      fi
+      warn "Re-run it alone to see everything: $DOTFILES_DIR/scripts/audit-config-drift.sh $AUDIT_HOST"
+      ;;
   esac
   echo ""
 fi
@@ -1225,6 +1621,9 @@ info "One authentication covers this entire run:"
 echo "    • activation: system settings, launchd services, /etc links"
 if $BREW_AS_PRIMARY; then echo "    • every Homebrew command, run as $PRIMARY_USER"; fi
 if [[ -n "$NEW_CASKS" ]]; then echo "    • install: $NEW_CASKS"; fi
+if [[ -n "$ETC_RENAMES" ]]; then
+  echo "    • move aside (→ *.before-nix-darwin): $(cut -f1 <<<"$ETC_RENAMES" | xargs)"
+fi
 if [[ -n "$ADOPT_CASKS" ]]; then echo "    • replace hand-installed: $ADOPT_CASKS"; fi
 if [[ -n "$BREW_UPGRADE_FORMULAE$BREW_UPGRADE_CASKS" ]]; then
   echo "    • upgrade: $(xargs <<<"$BREW_UPGRADE_FORMULAE $BREW_UPGRADE_CASKS")"
@@ -1233,6 +1632,14 @@ if [[ -n "$RETIRE_CASKS" ]]; then echo "    • uninstall retired: $RETIRE_CASKS
 echo "    Any further prompt during this run is unexpected — the log will show what asked."
 
 authenticate_once "Build result is in ./result for inspection."
+
+# ── Before Step 5c: move recognised /etc files aside ──
+# Confirmed in etc_preflight; done here — after the switch is confirmed,
+# inside its one authentication, and BEFORE any app is replaced, so a failed
+# move stops the run with nothing else changed.
+if [[ "$OS" == "Darwin" ]]; then
+  etc_apply_renames
+fi
 
 # ── Step 6: Activate (requires sudo) ──
 # Classify darwin-rebuild exit into success / known-harmless / real failure.
@@ -1373,6 +1780,7 @@ echo ""
 if [[ $ACTIVATION_RC -ne 0 ]]; then
   err "Activation FAILED (exit $ACTIVATION_RC) — the system was NOT fully switched."
   err "Skipping App Store upgrades. Build result kept in ./result for inspection."
+  etc_restore_hint
   echo "Log: $LOG_FILE"
   echo ""
   exit "$ACTIVATION_RC"

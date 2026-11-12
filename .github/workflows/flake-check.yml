@@ -41,3 +41,8 @@ jobs:
         # Shared with update-flake-lock.yml, which must run the same gate itself
         # (its GITHUB_TOKEN-made PR does not trigger this workflow).
         run: bash scripts/ci/eval-darwin-configs.sh
+
+      - name: Household brew shim (eval-level)
+        # /etc/zshrc|bashrc on household hosts route other accounts' `brew` to
+        # system.primaryUser; no other host may carry it.
+        run: bash scripts/ci/check-household-brew-shim.sh

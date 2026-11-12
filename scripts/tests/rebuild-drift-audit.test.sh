@@ -94,10 +94,33 @@ out=$(run_block Darwin 2 "error: flake does not provide attribute")
 check "any audit error keeps the rebuild going" "$(rc_of "$out")" "0"
 
 echo ""
+echo "drift audit — a crash is never reported as 'no drift'"
+
+# kassie-mbp-m1: the audit died under macOS's bash 3.2 with exit 1 — the
+# "drift found" code — and no summary line; the block then printed
+# "Drift is non-destructive (0 declared item(s) pending …)".
+CRASH=$'== Homebrew casks ==\n/Users/x/dotfiles/scripts/audit-config-drift.sh: line 301: tailscale: unbound variable'
+out=$(run_block Darwin 1 "$CRASH")
+check "exit 1 without a summary line still proceeds" "$(rc_of "$out")" "0"
+check_contains "exit 1 without a summary is a FAILURE, not drift" "$out" "drift is UNKNOWN, not zero"
+check_contains "the audit's error is shown in the warning" "$out" "Its error:"
+check_contains "the error line itself is repeated" "$out" "line 301: tailscale: unbound variable"
+case "$out" in
+  *"Drift is non-destructive"*) echo "  FAIL — a crash must not read as non-destructive drift"; fail=$((fail+1)) ;;
+  *) echo "  ok   — a crash does not read as non-destructive drift"; pass=$((pass+1)) ;;
+esac
+out=$(run_block Darwin 0 "Auditing x ...")
+check_contains "exit 0 without a summary line is a failure too" "$out" "no DRIFT_RESULT line"
+
+echo ""
 echo "drift audit — the advisory paths still work"
 
-out=$(run_block Darwin 0 "")
+out=$(run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
 check "no drift proceeds" "$(rc_of "$out")" "0"
+case "$out" in
+  *"Audit failed"*) echo "  FAIL — a complete clean audit must not warn"; fail=$((fail+1)) ;;
+  *) echo "  ok   — a complete clean audit does not warn"; pass=$((pass+1)) ;;
+esac
 
 out=$(run_block Darwin 1 "$SUMMARY")
 check "benign drift proceeds" "$(rc_of "$out")" "0"

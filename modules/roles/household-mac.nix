@@ -10,6 +10,26 @@ let
     else map (f: f.target) (lib.filter (f: f.enable) (lib.attrValues hm.home.file));
   hmAllowedFiles = [ ".cache/.keep" ".local/state/.keep" ];
   postActivation = config.system.activationScripts.postActivation.text;
+  # Homebrew belongs to the primary user (nix-darwin runs `brew bundle` as
+  # her, so /opt/homebrew must be hers). For every OTHER account a plain
+  # `brew` would fail on her prefix — or, worse, write files into it she can
+  # no longer update. This shell function makes `brew` from another ADMIN
+  # account run as her (the same `sudo -u <primary> -H` form nix-darwin and
+  # rebuild.sh use; from / because her account cannot read his home), and
+  # tells a non-admin account who manages it. The primary user is unaffected.
+  # System-wide (/etc/zshrc, /etc/bashrc via interactiveShellInit), NOT
+  # home-manager: nobody's own dotfiles are touched.
+  brewShimMarker = "# household-mac: Homebrew on this Mac belongs to";
+  brewShim = lib.optionalString config.homebrew.enable ''
+    ${brewShimMarker} ${primary}
+    if [ "$(id -un)" != ${lib.escapeShellArg primary} ]; then
+      if id -Gn | grep -qw admin; then
+        brew() { (cd / && exec sudo -u ${lib.escapeShellArg primary} -H ${lib.escapeShellArg "${config.homebrew.prefix}/bin/brew"} "$@"); }
+      else
+        brew() { echo ${lib.escapeShellArg "Homebrew on this Mac is managed by ${primary}; ask an admin."} >&2; return 1; }
+      fi
+    fi
+  '';
 in
 {
   # ── Household Mac: ADOPT an in-use, shared Mac without wiping it ───────────
@@ -69,8 +89,11 @@ in
   #     nix system profile in /run/current-system;
   #   - Homebrew `brew bundle` (run as the primary user) installs the host's
   #     declared casks into /Applications. /opt/homebrew must therefore be
-  #     owned by the primary user — another account's `brew` then needs
-  #     `sudo -u <primary> brew …`. Only MISSING casks are installed, never
+  #     owned by the primary user (rebuild.sh offers the chown). In every
+  #     OTHER account's interactive zsh/bash, `brew` is a function from
+  #     /etc/zshrc|bashrc: admins run it as `sudo -u <primary> -H brew …`
+  #     (from /; Touch ID), non-admins get "managed by <primary>; ask an
+  #     admin". Only MISSING casks are installed, never
   #     upgraded (homebrew.nix: upgrade = false) and NOTHING is ever removed
   #     (cleanup = "none", asserted below). Hand-installed apps stay as they
   #     are unless the host declares their cask — then rebuild.sh replaces
@@ -92,7 +115,7 @@ in
   #   - declared casks replaced by rebuild.sh become owned by her.
   #
   # (c) OTHER ACCOUNTS (e.g. the maintainer): no per-user change. They see the
-  #   system-wide effects above only.
+  #   system-wide effects above only (including the `brew` function).
   imports = [
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
     ../darwin/software-update.nix   # macOS update policy (client Macs only)
@@ -115,7 +138,8 @@ in
   programs.zsh.promptInit = ''PS1="%n@%m %1~ %# "'';
   programs.zsh.interactiveShellInit = ''
     [ -r "/etc/zshrc_$TERM_PROGRAM" ] && . "/etc/zshrc_$TERM_PROGRAM"
-  '';
+  '' + brewShim;
+  programs.bash.interactiveShellInit = brewShim;
 
   assertions = [
     # Never let a household Mac lose an app to Homebrew cleanup: "zap" /
@@ -159,6 +183,17 @@ in
       message = "household-mac: home-manager for ${primary} must not manage files "
         + "in her home (got: ${lib.concatStringsSep ", " hmFiles}) — use mkMac "
         + "homeProfile = \"household\" and no file-writing extraHomeModules.";
+    }
+    # The brew shim must reach both system-wide shell files (a disabled
+    # programs.zsh/bash or an override would silently drop it, and other
+    # accounts' `brew` would write into the primary user's prefix).
+    {
+      assertion = !config.homebrew.enable
+        || (lib.hasInfix brewShimMarker config.environment.etc."zshrc".text
+          && lib.hasInfix brewShimMarker config.environment.etc."bashrc".text);
+      message = "household-mac: the Homebrew shell function for non-${primary} "
+        + "accounts is missing from /etc/zshrc or /etc/bashrc — are programs.zsh "
+        + "and programs.bash enabled?";
     }
   ];
 }
