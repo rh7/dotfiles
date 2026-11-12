@@ -32,7 +32,7 @@ check() { if [[ "$2" == "$3" ]]; then good "$1"; else bad "$1" "expected [$3] go
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-FNS="setup_brew_user host_flake_ref eval_primary_user brew_prefix brew_prefix_foreign brew_as_primary
+FNS="setup_brew_user host_flake_ref eval_primary_user brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary
      authenticate_once ensure_jq ensure_declared_lib homebrew_plan cask_lifecycle_plan
      cask_app_targets app_bundle_modifiable declared_outdated_mas select_by_mode
      load_critical_names replace_hand_installed"
@@ -46,7 +46,8 @@ ME=$(id -un)
 PFX="$W/homebrew"
 APPS="$W/Applications"
 STUBS="$W/stubs"
-mkdir -p "$PFX/bin" "$PFX/Cellar" "$PFX/Caskroom" "$APPS/Zen.app" "$STUBS"
+mkdir -p "$PFX/bin" "$PFX/Cellar/foo/1.0" "$PFX/Caskroom" "$PFX/Library/Taps/acme/homebrew-x" \
+  "$APPS/Zen.app" "$STUBS"
 
 # ── Stubs ────────────────────────────────────────────────────────────────────
 cat >"$PFX/bin/brew" <<'EOF'
@@ -76,10 +77,14 @@ exit 0
 EOF
 cat >"$STUBS/stat" <<'EOF'
 #!/usr/bin/env bash
-# stat -f %Su <path>: owner from $STUB_OWNERS ("<path> <owner>" lines), else $STUB_DEFAULT_OWNER
-p="${@: -1}"
-o=$(awk -v p="$p" '$1 == p {print $2}' "$STUB_OWNERS" 2>/dev/null)
-echo "${o:-$STUB_DEFAULT_OWNER}"
+# stat -f <%Su|'%Su %N'> <path>...: owner from $STUB_OWNERS ("<path> <owner>"
+# lines), else $STUB_DEFAULT_OWNER
+fmt="$2"; shift 2
+for p in "$@"; do
+  o=$(awk -v p="$p" '$1 == p {print $2}' "$STUB_OWNERS" 2>/dev/null)
+  o="${o:-$STUB_DEFAULT_OWNER}"
+  if [[ "$fmt" == '%Su' ]]; then echo "$o"; else echo "$o $p"; fi
+done
 EOF
 cat >"$STUBS/nix" <<'EOF'
 #!/usr/bin/env bash
@@ -171,6 +176,15 @@ run_case 'setup_brew_user; echo "REACHED"'
 check "half-chowned prefix (Caskroom foreign): stops" "$(cat "$W/rc")" 1
 grep -qF "$PFX/Caskroom ($ME)" "$W/out" && good "half-chowned prefix: names the foreign directory" \
   || bad "half-chowned prefix: names the foreign directory" "$(cat "$W/out")"
+
+echo "$PFX/Library/Taps/acme/homebrew-x rouven" >"$W/owners"
+run_case 'setup_brew_user; echo "REACHED"'
+check "foreign tap deep inside an otherwise-hers prefix: stops" "$(cat "$W/rc")" 1
+grep -qF "$PFX/Library/Taps/acme/homebrew-x (rouven)" "$W/out" \
+  && good "nested foreign path is named" || bad "nested foreign path is named" "$(cat "$W/out")"
+OWNER="$ME" run_case 'setup_brew_user'
+grep -q "… and [0-9]* more" "$W/out" && good "wholly foreign prefix: first 5 paths, then a count" \
+  || bad "wholly foreign prefix: first 5 paths, then a count" "$(cat "$W/out")"
 : >"$W/owners"
 
 HB_ENABLE=false OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'

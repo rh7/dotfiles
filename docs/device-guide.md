@@ -457,8 +457,9 @@ the Mac — Kassie does not need to be there. `rebuild.sh` evaluates
 `system.primaryUser` (`kassie`); because it differs from you, it runs **every
 Homebrew command** — plan, replacing hand-installed apps, upgrades, retired
 casks — as her (`sudo -u kassie -H`), inside the run's **one** Touch ID. Before
-anything else it checks that `/opt/homebrew` is hers and stops with the exact
-`chown` if not. The same-user path (you rebuilding your own Mac) is unchanged.
+anything else it checks that everything under `/opt/homebrew` is hers (a few
+seconds) and stops with the exact `chown` if not. The same-user path (you
+rebuilding your own Mac) is unchanged.
 
 1. **Ask Kassie to log out** (best) or at least quit her apps. The declared
    apps are replaced while they may be open in her session.

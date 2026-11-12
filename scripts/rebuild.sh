@@ -252,18 +252,34 @@ brew_prefix() {
   return 1
 }
 
-# brew_prefix_foreign <prefix> — prints "<dir> (owner)" for each Homebrew
-# directory NOT owned by PRIMARY_USER; nothing when all are hers. /usr/local
-# itself is root's on Intel Macs — only Homebrew's own directories count there.
-brew_prefix_foreign() {
-  local prefix="$1" d owner dirs=()
-  [[ "$prefix" == /usr/local ]] || dirs+=("$prefix")
-  dirs+=("$prefix/Cellar" "$prefix/Caskroom" "$prefix/bin")
-  for d in "${dirs[@]}"; do
-    [[ -e "$d" ]] || continue
-    owner=$(stat -f %Su "$d" 2>/dev/null) || owner="unknown"
-    if [[ "$owner" != "$PRIMARY_USER" ]]; then echo "$d ($owner)"; fi
+# brew_owned_dirs <prefix> — the trees Homebrew writes to, i.e. what must be
+# PRIMARY_USER's. The whole prefix on Apple Silicon; on Intel /usr/local itself
+# (and its bin/, shared with other installers) is root's, so only Homebrew's
+# own trees count there.
+brew_owned_dirs() {
+  local prefix="$1" d
+  if [[ "$prefix" != /usr/local ]]; then echo "$prefix"; return 0; fi
+  for d in "$prefix/Homebrew" "$prefix/Cellar" "$prefix/Caskroom" "$prefix/var/homebrew"; do
+    if [[ -e "$d" ]]; then echo "$d"; fi
   done
+}
+
+# brew_prefix_foreign <prefix> — prints "<path> (owner)" for paths ANYWHERE in
+# those trees not owned by PRIMARY_USER (the first 5, then a count); nothing
+# when all are hers. Nested paths count: one foreign tap, keg or
+# Library/Homebrew is enough for `brew update` or an install to fail later,
+# after the authentication — so the whole tree is walked, once, up front.
+brew_prefix_foreign() {
+  local prefix="$1" d dirs=()
+  while IFS= read -r d; do dirs+=("$d"); done < <(brew_owned_dirs "$prefix")
+  [[ ${#dirs[@]} -gt 0 ]] || return 0
+  # `|| true`: an unreadable subtree must not abort the run under `set -e`;
+  # what find could read is still reported.
+  { find "${dirs[@]}" -xdev -exec stat -f '%Su %N' {} + 2>/dev/null || true; } \
+    | awk -v u="$PRIMARY_USER" '
+        { owner = $1; path = substr($0, length($1) + 2) }
+        owner != u { n++; if (n <= 5) print path " (" owner ")" }
+        END { if (n > 5) print "… and " n - 5 " more" }'
 }
 
 # brew_as_primary <args...> — Homebrew as PRIMARY_USER. `sudo -n`: it runs
@@ -305,7 +321,7 @@ setup_brew_user() {
     err "nix-darwin runs Homebrew as $PRIMARY_USER, but these are not owned by $PRIMARY_USER:"
     sed 's/^/          /' <<<"$foreign" >&2
     err "Nothing was built or changed. Fix, then re-run:"
-    err "    sudo chown -R $PRIMARY_USER:admin $prefix"
+    err "    sudo chown -R $PRIMARY_USER:admin $(brew_owned_dirs "$prefix" | xargs)"
     err "Afterwards other accounts run Homebrew as $PRIMARY_USER:"
     err "    sudo -u $PRIMARY_USER brew …"
     exit 1
