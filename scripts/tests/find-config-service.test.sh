@@ -172,6 +172,19 @@ else
   sed 's/^/         /' "$TEST_ROOT/drift-prewipe.diff" | head -40
   fail=$((fail+1))
 fi
+# scripts/adopt.sh carries a fourth copy for the same reason (`curl … | bash`
+# before any clone exists): it decides where the adoption audit goes and which
+# URL it offers to pin.
+ADOPT="$REPO_ROOT/scripts/adopt.sh"
+extract_block "$ADOPT" "$TEST_ROOT/adopt.sh"
+if diff -u "$TEST_ROOT/audit.sh" "$TEST_ROOT/adopt.sh" > "$TEST_ROOT/drift-adopt.diff"; then
+  echo "  ok   — adopt.sh carries the same resolver"
+  pass=$((pass+1))
+else
+  echo "  FAIL — the shared resolver has DRIFTED in adopt.sh:"
+  sed 's/^/         /' "$TEST_ROOT/drift-adopt.diff" | head -40
+  fail=$((fail+1))
+fi
 
 # ── one resolution per run ───────────────────────────────────────────────────
 echo

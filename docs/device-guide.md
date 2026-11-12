@@ -7,16 +7,19 @@ How to onboard, audit, and manage devices — from a brand new Mac to an existin
 There are two paths depending on whether the machine already has stuff on it:
 
 ```
-New device (blank)                 Existing device (apps installed)
+New device (blank)                 Existing device (apps installed) — or blank
   │                                   │
-  └─ scripts/setup.sh                 ├─ audit + checklist        ← discover first
-     (Xcode CLI → hostname →          │   (Before migrating an existing Mac)
-      official Nix → build →          ├─ fold kept apps into the flake (PR → merge)
-      1Password → gh → Tailscale →    ├─ secrets recipient (needsSecrets hosts)
-      register → daily audit)         └─ ./scripts/rebuild.sh     ← then deploy
+  └─ scripts/setup.sh                 ├─ Mac:   curl …/scripts/adopt.sh | bash
+     (Xcode CLI → hostname →          │         (no flake entry → offers audit, stops)
+      official Nix → build →          ├─ owner: scripts/new-host.sh <host> --apply
+      1Password → gh → Tailscale →    │         (casks from the audit → PR → merge)
+      register → daily audit)         └─ Mac:   adopt.sh again (Nix → clone → rebuild)
 ```
 
-**Rule: always audit existing machines before deploying.** This lets you review what's installed, decide what to keep, and add anything missing to the dotfiles before nix-darwin takes over.
+**Rule: always audit existing machines before deploying.** `adopt.sh` enforces it:
+a Mac without a flake entry gets an audit first, and its host file is generated
+from that audit — it adopts what is already installed instead of adding apps.
+See [Adopt a Mac (one command)](#adopt-a-mac-one-command).
 
 Throughout, `$CS` is the config service. It runs on the Mac Studio,
 `http://rouvens-mac-studio:3456`, reachable only over Tailscale. The scripts do
@@ -240,60 +243,108 @@ formulae (dotfiles#11), so activation never uninstalls anything.
 
 ---
 
-## Path B: Existing Device (already has apps, settings, manual config)
+## Adopt a Mac (one command)
 
-### Why audit first?
+For a Mac that already has people, apps and settings on it — or a blank one
+you want under management the same way. Nothing is wiped. Two scripts:
+`scripts/adopt.sh` runs **on the Mac**, `scripts/new-host.sh` runs **on an
+owner machine** (gh + tailnet) when the Mac has no flake entry yet.
+
+1. **On the Mac** — admin account, **GUI session** (Terminal.app at the Mac or
+   over Screen Sharing; not SSH — see the prompts table):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/adopt.sh | bash
+   ```
+
+   Without a `darwinConfigurations` entry for `hostname -s` it **stops** after
+   the read-only preflight and offers the two inputs the owner needs: the
+   read-only `pre-wipe-check.sh --all-users` report and one fleet audit
+   (uploaded to the config service). Append `-s -- --dry-run` to see the plan
+   without changing anything.
+2. **On an owner machine**, from any dotfiles clone (it reads `origin/main`,
+   never your working tree):
+
+   ```bash
+   scripts/new-host.sh <host> --role household --user <daily-user>          # dry-run: host file + flake diff
+   scripts/new-host.sh <host> --role household --user <daily-user> --apply  # branch add-host/<host> + PR, from a /tmp worktree
+   ```
+
+   It reads the Mac's latest audit (`/api/audit/<host>`, `/api/audit/gaps/<host>`)
+   and Homebrew's cask catalogue, and writes `configurations/macos/<host>.nix`
+   plus a `mkMac` entry (`autoUpdate = "fleet/stable"`; household: role
+   `household-mac.nix`, `homeProfile = "household"`, `needsSecrets = false`, no
+   Dock; personal: `personal-mac.nix`, no secrets; workstation: default role,
+   secrets on). `homebrew.casks` lists only apps **already in /Applications**
+   whose bundle name is exactly a cask's app (stable over `@beta`/`@nightly`)
+   plus the server's `present_unmanaged`/`unmanaged_casks`. Commented with the
+   reason, never declared: Adobe/Maxon vendor installers, Tailscale and VPN
+   clients, casks disabled upstream, pkg-installer casks, ambiguous matches,
+   and App Store copies (with their ids when `mas` ran). Crypto wallets are
+   dropped and only counted. No serial, wallet or file name reaches the public
+   repo — the script refuses (exit 2) if one would. Review the PR (every cask
+   replaces a hand-installed app on the first rebuild), merge.
+3. **On the Mac** — the same `curl … | bash` again. Each phase prints
+   `[OK]`/`[DO]`/`[ASK]` and skips itself when already done: preflight →
+   Xcode CLT → official Nix (`--daemon`, asks first) → clone `~/dotfiles` (or
+   fast-forward a clean `main`) → `rebuild.sh --plan-only` → (secrets hosts:
+   `setup-secrets.sh`) → confirm → `rebuild.sh` → verify (fleet-update daemon,
+   firewall, fleet launcher, one audit) → summary of what stays manual.
+
+Flags: `--dry-run` (preflight + plan; no installs, writes, state, fetch or
+upload), `--yes` (accepts adopt.sh's **non-destructive** defaults — pin file,
+Xcode CLT, Nix, clone, audit, starting `rebuild.sh`; it is never passed to
+`rebuild.sh`), `--skip-nix-install`. A re-run resumes from
+`~/.local/state/rh7-adopt/state.json` (rebuild logs next to it); a Mac already
+under nix-darwin is only rebuilt on an explicit `y`. Exit `0` done, `1` a step
+failed, `3` stopped for an action it printed.
+
+Work through [Before migrating an existing Mac](#before-migrating-an-existing-mac)
+(escrow, Time Machine, retirement verdict) before step 3 on a Mac whose data
+matters.
+
+**The prompts that remain, and why:**
+
+| Prompt | When | Why it is not automated |
+|---|---|---|
+| Admin password / Touch ID | Nix installer, the config-service pin, `pre-wipe-check --all-users`, `rebuild.sh` (one authentication for the whole switch) | root changes; `rebuild.sh` revokes its sudo window when it ends |
+| GUI session for the Nix installer | Nix missing | the Nix APFS volume needs an `/etc/fstab` write that headless/SSH sessions are denied; `adopt.sh` stops with this reason instead of failing midway |
+| Xcode CLT dialog | CLT missing | Apple's installer UI; `adopt.sh` waits for it |
+| `rebuild.sh`'s own questions | flakes off, `/opt/homebrew` owned by someone else, `/etc` files nix-darwin would replace, and the switch itself | each changes the system; one confirmation each, never answered by `--yes` |
+| App Management | `rebuild.sh` replaces a hand-installed app (macOS 13+) | a privacy permission only a human can grant to the terminal; `rebuild.sh` opens the pane |
+| Full Disk Access (optional) | after adoption | lets the audit and restic read protected folders; granted to `/usr/local/libexec/rh7-fleet-launcher` — see [Full Disk Access](#full-disk-access-optional-per-mac) |
+| sops recipient (`needsSecrets` hosts) | first rebuild | a device cannot add itself; `sops-add-host.sh` on an existing recipient (see [Secrets](#secrets-sops-nix)) |
+| Restic token (`resticBackup` hosts) | after adoption | `adopt.sh` prints the `ssh … restic-server-add-host.sh <host> \| rh7-restic-backup setup` one-liner |
+| Tailscale admin console | after adoption | key expiry + ACL tags live in the admin console / `rh7/tailscale-acl` |
+
+---
+
+## Path B: Existing Device — reference
+
+What `adopt.sh` automates, for when you need one step by hand.
 
 When you rebuild for the first time on an existing machine, nix-darwin will:
 - **Install** everything in the dotfiles that's missing
 - **Keep** everything that's not in the dotfiles (`cleanup = "none"`)
-- **Overwrite** macOS defaults (Dock layout — the whole Dock, Finder settings, keyboard repeat rate)
+- **Overwrite** macOS defaults (Dock layout — the whole Dock, Finder settings,
+  keyboard repeat rate) — except under the household role, which writes none
 
-The audit lets you see what you have, compare it to what the dotfiles manage, and add anything missing before you deploy.
+`./scripts/rebuild.sh` runs `audit-config-drift.sh` before activating and
+prompts when **risky drift** (manual changes not in the flake) is detected.
 
-> **Tip:** `./scripts/rebuild.sh` runs `audit-config-drift.sh` automatically as
-> Step 2 and prompts before activating when **risky drift** (manual changes
-> not in the flake) is detected. The fleet-wide audit (`./scripts/device audit`)
-> below is still the broader inventory + config-service flow.
-
-### Step 1: Clone dotfiles (don't rebuild yet!)
-
-Nix must already be installed — the official installer from a GUI session (see
-Path A prerequisites).
+**Audit** (from a clone; `adopt.sh` runs the gated `collector-runner.sh`):
 
 ```bash
-git clone https://github.com/rh7/dotfiles.git ~/dotfiles
-cd ~/dotfiles
+./scripts/device audit              # interactive menu (run + upload, save, schedule, …)
+./scripts/device audit --local | python3 -m json.tool   # print only
+./scripts/device audit --save       # save to a file
 ```
 
-### Step 2: Audit the device
-
-```bash
-# Interactive menu (run + upload, save, install schedule, …)
-./scripts/device audit
-
-# Or just print locally (no config service needed)
-./scripts/device audit --local | python3 -m json.tool
-
-# Or save to a file for reference
-./scripts/device audit --save
-```
-
-The audit collects:
-| Category | What's captured |
-|----------|----------------|
-| **Homebrew** | All formulas, casks, taps |
-| **Mac App Store** | All installed apps with IDs |
-| **Applications** | Everything in /Applications |
-| **macOS defaults** | Dock, Finder, keyboard, trackpad, security |
-| **Dock apps** | Current dock order and apps |
-| **CLI tools** | Which tools are in PATH (git, node, docker, etc.) |
-| **Node globals** | Globally installed npm packages |
-| **npm config** | Global prefix/root health, including accidental `/nix/store` targets |
-| **Services** | Homebrew services + launchd agents |
-| **Git config** | Global git configuration |
-| **SSH keys** | Key names (not the keys themselves) |
-| **Fonts** | Installed font families |
+The audit collects Homebrew formulas/casks/taps, App Store apps (ids when
+`mas` is installed; `app_store_apps` from bundle receipts either way), every
+app in /Applications, macOS defaults, Dock apps, CLI tools, Node globals, npm
+config (incl. accidental `/nix/store` prefixes), services, git config, SSH key
+names and fonts.
 
 > **Nix + mutable CLIs:** Node itself is provided by Nix/Home Manager. Mutable
 > npm CLIs such as Codex use `~/.npm-global`; native user installers such as
@@ -302,44 +353,14 @@ The audit collects:
 > `npm_config.prefix_in_nix_store` and `global_root_in_nix_store` fields should
 > stay `false`.
 
-### Claude Code command is missing
-
-Claude Code's native installer creates `~/.local/bin/claude`. If that executable
-works by absolute path but `claude` is not found, verify that the development
-profile still includes `~/.local/bin` in `home.sessionPath`, rebuild, and start a
-fresh application or login shell. Long-running applications can inherit Home
-Manager's session marker and retain the previous `PATH` in nested shells until
-the application is restarted. The command is `claude`.
-
-### Step 3: Review gaps
+**Gaps and comparisons** (any tailnet machine):
 
 ```bash
-# What's on this device but not in dotfiles?
-curl -s $CS/api/audit/gaps/$(hostname -s) | python3 -m json.tool
+curl -s $CS/api/audit/gaps/<host> | python3 -m json.tool        # present_unmanaged, unmanaged_casks, missing_from_device
+curl -s $CS/api/audit/compare/<host>/m5-air | python3 -m json.tool
 ```
 
-This shows:
-- **`present_unmanaged`**: apps from the managed-cask catalogue that are installed (e.g. dragged into /Applications) but not brew-declared. Apps the catalogue doesn't know are not listed here — review the audit's `applications` list for those
-- **`unmanaged_casks`** / **`unmanaged_formulas`**: installed via Homebrew but not in any dotfiles profile
-- **`missing_from_device`**: in dotfiles and genuinely absent from the device
-
-### Step 4: Compare with another device
-
-```bash
-# What's different between this device and the Mac Air?
-curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
-```
-
-Shows side-by-side differences in:
-- Homebrew casks and formulas
-- Applications
-- CLI tools
-- macOS defaults (which settings differ)
-- Dock app order
-
-### Step 5: Update dotfiles (if needed)
-
-Based on the gap analysis, add any apps you want to keep to the appropriate profile:
+**Where kept apps go** (`new-host.sh` writes the host file for you):
 
 | App type | Where to add |
 |----------|-------------|
@@ -349,58 +370,36 @@ Based on the gap analysis, add any apps you want to keep to the appropriate prof
 | Dev tool | `modules/home/profiles/development.nix` |
 | NixOS GUI app | `modules/nixos/profiles/` |
 
-Branch → PR → review → merge. Don't rebuild from the branch: `rebuild.sh`
-activates merged `main` (with `fix/312-rebuild-merged-only`).
+Branch → PR → review → merge; `rebuild.sh` activates merged `main` only.
+`./scripts/device backup` takes a reference snapshot first (Brewfile,
+`dock.plist`, shell and git config under `~/dotfiles-backups/<timestamp>/` —
+an inventory, not a rollback).
 
-### Step 6: Checklist, backup and deploy
-
-Work through [Before migrating an existing Mac](#before-migrating-an-existing-mac), then:
-
-```bash
-./scripts/device backup     # safety net
-./scripts/rebuild.sh        # drift audit → build → nvd diff → confirm → switch
-```
-
-The backup is a reference snapshot, not a full rollback:
-- `~/dotfiles-backups/<timestamp>/Brewfile` → inventory of what was installed (`brew bundle install --file=...` reinstalls missing entries; it does not remove or downgrade)
-- `~/dotfiles-backups/<timestamp>/dock.plist` → `defaults import com.apple.dock ... && killall Dock`
-- Shell configs, git config, etc.
-
-### Step 7: Post-deploy
-
-```bash
-./scripts/audit-device.sh --run   # fresh audit + registration (keeps the device's assigned role)
-./scripts/device status
-```
-
-If this device's first upload came from this onboarding (Step 2), the registry
-created it with role `unknown`, and audits keep that role. Set the real one
-(admin-gated, from an admin tailnet identity):
+**Registry role.** A device first registered by an audit has role `unknown`
+and later audits keep it (`adopt.sh` reminds you). Set it from an admin tailnet
+identity — not with `./scripts/device register`, which posts `workstation`:
 
 ```bash
 curl -s -X PATCH -H 'content-type: application/json' \
-  -d '{"role":"workstation"}' $CS/api/devices/$(hostname -s)
+  -d '{"role":"workstation"}' $CS/api/devices/<host>
 ```
 
-Don't use `./scripts/device register` for this: it posts the hard-coded role
-`workstation`, overwriting whatever role the registry holds for a
-non-workstation host (`Kassie-M5-Air13`, the Studio). The audit path reads the
-registered role back first and re-posts it.
-
-The daily audit keeps the device's connectivity current (if `crontab -l` still
-shows the legacy `auto-sync.sh` heartbeat cron, remove it with
-`./scripts/device sync --uninstall`). With `chore/326-315-flake-hygiene` every
-`mkMac` host declares the schedule via
+**Daily audit.** Every `mkMac` host declares it via
 `modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
-daily 08:17, started through `/usr/local/libexec/rh7-fleet-launcher audit` — see
-[Full Disk Access](#full-disk-access-optional-per-mac)). On `main` today only the Studio imports it, so on **any** host
-without a `com.rh7.collector-runner` agent (`launchctl list | grep collector`)
-run `./scripts/collector-runner.sh --install` once (it also retires a legacy
-`com.rh7.audit` agent). Non-nix devices without a clone enrol with
-`curl -fsSL https://config.rh7labs.com/enroll | bash` (first audit + a direct daily
-audit schedule; append `-s -- --status` to check only, `-s -- --role <role>`
-to set one of `personal`/`developer`/`server`/`ai-inference`/`smart-home`/`mobile`
-— that PATCH is admin-gated, so it only succeeds from an admin tailnet identity).
+daily 08:17, started through `/usr/local/libexec/rh7-fleet-launcher audit`). A
+host without that agent: `./scripts/collector-runner.sh --install` once. A
+legacy `auto-sync.sh` heartbeat cron goes with `./scripts/device sync
+--uninstall`. Non-nix devices without a clone enrol with
+`curl -fsSL https://config.rh7labs.com/enroll | bash`.
+
+### Claude Code command is missing
+
+Claude Code's native installer creates `~/.local/bin/claude`. If that executable
+works by absolute path but `claude` is not found, verify that the development
+profile still includes `~/.local/bin` in `home.sessionPath`, rebuild, and start a
+fresh application or login shell. Long-running applications can inherit Home
+Manager's session marker and retain the previous `PATH` in nested shells until
+the application is restarted. The command is `claude`.
 
 ---
 
@@ -504,43 +503,28 @@ replacement. Say No and it stops with the exact manual command instead;
    dseditgroup -o checkmember -m kassie admin
    ```
 
-3. **Install Nix** with the official installer, from your GUI session (a
-   headless/SSH-only session cannot create the Nix APFS volume) — NOT
-   `setup.sh`, which turns Remote Login on and does a raw `darwin-rebuild`.
-   Open a new terminal afterwards.
+3. **Adopt** — from your GUI session (not SSH: the Nix installer needs it;
+   not `setup.sh`, which turns Remote Login on and does a raw
+   `darwin-rebuild`):
 
    ```bash
-   sh <(curl -L https://nixos.org/nix/install) --daemon
+   curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/adopt.sh | bash
    ```
 
-4. **Clone dotfiles into your own home:**
+   It installs Nix with the official installer (asks first), clones
+   `~/dotfiles` into **your** home, and runs `rebuild.sh --plan-only` — one
+   Touch ID (Homebrew runs as kassie), then the plan: the apps it will
+   REPLACE (with a "Quit these first" list if any is running in her session),
+   what it would install, upgrade or uninstall, and the questions above as
+   "will fix". No `jq` on the Mac is fine (`nix shell nixpkgs#jq`). If App
+   Management blocks a replacement, it opens the Settings page and names your
+   terminal. After you confirm, `rebuild.sh` asks the questions above, builds,
+   shows the changes, asks once more and does everything inside one Touch ID
+   (move /etc files → replace hand-installed apps → activate → upgrades).
+   `adopt.sh` then checks the fleet-update daemon, firewall and fleet
+   launcher, runs one audit, and lists what stays manual.
 
-   ```bash
-   git clone https://github.com/rh7/dotfiles.git ~/dotfiles
-   cd ~/dotfiles
-   ```
-
-5. **Preview** — one Touch ID (Homebrew runs as kassie), then the plan: the
-   apps it will REPLACE (with a "Quit these first" list if any is running in
-   her session), what it would install, upgrade or uninstall. Nothing is
-   built, activated or upgraded.
-
-   ```bash
-   ./scripts/rebuild.sh --plan-only
-   ```
-
-   No `jq` on the Mac is fine: `rebuild.sh` takes it from `nix shell
-   nixpkgs#jq` for the run. If App Management blocks a replacement, it opens
-   the Settings page and tells you which app (your terminal) to allow.
-6. **Adopt** — the questions above, build, show the changes, confirm, one
-   Touch ID for everything (move /etc files → replace hand-installed apps →
-   activate → upgrades):
-
-   ```bash
-   ./scripts/rebuild.sh
-   ```
-
-7. **Verify:**
+4. **Verify** (beyond what `adopt.sh` already checked):
 
    ```bash
    darwin-version --configuration-revision            # = git rev-parse origin/main
@@ -872,35 +856,22 @@ enumerate VM names, source paths, mounts, credentials, or guest contents.
 ## Typical Workflow for Onboarding an Existing Mac
 
 ```bash
-CS=http://rouvens-mac-studio:3456
+# 1. On the Mac (admin account, GUI session): preflight; no flake entry →
+#    it offers the read-only pre-wipe check + one audit, then stops
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/adopt.sh | bash
 
-# 1. Clone dotfiles (Nix already installed: official installer, GUI session)
-git clone https://github.com/rh7/dotfiles.git ~/dotfiles
-cd ~/dotfiles
+# 2. On an owner machine: generate the host file + flake entry from that audit
+scripts/new-host.sh <host> --role household --user <daily-user>           # review the dry-run
+scripts/new-host.sh <host> --role household --user <daily-user> --apply   # PR → review → merge
 
-# 2. Audit (non-destructive, just collects info) — choose "run" to upload
-./scripts/device audit
+# 3. Work through "Before migrating an existing Mac" (escrow, Time Machine,
+#    retirement verdict; needsSecrets hosts: sops recipient first)
 
-# 3. Check gaps (from any machine on the tailnet)
-curl -s $CS/api/audit/gaps/$(hostname -s) | python3 -m json.tool
-
-# 4. Adopt keepers from present_unmanaged / unmanaged_casks / the audit's
-#    applications list into profiles
-#    → branch → PR → merge
-
-# 5. Compare with a known-good device
-curl -s $CS/api/audit/compare/$(hostname -s)/m5-air | python3 -m json.tool
-
-# 6. Work through "Before migrating an existing Mac" (escrow, Time Machine,
-#    retirement verdict, secrets recipient), then deploy
-./scripts/device backup     # safety net
-# needsSecrets hosts: recipient added first (see Secrets; once fix/310 merges,
-# ./scripts/setup-secrets.sh confirms the device can decrypt)
-./scripts/rebuild.sh        # drift audit → build → nvd diff → confirm → switch
-
-# 7. Daily audit schedule (until fleet-audit.nix covers this host)
-./scripts/collector-runner.sh --install
+# 4. On the Mac again: Nix → clone → rebuild.sh plan → confirm → rebuild → verify
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/adopt.sh | bash
 ```
+
+Details and the prompts that remain: [Adopt a Mac (one command)](#adopt-a-mac-one-command).
 
 ---
 
@@ -922,7 +893,7 @@ A: Yes. Use `./scripts/device audit --local` to just print the JSON, or `--save`
 A: `rebuild.sh` (`nrs`) uses `hostname -s` to pick the flake config. If your hostname is `Rs-MacBook-Air-M5` but the flake expects `m5-air`, the rebuild will fail. Either rename the host (`sudo scutil --set HostName m5-air`, likewise `LocalHostName` and `ComputerName`) or add the actual hostname to `flake.nix`. Don't activate a Mac under a *different* host's attr — `networking.hostName` would rename it and split its device identity in the fleet registry.
 
 **Q: How do I add a new machine to the flake?**
-A: Add an entry in `flake.nix` under `darwinConfigurations` (Mac) or `nixosConfigurations` (Linux). Use an existing entry as template — pick a role and any extra modules; set `needsSecrets = false` for a Mac that should not get sops-nix. Branch → PR → merge, then run `scripts/setup.sh` on the new machine (and, for a secrets host, the [Secrets](#secrets-sops-nix) flow).
+A: Mac: `scripts/new-host.sh <host> --role household|personal|workstation --user <primary>` generates the entry and host file from the device's audit and opens the PR (`--apply`); then run `scripts/adopt.sh` on the Mac — see [Adopt a Mac (one command)](#adopt-a-mac-one-command). By hand (or Linux): add an entry in `flake.nix` under `darwinConfigurations` / `nixosConfigurations`, using an existing entry as template — pick a role and any extra modules; set `needsSecrets = false` for a Mac that should not get sops-nix. Branch → PR → merge, then run `scripts/adopt.sh` (existing Mac) or `scripts/setup.sh` (blank Mac) on the machine (and, for a secrets host, the [Secrets](#secrets-sops-nix) flow).
 
 **Q: How do I add an app that has no Homebrew cask and isn't on the App Store?**
 A: If the vendor ships a stable direct-download URL, install it from `postActivation` in the relevant profile. See the **Dia browser** installer in `modules/darwin/profiles/core.nix` for the reference pattern: guard on the installed `.app` so the download only runs once per machine, mount the DMG read-only with `hdiutil -nobrowse`, copy the app out with `ditto`, `chown` it to `config.system.primaryUser`, and clear the quarantine xattr. Two gotchas that will bite you: (1) `postActivation` runs under `set -e`, so wrap the whole thing as `install_foo || true` or a single failure aborts the entire `switch`; (2) the nixpkgs **GNU** `mktemp` is on the activation PATH and rejects a bare `-t foo` template — call the system `/usr/bin/mktemp` (and other system tools) by absolute path. For apps that need GUI auth and *can't* be scripted (e.g. ExpressVPN), fall back to a `[ -d /Applications/Foo.app ] || echo "[WARN] …"` reminder instead.

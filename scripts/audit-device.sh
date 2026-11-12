@@ -788,6 +788,24 @@ print(json.dumps(apps))
 " 2>/dev/null || echo '[]'
 }
 
+# Names of /Applications bundles installed from the Mac App Store (they carry a
+# Contents/_MASReceipt/receipt). Needs no `mas`: mas_apps above is
+# {"installed": false} on most hand-managed Macs, and scripts/new-host.sh must
+# still tell an App Store copy from a hand-installed one — declaring a cask for
+# an App Store app makes rebuild.sh replace it with the Homebrew copy.
+collect_app_store_apps() {
+  python3 -c "
+import os, json
+apps = []
+d = '/Applications'
+if os.path.isdir(d):
+    for f in sorted(os.listdir(d)):
+        if f.endswith('.app') and os.path.exists(os.path.join(d, f, 'Contents', '_MASReceipt', 'receipt')):
+            apps.append(f[:-len('.app')])
+print(json.dumps(apps))
+" 2>/dev/null || echo '[]'
+}
+
 collect_macos_defaults() {
   if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
 
@@ -3666,6 +3684,8 @@ $(collect_virtualization_prerequisites)
 $(collect_mas)
 ---SECTION: applications
 $(collect_applications)
+---SECTION: app_store_apps
+$(collect_app_store_apps)
 ---SECTION: macos_defaults
 $(collect_macos_defaults)
 ---SECTION: dock_apps
