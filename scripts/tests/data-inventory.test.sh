@@ -80,7 +80,7 @@ cat >"$BIN/tmutil" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
   destinationinfo) printf 'Name          : TM\nKind          : Local\n' ;;
-  latestbackup) echo "/Volumes/TM/Backups.backupdb/mac/$(date -u +%Y-%m-%d-%H%M%S)" ;;
+  latestbackup) echo "/Volumes/TM/Backups.backupdb/mac/$TM_AT" ;;
   isexcluded) shift; for p in "$@"; do case "$p" in */Proton) echo "[Included]    $p" ;; *) echo "[Excluded]    $p" ;; esac; done ;;
 esac
 STUB
@@ -100,8 +100,8 @@ mkfix() {
   echo 204800 >"$AS/BigApp/.kb"; echo 10240 >"$AS/SmallApp/.kb"; echo 307200 >"$H/Library/Containers/net.whatsapp.WhatsApp/.kb"
   echo 900000 >"$H/Downloads/.kb"; echo 5000 >"$H/code/.kb"
   : >"$AS/com.apple.TCC/TCC.db"; chmod 000 "$AS/com.apple.TCC/TCC.db"   # FDA denied
-  : >"$H/Library/LaunchAgents/org.rh7.restic-backup.plist"
-  restic_status "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  : >"$H/Library/LaunchAgents/org.rh7.restic-backup.plist"; : >"$H/Library/Preferences/com.apple.Photos.plist"
+  restic_status "$(at 120 utc)"
   python3 - "$H" <<'PY'
 import plistlib, sys
 H = sys.argv[1]
@@ -111,12 +111,15 @@ with open(H + '/Library/Caches/huge.bin', 'wb') as f: f.truncate(900 * 1024 * 10
 with open(H + '/Downloads/movie.mov', 'wb') as f: f.truncate(700 * 1024 * 1024)
 PY
 }
+# at SECONDS utc|local — a timestamp SECONDS from now (backups "just after"
+# the fixture was created, so the fixture predates them).
+at() { python3 -c 'import sys,time; t=time.time()+int(sys.argv[1]); print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if sys.argv[2]=="utc" else time.strftime("%Y-%m-%d-%H%M%S", time.localtime(t)))' "$1" "$2"; }
 restic_status() { printf '{"schema":1,"configured":true,"last_snapshot_time":"%s","paths":["~/Proton","~/.ssh"]}\n' "$1" >"$H/.local/state/rh7-restic/status.json"; }
 grant_fda() { chmod 644 "$AS/com.apple.TCC/TCC.db"; }
 GIT_REPOS_JSON='{"repos":[{"path":"~/code/clean","at_risk":false,"dirty":0,"has_remote":true,"unpushed":0},{"path":"~/code/dirty","at_risk":true,"dirty":3,"has_remote":true,"unpushed":1}]}'
 
 inv() { # inv [VAR=val …] — runs the collector into $OUT
-  OUT="$(env -i PATH="$BIN:$PYDIR:/usr/bin:/bin" HOME="$H" DU_LOG="$DU_LOG" GIT_REPOS_JSON="$GIT_REPOS_JSON" \
+  OUT="$(env -i PATH="$BIN:$PYDIR:/usr/bin:/bin" HOME="$H" DU_LOG="$DU_LOG" GIT_REPOS_JSON="$GIT_REPOS_JSON" TM_AT="${TM_AT:-$(at 120 local)}" \
     AUDIT_DATA_PLATFORM=Darwin "$@" bash "$T/collector.sh")"
 }
 q() { python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$OUT" "$1"; }
@@ -170,8 +173,12 @@ check "mtime changed: only that folder re-measured" "$(grep -c . "$DU_LOG")/$(gr
 echo "== coverage: stale restic snapshot is not coverage =="
 restic_status "2020-01-01T00:00:00Z"; inv
 check "~/Proton only Time Machine" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
-rm -f "$H/Library/LaunchAgents/org.rh7.restic-backup.plist"; restic_status "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; inv
+rm -f "$H/Library/LaunchAgents/org.rh7.restic-backup.plist"; restic_status "$(at 120 utc)"; inv
 check "status file left behind by a removed job is ignored" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
+
+echo "== coverage: a folder created after the latest backup is in neither backup =="
+mkfix; restic_status "$(at -3600 utc)"; TM_AT="$(at -3600 local)" inv
+check "~/Proton (created now, backups 1h old): not covered" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
 
 echo "== FDA granted: protected folders measured =="
 mkfix; grant_fda

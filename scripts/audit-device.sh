@@ -2390,7 +2390,7 @@ collect_data_inventory() {
   DATA_CLASS_RULES="$DATA_CLASS_RULES" WALLET_APPS="$WALLET_APPS" WALLET_EXTENSIONS="$WALLET_EXTENSIONS" \
   CHROMIUM_BROWSERS="$CHROMIUM_BROWSERS" GIT_REPOS_JSON="${GIT_REPOS_JSON:-}" \
     python3 - <<'PYEOF' 2>/dev/null || echo '{"schema": 1, "error": "collector-failed", "items": [], "largest_files": []}'
-import fnmatch, json, pwd, os, platform, plistlib, re, shutil, stat, subprocess, sys, time
+import calendar, fnmatch, json, pwd, os, platform, plistlib, re, shutil, stat, subprocess, sys, time
 
 T0 = time.monotonic()
 NOW = time.time()
@@ -2549,11 +2549,12 @@ def run(cmd, timeout=8):
 
 def parse_iso(s):
     try:
-        return time.mktime(time.strptime(s[:19], '%Y-%m-%dT%H:%M:%S')) - time.timezone if s else None
+        return calendar.timegm(time.strptime(s[:19], '%Y-%m-%dT%H:%M:%S')) if s else None
     except Exception:
         return None
 
 restic_paths = []   # absolute roots of the latest fresh rh7-restic snapshot
+restic_snap = None  # its time (epoch)
 try:
     job = (os.path.exists(os.path.join(LIB, 'LaunchAgents/org.rh7.restic-backup.plist'))
            or bool(shutil.which('rh7-restic-backup')))
@@ -2561,6 +2562,7 @@ try:
         st = json.load(f)
     snap = parse_iso(st.get('last_snapshot_time') or '')
     if job and st.get('schema') == 1 and snap and NOW - snap < FRESH_HOURS * 3600:
+        restic_snap = snap
         for p in st.get('paths') or []:
             if isinstance(p, str):
                 a = HOME + p[1:] if p == '~' or p.startswith('~/') else p
@@ -2570,6 +2572,7 @@ except Exception:
     pass
 
 tm_fresh = False
+tm_snap = None   # time of the latest Time Machine backup (epoch)
 if DARWIN and shutil.which('tmutil'):
     rc, di = run(['tmutil', 'destinationinfo'])
     if rc == 0 and di.strip() and 'No destinations' not in di:
@@ -2577,7 +2580,8 @@ if DARWIN and shutil.which('tmutil'):
         m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest or '')
         if m:
             try:
-                tm_fresh = NOW - time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S')) < FRESH_HOURS * 3600
+                tm_snap = time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S'))
+                tm_fresh = NOW - tm_snap < FRESH_HOURS * 3600
             except Exception:
                 pass
 
@@ -2591,6 +2595,19 @@ for r in git.get('repos') or []:
         p = r['path']
         repos[HOME + p[1:] if p.startswith('~/') else p] = r
 
+# A backup can only hold what existed when it ran: a folder created after the
+# latest restic snapshot / Time Machine backup is in neither, however fresh the
+# backup and whatever its include rules say. Birth time where the platform has
+# one (macOS), else ctime — later than creation, so it errs toward NOT covered.
+def born_before(p, epoch):
+    if epoch is None:
+        return False
+    try:
+        st = os.stat(p)
+    except Exception:
+        return False
+    return (getattr(st, 'st_birthtime', None) or st.st_ctime) < epoch
+
 def coverage_of(p, name=None):
     cov = []
     for root, token in CLOUD_ROOTS:
@@ -2602,7 +2619,7 @@ def coverage_of(p, name=None):
     r = repos.get(p)
     if r is not None and not r.get('at_risk'):
         cov.append('git-remote')
-    if any(under(p, rp) for rp in restic_paths):
+    if any(under(p, rp) for rp in restic_paths) and born_before(p, restic_snap):
         cov.append('restic')
     return cov
 
@@ -2741,7 +2758,9 @@ if DARWIN:
                 photo_libs += [e.path for e in os.scandir(base) if e.name.endswith('.photoslibrary') and e.is_dir()]
             except Exception:
                 pass
-    elif os.path.isdir(os.path.join(LIB, 'Containers/com.apple.Photos')) or photos_prefs or icloud_photos:
+    # Evidence from preferences only: even a stat inside ~/Library/Containers
+    # can raise macOS's "access data from other apps" prompt.
+    elif photos_prefs or icloud_photos or os.path.exists(os.path.join(LIB, 'Preferences/com.apple.Photos.plist')):
         photo_libs.append(os.path.join(pictures, 'Photos Library.photoslibrary'))
         photo_default_assumed = True
 for lib in sorted(set(photo_libs)):
@@ -2929,7 +2948,7 @@ if tm_fresh:
             if mm:
                 included.add(mm.group(1))
         for i in items:
-            if i['_abs'] in included:
+            if i['_abs'] in included and born_before(i['_abs'], tm_snap):
                 i['coverage'].append('time-machine')
                 if i['status'] in ('unprotected',):
                     i['status'] = 'covered'
