@@ -211,8 +211,12 @@ has apps, settings and data. `$CS` as above.
       PR, merge.
 - [ ] **Dock:** the workstation and personal roles set
       `system.defaults.dock.persistent-apps`, which replaces the **whole** Dock
-      on activation. Anything not declared there disappears from it. The
-      household-mac role never sets it (see
+      on activation. Anything not declared there disappears from it — on an
+      interactive `rebuild.sh` (which shows the Dock drift and asks). The
+      unattended fleet-update never does it: a commit that would remove a Dock
+      app is held (`skipped`/`dock-protect`, `./scripts/fleet-fix.sh
+      fleet-update` lists the apps) until they are declared or a human
+      `rebuild.sh` confirms. The household-mac role never sets it (see
       [Adopting a shared household Mac](#adopting-a-shared-household-mac-without-wiping)).
 - [ ] **Secrets recipient added** for `needsSecrets` hosts — see
       [Secrets](#secrets-sops-nix); with `fix/310-sops-onboarding`,

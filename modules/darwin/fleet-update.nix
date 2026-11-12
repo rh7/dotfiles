@@ -62,6 +62,14 @@
 #   - It does not pull ~/dotfiles. User agents that run scripts from that
 #     checkout (fleet-audit.nix, weekly-update.nix) keep running whatever it
 #     holds.
+#   - It never removes a Dock item. persistent-apps REPLACES the primary
+#     user's whole Dock, so before building the daemon evaluates the new
+#     commit's declaration and compares it with her current Dock (read-only,
+#     from her com.apple.dock.plist). Any app that would vanish holds the
+#     update: skipped/dock-protect, the paths in state `dock_protect`. An
+#     unreadable Dock holds too. Additions, reorders and an unmanaged Dock
+#     (persistent-apps unset) proceed. Resolve by declaring the apps, or by a
+#     human `rebuild.sh` (it shows the Dock drift and asks).
 # Activation also runs home-manager via `launchctl asuser`. If the primary user
 # has no GUI login session, home-manager's LaunchAgent bootstrap into gui/<uid>
 # fails and aborts activation (failed/activation-failed) — except on hosts with
