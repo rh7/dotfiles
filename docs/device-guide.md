@@ -479,9 +479,10 @@ replacement. Say No and it stops with the exact manual command instead;
 
 - **Enable flakes?** — the official installer leaves `nix-command`/`flakes`
   off and nothing turns them on for a Mac (`nix.enable = false`). It appends
-  `experimental-features = nix-command flakes` to `/etc/nix/nix.conf` and
-  restarts `nix-daemon` — only if that file does not already set the key
-  (then it stops: edit that line by hand).
+  `extra-experimental-features = nix-command flakes` to `/etc/nix/nix.conf`
+  (adds to any existing feature list, never replaces it) and restarts
+  `nix-daemon` — only if that file does not already set that key (then it
+  stops: edit that line by hand).
 - **Hand Homebrew to kassie?** — when anything under `/opt/homebrew` is not
   hers it shows the owner and how many paths, then runs
   `chown -R kassie:admin /opt/homebrew`. From then on other accounts run

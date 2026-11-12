@@ -141,7 +141,7 @@ AUTO_CONFIRM=false; FORCE_MAS=false; PLAN_ONLY=false; BUILD_ONLY=false; FORCE=fa
 # accept paths are covered by rebuild-first-adoption.test.sh).
 PROMPT_TTY=/dev/null
 NIX_CONF="$W/nix.conf"
-FLAKES_LINE='experimental-features = nix-command flakes'
+$(grep -E '^FLAKES_LINE=' "$SCRIPT")
 REBUILD_MAS_BIN=/nonexistent/mas
 PLAN_TMP=""; MAS_TMP=""; SUDO_TOUCHED=false; SUDO_KEEPALIVE_PID=""
 PRIMARY_USER=""; BREW_AS_PRIMARY=false; BREW_BIN=""; SUDO_AUTHENTICATED=false
@@ -235,7 +235,7 @@ check "features on: rc 0" "$(cat "$W/rc")" 0
 grep -q PASSED "$W/out" && good "features on: continues" || bad "features on: continues" "$(cat "$W/out")"
 NOCMD=1 run_case 'require_nix_features; setup_brew_user; echo "REACHED"'
 check "nix-command off: stops (rc 1)" "$(cat "$W/rc")" 1
-grep -qF "echo 'experimental-features = nix-command flakes' | sudo tee -a $W/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon" "$W/out" \
+grep -qF "echo 'extra-experimental-features = nix-command flakes' | sudo tee -a $W/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon" "$W/out" \
   && good "nix-command off: prints the exact macOS fix" || bad "nix-command off: prints the exact macOS fix" "$(cat "$W/out")"
 grep -q REACHED "$W/out" && bad "nix-command off: nothing after the check runs" "$(cat "$W/out")" \
   || good "nix-command off: nothing after the check runs"

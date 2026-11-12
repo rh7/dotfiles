@@ -94,7 +94,7 @@ cat >"$STUBS/nix" <<'EOF'
 echo "nix $*" >>"$STUB_LOG"
 case "$*" in
   "config show experimental-features")
-    if grep -qx 'experimental-features = nix-command flakes' "$STUB_NIX_CONF" 2>/dev/null \
+    if grep -qE '^(extra-)?experimental-features = .*nix-command flakes' "$STUB_NIX_CONF" 2>/dev/null \
        || [[ "${NIX_CONFIG:-}" == *"nix-command flakes"* ]]; then
       echo "flakes nix-command"; exit 0
     fi
@@ -164,7 +164,7 @@ AUTO_CONFIRM=${YES:-false}; PLAN_ONLY=${PLAN:-false}; BUILD_ONLY=false; FORCE=${
 PROMPT_TTY="$( [[ -f "$W/answer" ]] && echo "$W/answer" || echo /dev/null )"
 NIX_CONF="$ETC/nix/nix.conf"
 ETC_DIR="$ETC"
-FLAKES_LINE='experimental-features = nix-command flakes'
+$(grep -E '^FLAKES_LINE=' "$SCRIPT")
 SUDO_TOUCHED=false; SUDO_KEEPALIVE_PID=""; SUDO_AUTHENTICATED=false
 PRIMARY_USER=""; BREW_AS_PRIMARY=false; BREW_BIN=""; DECLARED_LIB_SOURCED=false
 ETC_RENAMES=""; ETC_RENAMED=""; ETC_MATCH_EB=0; ETC_MATCH_EA=0
@@ -181,7 +181,7 @@ EOF
   # keep the kill-on-exit keep-alive of authenticate_once from outliving a case
   pkill -f "$W/case.sh" 2>/dev/null || true
 }
-FLAKES_ON="experimental-features = nix-command flakes"
+FLAKES_ON="extra-experimental-features = nix-command flakes"
 features_on() { printf '%s\n' "$FLAKES_ON" >>"$ETC/nix/nix.conf"; }
 nixconf() { cat "$ETC/nix/nix.conf"; }
 
@@ -213,7 +213,7 @@ hasnt "decline: nothing after the check runs" "REACHED"
 check "decline: nix.conf unchanged" "$(nixconf)" "$before"
 notlogged "decline: no sudo at all" '^sudo'
 has "decline: prints the exact manual fix" \
-  "echo 'experimental-features = nix-command flakes' | sudo tee -a $ETC/nix/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon"
+  "echo 'extra-experimental-features = nix-command flakes' | sudo tee -a $ETC/nix/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon"
 
 fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; rm -f "$W/answer"
 run_case 'require_nix_features'
@@ -225,13 +225,22 @@ check "--yes does not answer it (rc 1)" "$(cat "$W/rc")" 1
 has "--yes: says so" "--yes does not answer this question"
 notlogged "--yes: no sudo" '^sudo'
 
+# An existing `experimental-features` list (here or via !include) is ADDED
+# to, never replaced: the appended key is extra-experimental-features.
 fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; printf 'experimental-features = ca-derivations\n' >>"$ETC/nix/nix.conf"; answer y
+run_case 'require_nix_features'
+check "existing experimental-features list: accepted (rc 0)" "$(cat "$W/rc")" 0
+check "existing experimental-features list: kept, extra- line added after it" "$(tail -2 "$ETC/nix/nix.conf")" \
+  "experimental-features = ca-derivations
+$FLAKES_ON"
+
+fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; printf 'extra-experimental-features = ca-derivations\n' >>"$ETC/nix/nix.conf"; answer y
 before=$(nixconf)
 run_case 'require_nix_features'
-check "key already set: stops (rc 1)" "$(cat "$W/rc")" 1
-check "key already set: no second line appended" "$(nixconf)" "$before"
-hasnt "key already set: no question asked" "[y/N]"
-has "key already set: says why" "already sets experimental-features"
+check "extra- key already set: stops (rc 1)" "$(cat "$W/rc")" 1
+check "extra- key already set: no second line appended" "$(nixconf)" "$before"
+hasnt "extra- key already set: no question asked" "[y/N]"
+has "extra- key already set: says why" "already sets extra-experimental-features"
 
 # ═════════════════════════════════════════════════════════════════════════════
 echo ""

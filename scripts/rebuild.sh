@@ -300,7 +300,10 @@ homebrew_enable_failed() {
 NIX_CONF=/etc/nix/nix.conf
 ETC_DIR=/etc
 PROMPT_TTY=/dev/tty
-FLAKES_LINE='experimental-features = nix-command flakes'
+# `extra-`: ADDS to whatever list is in effect (an existing line, an
+# !include), never replaces it — a plain `experimental-features` line appended
+# last would silently drop features set elsewhere.
+FLAKES_LINE='extra-experimental-features = nix-command flakes'
 
 # ask_fix <question> — 0 only on an explicit y/Y. --yes does not count: these
 # change system files, and its premise ("nothing here needs a human") is the
@@ -360,9 +363,10 @@ nix_conf_append() {
 # nix calls in the libs/scripts it runs, darwin-rebuild, and every later
 # interactive `nix` use.
 #
-# Offers to append the line only when nix.conf does not set the key yet: a
-# second `experimental-features` line silently REPLACES the first one's list,
-# and a symlinked nix.conf (NixOS, nix-darwin-managed) is not ours to edit.
+# Appends `extra-experimental-features` (see FLAKES_LINE), at the end so it
+# follows any !include — but only when nix.conf does not set that exact key
+# yet (then the existing line is the one to edit), and never into a symlinked
+# nix.conf (NixOS, nix-darwin-managed), which is not ours to edit.
 require_nix_features() {
   local missing restart can_append=true nl=$'\n'
   missing=$(nix_missing_features)
@@ -370,7 +374,7 @@ require_nix_features() {
   if [[ "$OS" == Darwin ]]; then restart="launchctl kickstart -k system/org.nixos.nix-daemon"
   else restart="systemctl restart nix-daemon"; fi
   if [[ -L "$NIX_CONF" ]] \
-     || grep -qE '^[[:space:]]*experimental-features[[:space:]]*=' "$NIX_CONF" 2>/dev/null; then
+     || grep -qE '^[[:space:]]*extra-experimental-features[[:space:]]*=' "$NIX_CONF" 2>/dev/null; then
     can_append=false
   fi
   warn "Nix experimental feature(s) not enabled: $missing (the official installer leaves them off)."
@@ -379,7 +383,7 @@ require_nix_features() {
       info "  will fix: rebuild.sh (without --plan-only) offers to append '$FLAKES_LINE'"
       info "  to $NIX_CONF and restart nix-daemon."
     else
-      warn "  rebuild.sh will STOP here: $NIX_CONF already sets experimental-features (or is a symlink) — edit it by hand."
+      warn "  rebuild.sh will STOP here: $NIX_CONF already sets extra-experimental-features (or is a symlink) — edit it by hand."
     fi
     # The preview itself evaluates the flake: enable them for this process
     # only. NIX_CONFIG is read by every nix command this run spawns.
@@ -411,9 +415,9 @@ require_nix_features() {
     err "    echo '$FLAKES_LINE' | sudo tee -a $NIX_CONF && sudo $restart"
   else
     err "Nix experimental feature(s) not enabled: $missing. Nothing was evaluated, built or changed."
-    err "$NIX_CONF already sets experimental-features (or is a symlink), so rebuild.sh will not"
-    err "append a second line (it would replace the first). Add 'nix-command flakes' to that"
-    err "setting by hand, run 'sudo $restart', open a new terminal and re-run."
+    err "$NIX_CONF already sets extra-experimental-features (or is a symlink), so rebuild.sh"
+    err "will not add a second one. Add 'nix-command flakes' to that setting by hand, run"
+    err "'sudo $restart', open a new terminal and re-run."
   fi
   if [[ "$OS" != Darwin ]]; then
     err "  (NixOS hosts get this from nix.settings.experimental-features after their first switch.)"
