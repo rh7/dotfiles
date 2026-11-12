@@ -274,26 +274,36 @@ owner machine** (gh + tailnet) when the Mac has no flake entry yet.
    and Homebrew's cask catalogue, and writes `configurations/macos/<host>.nix`
    plus a `mkMac` entry (`autoUpdate = "fleet/stable"`; household: role
    `household-mac.nix`, `homeProfile = "household"`, `needsSecrets = false`, no
-   Dock; personal: `personal-mac.nix`, no secrets; workstation: default role,
+   Dock; personal: `personal-mac.nix`, no secrets — refused while that role
+   hard-codes Kassie's Dock paths for anyone else; workstation: default role,
    secrets on). `homebrew.casks` lists only apps **already in /Applications**
    whose bundle name is exactly a cask's app (stable over `@beta`/`@nightly`)
    plus the server's `present_unmanaged`/`unmanaged_casks`. Commented with the
    reason, never declared: Adobe/Maxon vendor installers, Tailscale and VPN
    clients, casks disabled upstream, pkg-installer casks, ambiguous matches,
-   and App Store copies (with their ids when `mas` ran). Crypto wallets are
-   dropped and only counted. No serial, wallet or file name reaches the public
-   repo — the script refuses (exit 2) if one would. Review the PR (every cask
-   replaces a hand-installed app on the first rebuild), merge.
+   and App Store copies (with their ids when `mas` ran). Apps only in a
+   user's `~/Applications` are counted, never adopted. Crypto wallets — by
+   name and by the cask catalogue's description — are dropped and only
+   counted. No serial, wallet or file name reaches the public repo — the
+   script refuses (exit 2) if one would. A name differing only by case from an
+   existing entry is refused. Review the PR (every cask replaces a
+   hand-installed app on the first rebuild), merge. An audit taken before
+   this collector change cannot tell App Store or `~/Applications` copies
+   apart — `new-host.sh` says so; prune those by hand or wait for the next
+   audit.
 3. **On the Mac** — the same `curl … | bash` again. Each phase prints
    `[OK]`/`[DO]`/`[ASK]` and skips itself when already done: preflight →
-   Xcode CLT → official Nix (`--daemon`, asks first) → clone `~/dotfiles` (or
-   fast-forward a clean `main`) → `rebuild.sh --plan-only` → (secrets hosts:
-   `setup-secrets.sh`) → confirm → `rebuild.sh` → verify (fleet-update daemon,
-   firewall, fleet launcher, one audit) → summary of what stays manual.
+   Xcode CLT → official Nix (`--daemon`, asks first) → Homebrew if missing
+   (official installer, asks first — nix-darwin drives brew but never
+   installs it) → clone `~/dotfiles` (or fast-forward a clean `main`) →
+   `rebuild.sh --plan-only` → (secrets hosts: `setup-secrets.sh`) → confirm →
+   `rebuild.sh` → verify (fleet-update daemon, firewall, fleet launcher, one
+   audit — reported as uploaded only once the config service holds it) →
+   summary of what stays manual.
 
 Flags: `--dry-run` (preflight + plan; no installs, writes, state, fetch or
 upload), `--yes` (accepts adopt.sh's **non-destructive** defaults — pin file,
-Xcode CLT, Nix, clone, audit, starting `rebuild.sh`; it is never passed to
+Xcode CLT, Nix, Homebrew, clone, audit, starting `rebuild.sh`; it is never passed to
 `rebuild.sh`), `--skip-nix-install`. A re-run resumes from
 `~/.local/state/rh7-adopt/state.json` (rebuild logs next to it); a Mac already
 under nix-darwin is only rebuilt on an explicit `y`. Exit `0` done, `1` a step
@@ -307,7 +317,7 @@ matters.
 
 | Prompt | When | Why it is not automated |
 |---|---|---|
-| Admin password / Touch ID | Nix installer, the config-service pin, `pre-wipe-check --all-users`, `rebuild.sh` (one authentication for the whole switch) | root changes; `rebuild.sh` revokes its sudo window when it ends |
+| Admin password / Touch ID | Nix and Homebrew installers, the config-service pin, `pre-wipe-check --all-users`, `rebuild.sh` (one authentication for the whole switch) | root changes; `rebuild.sh` revokes its sudo window when it ends |
 | GUI session for the Nix installer | Nix missing | the Nix APFS volume needs an `/etc/fstab` write that headless/SSH sessions are denied; `adopt.sh` stops with this reason instead of failing midway |
 | Xcode CLT dialog | CLT missing | Apple's installer UI; `adopt.sh` waits for it |
 | `rebuild.sh`'s own questions | flakes off, `/opt/homebrew` owned by someone else, `/etc` files nix-darwin would replace, and the switch itself | each changes the system; one confirmation each, never answered by `--yes` |
@@ -341,10 +351,11 @@ prompts when **risky drift** (manual changes not in the flake) is detected.
 ```
 
 The audit collects Homebrew formulas/casks/taps, App Store apps (ids when
-`mas` is installed; `app_store_apps` from bundle receipts either way), every
-app in /Applications, macOS defaults, Dock apps, CLI tools, Node globals, npm
-config (incl. accidental `/nix/store` prefixes), services, git config, SSH key
-names and fonts.
+`mas` is installed), every app in /Applications and ~/Applications
+(`application_bundles` keeps the location and an App Store receipt flag),
+macOS defaults, Dock apps, CLI tools, Node globals, npm config (incl.
+accidental `/nix/store` prefixes), services, git config, SSH key names and
+fonts.
 
 > **Nix + mutable CLIs:** Node itself is provided by Nix/Home Manager. Mutable
 > npm CLIs such as Codex use `~/.npm-global`; native user installers such as

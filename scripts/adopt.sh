@@ -17,6 +17,8 @@
 #              audit (offered here: read-only pre-wipe check + one audit);
 #   xcode      Xcode Command Line Tools (macOS dialog, polled);
 #   nix        the official multi-user installer (asks first);
+#   homebrew   the official installer when /opt/homebrew is missing (asks
+#              first; nix-darwin's homebrew module needs but never installs it);
 #   dotfiles   clone ~/dotfiles, or fast-forward a clean main to origin/main;
 #   rebuild    scripts/rebuild.sh --plan-only → (needsSecrets hosts:
 #              scripts/setup-secrets.sh, which stops with the recipient-side
@@ -60,6 +62,8 @@ STATE_DIR="${ADOPT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/rh7-adopt}"
 STATE_FILE="$STATE_DIR/state.json"
 NIX_DAEMON_PROFILE="${ADOPT_NIX_DAEMON_PROFILE:-/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh}"
 NIX_INSTALL_URL="${ADOPT_NIX_INSTALL_URL:-https://nixos.org/nix/install}"
+BREW_INSTALL_URL="${ADOPT_BREW_INSTALL_URL:-https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh}"
+BREW_BIN="${ADOPT_BREW_BIN:-/opt/homebrew/bin/brew}"
 CURRENT_SYSTEM="${ADOPT_CURRENT_SYSTEM:-/run/current-system}"
 FLEET_LAUNCHER="${ADOPT_FLEET_LAUNCHER:-/usr/local/libexec/rh7-fleet-launcher}"
 SOCKETFILTERFW="${ADOPT_SOCKETFILTERFW:-/usr/libexec/ApplicationFirewall/socketfilterfw}"
@@ -357,6 +361,25 @@ probe_fleet_update() {
 probe_firewall()    { "$SOCKETFILTERFW" --getglobalstate 2>/dev/null | grep -qi enabled; }
 probe_launcher()    { [ -x "$FLEET_LAUNCHER" ]; }
 probe_restic_configured() { [ -s "$1/.config/rh7-restic/repo-password" ] 2>/dev/null; }
+probe_homebrew()    { [ -x "$BREW_BIN" ]; }
+# The config service's audited_at (UTC "YYYY-MM-DD HH:MM:SS") of this host's
+# latest audit — the top-level key comes first in GET /api/audit/<host>.
+probe_audit_at() {
+  local h; h=$(printf '%s' "$HOST" | tr '[:upper:]' '[:lower:]')
+  [ -n "$CS_URL" ] || return 0
+  curl -sf --max-time 15 "$CS_URL/api/audit/$h" 2>/dev/null |
+    grep -o '"audited_at":"[^"]*"' | head -n 1 | sed 's/.*:"\(.*\)"/\1/'
+}
+utc_minus_2m() {
+  date -u -v-2M '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -u -d '2 minutes ago' '+%Y-%m-%d %H:%M:%S'
+}
+# audit_landed <since>: the service holds an audit of this host from <since>
+# on. The collector only WARNS when its upload fails and still exits 0, so a
+# runner exit status alone is no proof the owner has data for new-host.sh.
+audit_landed() {
+  local at; at=$(probe_audit_at)
+  [ -n "$at" ] && ! [[ "$at" < "$1" ]]
+}
 probe_registry_role() {
   [ -n "$CS_URL" ] || return 1
   curl -sf --max-time 5 "$CS_URL/api/devices/$HOST" 2>/dev/null |
@@ -396,7 +419,22 @@ source_nix() {
 act_clone()  { git clone "$REPO_URL" "$DOTFILES_DIR"; }
 act_fetch()  { git -C "$DOTFILES_DIR" fetch --quiet origin main; }
 act_ff()     { git -C "$DOTFILES_DIR" merge --ff-only --quiet origin/main; }
-act_setup_secrets() { "$DOTFILES_DIR/scripts/setup-secrets.sh" --hostname "$HOST" <"$(tty_in)"; }
+act_install_brew() {
+  local f; f=$(mktemp "${TMPDIR:-/tmp}/rh7-brew-install.XXXXXX") || return 1
+  curl -fsSL --max-time 60 "$BREW_INSTALL_URL" -o "$f" || { rm -f "$f"; return 1; }
+  # NONINTERACTIVE skips the installer's "Press RETURN" but needs sudo cached.
+  sudo -v <"$(tty_in)" || { rm -f "$f"; return 1; }
+  NONINTERACTIVE=1 /bin/bash "$f" </dev/null
+  local rc=$?; rm -f "$f"; return "$rc"
+}
+# Flakes may still be off here: rebuild.sh --plan-only only enables them for its
+# own process (the persistent fix is offered by the real rebuild.sh run), and
+# setup-secrets.sh evaluates the flake — same per-process switch.
+act_setup_secrets() {
+  NIX_CONFIG="${NIX_CONFIG:+$NIX_CONFIG
+}extra-experimental-features = nix-command flakes" \
+    "$DOTFILES_DIR/scripts/setup-secrets.sh" --hostname "$HOST" <"$(tty_in)"
+}
 # act_rebuild <logfile> [rebuild.sh args…] — under script(1) so rebuild.sh
 # keeps a real terminal (its prompts, sudo/Touch ID) and we keep a log.
 act_rebuild() {
@@ -544,6 +582,7 @@ phase_preflight() {
 # ═════════════════════════════════════════════════════════════════════════════
 phase_no_flake_entry() {
   section "b. No flake entry for '$HOST'"
+  local since
   if [ -n "$FLAKE_CASE_MATCH" ]; then
     say_ask "If this Mac IS '$FLAKE_CASE_MATCH', rename it (then re-run):"
     say_info "sudo scutil --set HostName $FLAKE_CASE_MATCH && sudo scutil --set LocalHostName $FLAKE_CASE_MATCH && sudo scutil --set ComputerName $FLAKE_CASE_MATCH"
@@ -561,7 +600,10 @@ phase_no_flake_entry() {
     if [ -z "$CS_URL" ]; then
       say_warn "config service unreachable — the audit cannot upload; fix Tailscale first"
     elif ask y "Run one fleet audit now (read-only; uploads to $CS_URL)?" auto; then
-      if act_audit_remote; then say_ok "audit uploaded"; else say_warn "audit failed — see output above"; fi
+      since=$(utc_minus_2m)
+      act_audit_remote || true
+      if audit_landed "$since"; then say_ok "audit uploaded to $CS_URL"
+      else say_warn "no new audit of $HOST reached $CS_URL — see the output above; new-host.sh needs one"; fi
     fi
   fi
   say_info "2. On an owner machine (gh + tailnet), from a dotfiles clone:"
@@ -616,6 +658,25 @@ phase_nix() {
   if ! act_install_nix; then say_err "the Nix installer failed — see its output"; STOP_REASON="Nix install failed"; phase_mark nix failed; return 1; fi
   if source_nix; then HAVE_NIX=true; say_ok "Nix installed ($(nix --version 2>/dev/null))"; phase_mark nix ok "installed"; return 0; fi
   say_err "installed, but nix is not on PATH — open a new terminal and re-run"; STOP_REASON="nix not on PATH"; phase_mark nix failed; return 1
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Phase c3 — Homebrew (nix-darwin's homebrew module drives brew; it does not
+# install it, and rebuild.sh's plan quietly skips Homebrew when brew is absent)
+# ═════════════════════════════════════════════════════════════════════════════
+phase_homebrew() {
+  section "c3. Homebrew"
+  if probe_homebrew; then say_ok "present ($BREW_BIN)"; phase_mark homebrew ok present; return 0; fi
+  if $DRY_RUN; then say_plan "would ask, then run Homebrew's official installer ($BREW_INSTALL_URL)"; summary homebrew plan; return 0; fi
+  [ "$P_USER" = "$(id -un)" ] ||
+    say_info "it will belong to you; rebuild.sh then offers to hand /opt/homebrew to $P_USER"
+  if ! ask y "Install Homebrew (official installer, /opt/homebrew)?" auto; then
+    say_ask "Not installing Homebrew. Install it yourself (https://brew.sh), then re-run."
+    STOP_REASON="Homebrew install declined"; phase_mark homebrew stopped declined; return 3
+  fi
+  say_do "Homebrew installer (NONINTERACTIVE, after one sudo)"
+  if act_install_brew && probe_homebrew; then say_ok "Homebrew installed"; phase_mark homebrew ok installed; return 0; fi
+  say_err "the Homebrew installer failed — see its output"; STOP_REASON="Homebrew install failed"; phase_mark homebrew failed; return 1
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -736,7 +797,7 @@ phase_rebuild() {
 # ═════════════════════════════════════════════════════════════════════════════
 phase_verify() {
   section "f. Verify"
-  local fails=0 role_reg l home restic_cmd
+  local fails=0 role_reg l home restic_cmd since
 
   if [ -n "$P_AUTOUPDATE" ]; then
     if probe_fleet_update; then say_ok "org.rh7.fleet-update loaded (channel $P_AUTOUPDATE)"
@@ -754,8 +815,10 @@ phase_verify() {
   if $DRY_RUN; then say_plan "would run one audit (rh7-fleet-audit, else ~/dotfiles/scripts/collector-runner.sh)"
   elif [ -z "$CS_URL" ]; then say_warn "config service unreachable — skipping the audit"
   elif ask y "Run one fleet audit now (read-only; uploads to $CS_URL)?" auto; then
-    if act_audit; then say_ok "audit uploaded"; state_set audit.at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    else say_warn "audit failed — re-run: ~/dotfiles/scripts/collector-runner.sh"; fails=$((fails + 1)); fi
+    since=$(utc_minus_2m)
+    act_audit || true
+    if audit_landed "$since"; then say_ok "audit uploaded to $CS_URL"; state_set audit.at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    else say_warn "no new audit of $HOST reached $CS_URL — re-run: ~/dotfiles/scripts/collector-runner.sh"; fails=$((fails + 1)); fi
   fi
 
   # What stays manual — each with the exact step.
@@ -792,7 +855,7 @@ phase_verify() {
 # ── driver ───────────────────────────────────────────────────────────────────
 usage() {
   local self="${BASH_SOURCE[0]:-}"
-  if [ -n "$self" ] && [ -r "$self" ]; then sed -n '2,50p' "$self" | sed 's/^# \{0,1\}//'
+  if [ -n "$self" ] && [ -r "$self" ]; then sed -n '2,52p' "$self" | sed 's/^# \{0,1\}//'
   else echo "usage: adopt.sh [--dry-run] [--yes] [--skip-nix-install]"; fi
 }
 
@@ -845,7 +908,7 @@ main() {
   phase_mark flake ok "entry present"
 
   local p
-  for p in phase_xcode phase_nix phase_dotfiles phase_rebuild; do
+  for p in phase_xcode phase_nix phase_homebrew phase_dotfiles phase_rebuild; do
     "$p"; rc=$?
     if [ "$rc" -ne 0 ]; then print_summary "$rc"; return "$rc"; fi
   done

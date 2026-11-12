@@ -83,6 +83,10 @@ probe_firewall()        { return 0; }
 probe_launcher()        { return 0; }
 probe_restic_configured() { return 0; }
 probe_registry_role()   { echo household; }
+probe_homebrew()        { [ "${S_BREW:-1}" = 1 ] || [ -e "$CALLS.brew" ]; }
+# The audit "lands" unless S_AUDIT_LOST=1 (the collector exits 0 on a failed POST).
+probe_audit_at()        { [ "${S_AUDIT_LOST:-0}" = 1 ] && echo "2000-01-01 00:00:00" || echo "2999-01-01 00:00:00"; }
+act_install_brew()      { rec install_brew; : >"$CALLS.brew"; }
 user_home()             { echo "/Users/$1"; }
 source_nix()            { return 0; }
 act_write_pin()         { rec write_pin "$@"; }
@@ -128,13 +132,14 @@ run() {
 }
 
 echo "== dry-run: fresh Mac, nothing changes =="
-run dry S_CLT=0 S_NIX=0 S_DOTFILES=absent -- --dry-run
+run dry S_CLT=0 S_NIX=0 S_BREW=0 S_DOTFILES=absent -- --dry-run
 check "exit 0" "$RC" 0
 check "no action ran" "$CALLS_OUT" ""
 if [ -e "$SDIR/state/state.json" ]; then bad "no state file written"; else ok "no state file written"; fi
 has "plans the CLT install" "$OUT" "would run xcode-select --install"
 has "plans the Nix install" "$OUT" "would ask, then run the official installer"
 has "plans the clone" "$OUT" "would clone"
+has "plans the Homebrew install" "$OUT" "would ask, then run Homebrew's official installer"
 has "plans the rebuild" "$OUT" "would run scripts/rebuild.sh --plan-only"
 has "says DRY RUN" "$OUT" "DRY RUN — nothing was changed"
 
@@ -154,6 +159,21 @@ run noentryyes S_HOST=unknown-mac S_CLT=0 S_NIX=0 -- --yes
 check "exit 3" "$RC" 3
 check "pre-wipe check + one audit, nothing else" "$CALLS_OUT" "prewipe
 audit_remote"
+has "landed audit reported" "$OUT" "audit uploaded to http://cs.test:3456"
+
+echo "== no flake entry: an audit whose upload failed is not reported as uploaded =="
+run noentrylost S_HOST=unknown-mac S_AUDIT_LOST=1 -- --yes
+hasnt "no false success" "$OUT" "audit uploaded"
+has "says no audit reached the service" "$OUT" "no new audit of unknown-mac reached"
+
+echo "== Homebrew missing =="
+run brewyes S_BREW=0 S_DOTFILES=absent -- --yes
+check "exit 0" "$RC" 0
+check "installs Homebrew before the clone and the rebuild" "$(head -n 2 <<<"$CALLS_OUT")" "install_brew
+clone"
+run brewno S_BREW=0 S_ANSWERS="n" --
+check "declined → exit 3" "$RC" 3
+hasnt "declined → nothing after it" "$CALLS_OUT" "rebuild"
 
 echo "== no flake entry, dry-run: nothing offered =="
 run noentrydry S_HOST=unknown-mac -- --dry-run

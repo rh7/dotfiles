@@ -34,14 +34,36 @@ cat >"$T/audit.json" <<'EOF'
   "system": { "hardware": { "serial": "C02FIXTURE9Z", "model": "MacBookPro18,3" } },
   "user_accounts": { "users": [ { "username": "dana", "uid": 502 }, { "username": "rouven", "uid": 501 } ], "current_user": "rouven" },
   "applications": [ "Firefox", "Arc", "Exodus", "Ledger Live", "Electrum", "Slack", "Tailscale", "ExpressVPN",
-                    "Adobe Photoshop 2025", "Skype", "zoom.us", "Obscure Tool", "1Password", "Telegram", "Safari" ],
-  "app_store_apps": [ "Slack", "Crypto Pro" ],
+                    "Adobe Photoshop 2025", "Skype", "zoom.us", "Obscure Tool", "1Password", "Telegram", "Safari",
+                    "Blockstream Green", "Crypto Pro", "Notion", "Discord", "Harbor" ],
+  "application_bundles": [
+    { "name": "Firefox", "location": "system", "app_store": false },
+    { "name": "Arc", "location": "system", "app_store": false },
+    { "name": "Exodus", "location": "system", "app_store": false },
+    { "name": "Ledger Live", "location": "system", "app_store": false },
+    { "name": "Electrum", "location": "system", "app_store": false },
+    { "name": "Slack", "location": "system", "app_store": true },
+    { "name": "Tailscale", "location": "system", "app_store": false },
+    { "name": "ExpressVPN", "location": "system", "app_store": false },
+    { "name": "Adobe Photoshop 2025", "location": "system", "app_store": false },
+    { "name": "Skype", "location": "system", "app_store": false },
+    { "name": "zoom.us", "location": "system", "app_store": false },
+    { "name": "Obscure Tool", "location": "system", "app_store": false },
+    { "name": "1Password", "location": "system", "app_store": false },
+    { "name": "Telegram", "location": "system", "app_store": false },
+    { "name": "Safari", "location": "system", "app_store": false },
+    { "name": "Blockstream Green", "location": "system", "app_store": false },
+    { "name": "Crypto Pro", "location": "system", "app_store": true },
+    { "name": "Notion", "location": "user", "app_store": false },
+    { "name": "Discord", "location": "user", "app_store": false },
+    { "name": "Harbor", "location": "system", "app_store": false }
+  ],
   "mas_apps": { "installed": true, "apps": [ { "id": 803453959, "name": "Slack" }, { "id": 980888073, "name": "Crypto Pro" } ] },
   "homebrew": { "casks": [ "miniconda" ] }
 }
 EOF
 cat >"$T/gaps.json" <<'EOF'
-{ "present_unmanaged": [ "tailscale", "zoom", "1password", "slack" ], "unmanaged_casks": [ "miniconda" ] }
+{ "present_unmanaged": [ "tailscale", "zoom", "1password", "slack", "notion" ], "unmanaged_casks": [ "miniconda" ] }
 EOF
 cat >"$T/casks.json" <<'EOF'
 [
@@ -60,7 +82,12 @@ cat >"$T/casks.json" <<'EOF'
   { "token": "miniconda", "artifacts": [ { "installer": [ { "script": { "executable": "x" } } ] } ], "deprecated": false, "disabled": false },
   { "token": "1password", "artifacts": [ { "app": [ "1Password.app" ] } ], "deprecated": false, "disabled": false },
   { "token": "telegram", "artifacts": [ { "app": [ "Telegram.app" ] } ], "deprecated": false, "disabled": false },
-  { "token": "telegram-desktop", "artifacts": [ { "app": [ "Telegram.app" ] } ], "deprecated": false, "disabled": false }
+  { "token": "telegram-desktop", "artifacts": [ { "app": [ "Telegram.app" ] } ], "deprecated": false, "disabled": false },
+  { "token": "blockstream", "name": [ "Blockstream Green" ], "desc": "Multi-platform Bitcoin and Liquid wallet", "artifacts": [ { "app": [ "Blockstream.app" ] } ], "deprecated": false, "disabled": false },
+  { "token": "blockstream-green", "name": [ "Green" ], "desc": "Bitcoin wallet", "artifacts": [ { "app": [ "Blockstream Green.app" ] } ], "deprecated": false, "disabled": false },
+  { "token": "notion", "artifacts": [ { "app": [ "Notion.app" ] } ], "deprecated": false, "disabled": false },
+  { "token": "discord", "artifacts": [ { "app": [ "Discord.app" ] } ], "deprecated": false, "disabled": false },
+  { "token": "harbor-app", "name": [ "Harbor" ], "desc": "Companion app for a hardware wallet", "artifacts": [ { "app": [ "Harbor.app" ] } ], "deprecated": false, "disabled": false }
 ]
 EOF
 
@@ -80,7 +107,7 @@ for t in firefox arc 1password telegram; do
   if declared "$HOSTF" "$t"; then ok "adopts $t"; else bad "adopts $t" "$HOSTF"; fi
 done
 has "deprecated cask marked" "$(grep '"arc"' <<<"$HOSTF")" "DEPRECATED upstream"
-for t in "firefox@beta" telegram-desktop slack tailscale tailscale-app expressvpn adobe-photoshop skype zoom miniconda; do
+for t in "firefox@beta" telegram-desktop slack tailscale tailscale-app expressvpn adobe-photoshop skype zoom miniconda notion discord blockstream blockstream-green harbor-app; do
   if declared "$HOSTF" "$t"; then bad "does not declare $t" "$HOSTF"; else ok "does not declare $t"; fi
 done
 has "tailscale commented as network-critical" "$HOSTF" '#   "tailscale"'
@@ -90,8 +117,8 @@ has "disabled cask commented" "$(grep '"skype"' <<<"$HOSTF")" "DISABLED upstream
 has "pkg cask (found via uninstall path) commented" "$(grep '"zoom"' <<<"$HOSTF")" "pkg installer"
 has "installer cask commented" "$(grep '"miniconda"' <<<"$HOSTF")" "pkg installer"
 has "MAS app listed with id, commented" "$HOSTF" "#   803453959  Slack"
-has "wallets counted" "$HOSTF" "Crypto wallets — 4 present"
-for w in Exodus exodus "Ledger Live" ledger-live Electrum "Crypto Pro" 980888073; do
+has "wallets counted (name list + cask catalogue description)" "$HOSTF" "Crypto wallets — 6 present"
+for w in Exodus exodus "Ledger Live" ledger-live Electrum "Crypto Pro" 980888073 Blockstream "Blockstream Green" blockstream-green Harbor harbor-app; do
   hasnt "no wallet name in host file: $w" "$HOSTF" "$w"
   hasnt "no wallet name in flake: $w" "$FLAKE" "$w"
 done
@@ -100,6 +127,8 @@ hasnt "no serial in flake" "$FLAKE" "C02FIXTURE9Z"
 hasnt "no serial in --out plan" "$(cat "$T/hh/plan.json")" "C02FIXTURE9Z"
 hasnt "no app without a cask named" "$HOSTF" "Obscure Tool"
 has "apps without a cask only counted (Obscure Tool, Safari)" "$HOSTF" "2 other app(s) have no exact Homebrew cask"
+has "user-Applications-only apps (incl. one on the gap list) only counted" "$HOSTF" "2 app(s) live in a user's ~/Applications"
+hasnt "no ~/Applications app named" "$HOSTF" "Notion"
 BLK=$(sed -n '/"fixture-mac" = mkMac/,/};/p' <<<"$FLAKE")
 has "flake entry" "$BLK" '"fixture-mac" = mkMac {'
 has "primary user = the non-owner account" "$BLK" 'username = "dana";'
@@ -145,10 +174,23 @@ check "bad hostname → 1" "$RC" 1
 OUT=$("$NH" rouvens-mac-studio --no-fetch --base-ref HEAD --audit-file "$T/audit.json" --gaps-file "$T/gaps.json" --cask-db "$T/casks.json" 2>&1); RC=$?
 check "existing flake entry → 1" "$RC" 1
 has "says it exists" "$OUT" "already has a flake entry"
+OUT=$("$NH" Rouvens-Mac-Studio --no-fetch --base-ref HEAD --audit-file "$T/audit.json" --gaps-file "$T/gaps.json" --cask-db "$T/casks.json" 2>&1); RC=$?
+check "entry that differs only by case → 1" "$RC" 1
+has "names the existing entry" "$OUT" "'rouvens-mac-studio' already has a flake entry"
 jq '.user_accounts.users += [{"username":"eve","uid":503}]' "$T/audit.json" >"$T/audit2.json"
 OUT=$("$NH" fixture-mac --no-fetch --base-ref HEAD --audit-file "$T/audit2.json" --gaps-file "$T/gaps.json" --cask-db "$T/casks.json" 2>&1); RC=$?
 check "two non-owner accounts without --user → 1" "$RC" 1
 has "asks for --user" "$OUT" "pass --user"
+gen "$T/x2" --role personal --user dana
+check "personal role hard-codes another user's home → 1" "$RC" 1
+has "explains the hard-coded path" "$OUT" "hard-codes /Users/kassie/"
+
+echo "== legacy audit (no application_bundles, no mas) =="
+jq 'del(.application_bundles) | .mas_apps = {"installed": false} | .applications -= ["Notion","Discord","Crypto Pro"]' "$T/audit.json" >"$T/audit-legacy.json"
+OUT=$("$NH" fixture-mac --no-fetch --base-ref HEAD --audit-file "$T/audit-legacy.json" --gaps-file "$T/gaps.json" --cask-db "$T/casks.json" --out "$T/legacy" 2>&1); RC=$?
+check "exit 0" "$RC" 0
+has "warns it cannot tell App Store / ~/Applications copies apart" "$OUT" "cannot tell"
+has "host file carries the same caveat" "$(cat "$T/legacy/fixture-mac.nix")" "predates application_bundles"
 
 echo
 echo "new-host.test.sh: $pass passed, $fail failed"

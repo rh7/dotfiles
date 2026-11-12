@@ -788,21 +788,23 @@ print(json.dumps(apps))
 " 2>/dev/null || echo '[]'
 }
 
-# Names of /Applications bundles installed from the Mac App Store (they carry a
-# Contents/_MASReceipt/receipt). Needs no `mas`: mas_apps above is
-# {"installed": false} on most hand-managed Macs, and scripts/new-host.sh must
-# still tell an App Store copy from a hand-installed one — declaring a cask for
-# an App Store app makes rebuild.sh replace it with the Homebrew copy.
-collect_app_store_apps() {
+# Every app bundle with WHERE it lives and whether it came from the Mac App
+# Store (Contents/_MASReceipt/receipt — needs no `mas`, which most hand-managed
+# Macs lack). `applications` above merges /Applications and ~/Applications into
+# bare names; scripts/new-host.sh must adopt only system-wide, non-App-Store
+# bundles: a cask declared for an App Store copy makes rebuild.sh replace it,
+# and one declared for a ~/Applications app installs a second copy.
+collect_application_bundles() {
   python3 -c "
 import os, json
-apps = []
-d = '/Applications'
-if os.path.isdir(d):
-    for f in sorted(os.listdir(d)):
-        if f.endswith('.app') and os.path.exists(os.path.join(d, f, 'Contents', '_MASReceipt', 'receipt')):
-            apps.append(f[:-len('.app')])
-print(json.dumps(apps))
+out = []
+for loc, d in (('system', '/Applications'), ('user', os.path.expanduser('~/Applications'))):
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.endswith('.app'):
+                store = os.path.exists(os.path.join(d, f, 'Contents', '_MASReceipt', 'receipt'))
+                out.append({'name': f[:-len('.app')], 'location': loc, 'app_store': store})
+print(json.dumps(out))
 " 2>/dev/null || echo '[]'
 }
 
@@ -3684,8 +3686,8 @@ $(collect_virtualization_prerequisites)
 $(collect_mas)
 ---SECTION: applications
 $(collect_applications)
----SECTION: app_store_apps
-$(collect_app_store_apps)
+---SECTION: application_bundles
+$(collect_application_bundles)
 ---SECTION: macos_defaults
 $(collect_macos_defaults)
 ---SECTION: dock_apps

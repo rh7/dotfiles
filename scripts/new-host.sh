@@ -20,24 +20,27 @@
 #                   name is EXACTLY a cask's app artifact (a stable cask wins
 #                   over @beta/@nightly variants; otherwise the one whose token
 #                   is the slugged name; still ambiguous → commented), plus the
-#                   server's present_unmanaged / unmanaged_casks. Never adds.
+#                   server's present_unmanaged / unmanaged_casks. Never adds;
+#                   apps only in a user's ~/Applications are never adopted.
 #   manual block    commented, with the reason: Adobe/Maxon vendor installers,
 #                   Tailscale + VPN clients (network-critical), casks DISABLED
 #                   upstream, pkg-installer casks (need root on install),
 #                   ambiguous matches. Deprecated casks are adopted, marked.
 #   MAS apps        commented (id + name when the audit has `mas`, else the
-#                   App Store receipt names) — never declared, and never
-#                   adopted as casks (rebuild.sh would replace the App Store
-#                   copy with the Homebrew one).
+#                   App Store receipt names from application_bundles) — never
+#                   declared, and never adopted as casks (rebuild.sh would
+#                   replace the App Store copy with the Homebrew one).
 #   role defaults   household (default): role household-mac.nix,
 #                   homeProfile "household", needsSecrets = false, no Dock;
 #                   personal: role personal-mac.nix, needsSecrets = false;
 #                   workstation: the default role, needsSecrets (sops) on.
-#                   All: autoUpdate = "fleet/stable".
+#                   All: autoUpdate = "fleet/stable". A role file that
+#                   hard-codes another account's /Users/<name>/ is refused.
 #
-# PUBLIC REPO HYGIENE: crypto wallets are dropped by name pattern and only
-# COUNTED — never named; apps without an exact cask are only counted; no
-# serial number, user file name or other audit detail is written. The run
+# PUBLIC REPO HYGIENE: crypto wallets — by name pattern AND by the cask
+# catalogue's description/display name — are dropped and only COUNTED, never
+# named; apps without an exact cask and ~/Applications apps are only counted;
+# no serial number, user file name or other audit detail is written. The run
 # fails (exit 2) if the device's serial or a dropped wallet name would appear
 # in the output.
 #
@@ -68,7 +71,7 @@ CASK_DB=""; BASE_REF=origin/main; FETCH=true; OUT_DIR=""
 
 die()  { echo "new-host: $*" >&2; exit 1; }
 info() { echo "new-host: $*" >&2; }
-usage() { sed -n '2,57p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -110,12 +113,16 @@ git -C "$REPO" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null || die
 show() { git -C "$REPO" show "$BASE_REF:$1"; }
 show flake.nix >"$WORK/flake.base.nix" || die "no flake.nix at $BASE_REF"
 
-if grep -Eq "^[[:space:]]*\"$HOST\"[[:space:]]*=[[:space:]]*mk(Mac|NixOS)" "$WORK/flake.base.nix"; then
-  die "$HOST already has a flake entry at $BASE_REF — nothing to generate (run adopt.sh on the Mac)"
-fi
-if show "configurations/macos/$HOST.nix" >/dev/null 2>&1; then
-  die "configurations/macos/$HOST.nix already exists at $BASE_REF"
-fi
+# Case-insensitively: macOS hostnames and the default APFS volume are, so
+# `foo-mac` next to an existing `Foo-Mac` would be a second entry for the same
+# Mac and could overwrite its host module.
+host_lc=$(printf '%s' "$HOST" | tr '[:upper:]' '[:lower:]')
+existing=$(sed -nE 's/^[[:space:]]*"([^"]+)"[[:space:]]*=[[:space:]]*mk(Mac|NixOS)[[:space:]]*\{.*/\1/p' "$WORK/flake.base.nix" |
+  awk -v h="$host_lc" 'tolower($0) == h { print; exit }')
+[ -z "$existing" ] || die "'$existing' already has a flake entry at $BASE_REF — nothing to generate (run adopt.sh on the Mac; rename it with scutil if the names differ only by case)"
+existing=$(git -C "$REPO" ls-tree --name-only "$BASE_REF" configurations/macos/ |
+  awk -v f="configurations/macos/$host_lc.nix" 'tolower($0) == f { print; exit }')
+[ -z "$existing" ] || die "$existing already exists at $BASE_REF"
 
 # ── inputs ───────────────────────────────────────────────────────────────────
 if [ -z "$AUDIT_FILE" ] || [ -z "$GAPS_FILE" ]; then
@@ -178,6 +185,14 @@ case "$ROLE" in
   personal)    ROLE_FILE=modules/roles/personal-mac.nix ;;
   workstation) ROLE_FILE=modules/roles/workstation-mac.nix ;;
 esac
+# A role that hard-codes another account's home (personal-mac.nix's Dock is
+# Kassie's: /Users/kassie/Applications/CC.app) would write broken entries into
+# this user's Dock. Refuse rather than generate that.
+if [ -n "$ROLE_FILE" ]; then
+  foreign=$(show "$ROLE_FILE" | sed 's/#.*//' | grep -oE '/Users/[A-Za-z0-9_.-]+/' | sort -u |
+    grep -vx "/Users/$PUSER/" || true)
+  [ -z "$foreign" ] || die "role $ROLE ($ROLE_FILE) hard-codes $(echo $foreign | tr ' ' ',') — it only fits that user; use --role household (or make the role use system.primaryUser)"
+fi
 role_casks() {
   local f="$1" seen="$2" dir imp
   case " $seen " in *" $f "*) return 0 ;; esac
@@ -203,7 +218,11 @@ jq -n \
   --slurpfile db "$CASK_DB" --slurpfile audit "$AUDIT_FILE" --slurpfile gaps "$GAPS_FILE" \
   --slurpfile rolec "$WORK/role-casks.json" '
   # Crypto wallets: dropped and only counted (never named in the public repo).
-  def wallet: test("wallet|ledger|trezor|exodus|electrum|keepkey|cypherock|mycrypto|metamask|sparrow|wasabi|coinomi|bitbox|monero|bitcoin|ethereum|beaconchain|zerion|wagyu|staking|^crypto pro$|cryptowatch"; "i");
+  # By name (apps without a cask, App Store names) AND by the cask catalogue
+  # (description/display name), so e.g. a wallet whose token is a company
+  # name is still caught.
+  def wallet: test("wallet|ledger|trezor|exodus|electrum|keepkey|cypherock|mycrypto|metamask|sparrow|wasabi|coinomi|bitbox|monero|bitcoin|ethereum|beaconchain|zerion|wagyu|staking|blockstream|coinbase|binance|kraken|rabby|onekey|zengo|tangem|bitkey|muun|coldcard|^crypto pro$|cryptowatch"; "i");
+  def walletdesc: test("\\bwallet|bitcoin|ethereum|cryptocurrenc|blockchain|monero|litecoin|cardano|\\bcoins\\b|\\bdefi\\b|web3|\\bnft|ledger"; "i");
   def vendor: test("^adobe|maxon|cinema[- ]?4d|^redshift|creative[- ]cloud"; "i");
   def network: test("^tailscale"; "i");
   def vpn: test("vpn|tunnelblick|private-internet-access|wireguard|globalprotect|forticlient|viscosity|windscribe|surfshark|openvpn|cisco"; "i");
@@ -219,15 +238,27 @@ jq -n \
                  | sub(".*/"; "") | sub("\\.app$"; "") ];
 
   ($db[0] | map({ token, apps: (appnames as $n | if ($n | length) > 0 then $n else pkgapps end),
+                  names: [ .name[]? | select(type == "string") ],
+                  walletcask: (((.desc // "") | walletdesc) or ([ .name[]? | select(type == "string") ] | any(wallet))),
                   deprecated: (.deprecated // false), disabled: (.disabled // false), pkg: haspkg })) as $casks
   | ($casks | map({ key: .token, value: . }) | from_entries) as $bytoken
   | (reduce ($casks[] | . as $c | .apps[] | { n: ., t: $c.token }) as $x ({}; .[$x.n] += [$x.t])) as $byapp
   | $audit[0] as $a | $gaps[0] as $g | ($rolec[0] // []) as $rc
-  | ($a.applications | map(select(type == "string"))) as $apps
-  # App Store copies: receipt names (collector) + `mas list` names when present.
-  | ((($a.app_store_apps // []) | map(select(type == "string")))
-     + (if ($a.mas_apps | type) == "object" and $a.mas_apps.installed == true then [ $a.mas_apps.apps[]?.name ] else [] end)) as $storenames
+  | (($a.mas_apps | type) == "object" and $a.mas_apps.installed == true) as $hasmas
+  | (if $hasmas then [ $a.mas_apps.apps[]? | .name | select(type == "string") ] else [] end) as $masnames
+  # Where each app lives: application_bundles (location + App Store receipt)
+  # when the audit has it; else the merged name list, which cannot tell
+  # ~/Applications or App Store copies apart (only `mas` names help then).
+  | (($a.application_bundles | type) == "array") as $hasbundles
+  | (if $hasbundles then [ $a.application_bundles[] | select(type == "object" and (.name | type) == "string") ] else [] end) as $bundles
+  | (if $hasbundles then [ $bundles[] | select(.location == "system") | .name ]
+     else ($a.applications | map(select(type == "string"))) end) as $sysapps
+  | (if $hasbundles then [ $bundles[] | select(.location == "user") | .name ] else [] end) as $userapps
+  | ([ $bundles[] | select(.app_store == true) | .name ] + $masnames) as $storenames
   | ($storenames | map({ key: ., value: true }) | from_entries) as $isstore
+  | ($sysapps | map({ key: ., value: true }) | from_entries) as $issys
+  | ($sysapps | map(select($isstore[.] | not))) as $apps
+  | ($sysapps + $userapps + $storenames | unique) as $allnames
   | def pick($app; $c):
       if ($c | length) == 1 then $c[0]
       else ($c | map(select(contains("@") | not))) as $plain
@@ -237,20 +268,24 @@ jq -n \
             | if ($s | length) == 1 then $s[0] else null end
           end
       end;
-    # 1) exact app-bundle matches for every non-App-Store app
-    ([ $apps[] | select($isstore[.] | not) | . as $n | ($byapp[$n] // []) as $c
+    # 1) exact app-bundle matches for every system-wide, non-App-Store app
+    ([ $apps[] | . as $n | ($byapp[$n] // []) as $c
        | select($c | length > 0) | { app: $n, token: pick($n; $c), cands: $c } ]) as $matched
   | ($matched | map(select(.token == null))) as $ambiguous
   | ($matched | map(select(.token != null)) | map({ app, token })) as $exact
   # 2) the server gap lists (catalogue aliases + brew-installed casks)
   | ([ (($g.present_unmanaged // []) + ($g.unmanaged_casks // []))[] | select(type == "string") ]
      | unique | map(select(. as $t | ($exact | map(.token) | index($t)) == null))
-     | map({ app: null, token: . })) as $fromgaps
+     | map({ app: null, token: ., gap: true })) as $fromgaps
   | ($exact + $fromgaps) as $cands
   | [ $cands[] | . as $x | ($bytoken[$x.token] // null) as $c
       | ([ $x.app // empty ] + ($c.apps // [])) as $names
-      | if ($names | any(wallet)) or ($x.token | wallet) then . + { class: "wallet" }
+      | if ($names | any(wallet)) or ($x.token | wallet) or ($c.walletcask // false) then . + { class: "wallet" }
         elif ($names | any($isstore[.] // false)) then . + { class: "store" }
+        # A gap-list app present only in ~/Applications: declaring it would
+        # install a second, system-wide copy.
+        elif ($x.gap // false) and ($c != null) and ($c.apps | length) > 0
+             and ($c.apps | any($issys[.] // false) | not) and ($c.apps | any(. as $n | $userapps | index($n))) then . + { class: "user" }
         elif ($rc | index($x.token)) != null then . + { class: "role" }
         elif ($x.token | vendor) or ($names | any(vendor)) then . + { class: "manual", why: "licensed vendor installer (Adobe/Maxon) — keeps its own updater" }
         elif ($x.token | network) then . + { class: "manual", why: "network-critical — adopt later, deliberately, with local access" }
@@ -260,13 +295,15 @@ jq -n \
         elif $c.pkg then . + { class: "manual", why: "pkg installer (needs root on install)" }
         else . + { class: "adopt", deprecated: $c.deprecated }
         end ] as $classified
-  | ([ $apps[] | select($isstore[.] | not) | select(wallet | not) | select(($byapp[.] // []) | length == 0) ] | length) as $unmatched
-  # MAS: ids when `mas` ran, else receipt names; wallets dropped here too.
-  | (if ($a.mas_apps | type) == "object" and $a.mas_apps.installed == true
-     then [ $a.mas_apps.apps[]? | { id: (.id | tostring), name: (.name | clean) } ]
-     else [] end) as $masids
-  | ($masids + [ ($a.app_store_apps // [])[] | select(type == "string") | clean
+  | ([ $apps[] | select(wallet | not) | select(($byapp[.] // []) | length == 0) ] | length) as $unmatched
+  # App Store apps: ids when `mas` ran, else receipt names; wallets dropped.
+  | (if $hasmas then [ $a.mas_apps.apps[]? | { id: (.id | tostring), name: (.name | clean) } ] else [] end) as $masids
+  | ($masids + [ $bundles[] | select(.app_store == true) | .name | clean
                  | . as $n | select(($masids | map(.name) | index($n)) == null) | { id: null, name: $n } ]) as $mas
+  # Names that must never be written: every wallet-looking app, cask token and
+  # cask display name (the hygiene guard greps the output for each).
+  | ([ ($classified[] | select(.class == "wallet") | (.app // empty), .token, (($bytoken[.token].names // [])[])),
+       ($allnames[] | select(wallet)) ] | unique) as $wnames
   | {
       adopt:     [ $classified[] | select(.class == "adopt") | { token, deprecated } ] | unique_by(.token),
       manual:    [ $classified[] | select(.class == "manual") | { token, why } ] | unique_by(.token),
@@ -274,18 +311,17 @@ jq -n \
       # Dropped when one of its casks is already classified (e.g. via the
       # server gap list) or when it is a wallet.
       ambiguous: [ $ambiguous[] | select(.app | wallet | not)
+                   | select(.cands | any(. as $t | ($bytoken[$t].walletcask // false)) | not)
                    | select(.cands | any(. as $t | $classified | map(.token) | index($t)) | not)
                    | { app: (.app | clean), cands: (.cands | map(select(contains("@") | not))) } ],
       mas:       [ $mas[] | select(.name | wallet | not) ] | sort_by(.name | ascii_downcase),
       # every wallet-looking app, with or without a cask, App Store or not
       wallets:   ([ ($classified[] | select(.class == "wallet") | (.app // .token)),
-                     ($mas[] | select(.name | wallet) | .name), ($apps[] | select(wallet)) ] | unique | length),
-      wallet_names: ([ $classified[] | select(.class == "wallet") | (.app // .token) ]
-                     + [ $mas[] | select(.name | wallet) | .name ]
-                     + [ $apps[] | select(wallet) ]) | unique,
+                    ($allnames[] | select(wallet)) ] | unique | length),
+      wallet_names: $wnames,
+      user_only: ($userapps | length),
       unmatched: $unmatched,
-      mas_source: (if ($a.mas_apps | type) == "object" and $a.mas_apps.installed == true then "mas"
-                   elif ($a | has("app_store_apps")) then "receipts" else "none" end),
+      mas_source: (if $hasbundles then "bundles" elif $hasmas then "mas" else "none" end),
       audited_at: ($a.audited_at // "unknown"),
       serial: ($a.system.hardware.serial // "")
     }' >"$WORK/plan.json" || die "classification failed"
@@ -344,15 +380,22 @@ EOF
     echo "  # $(jq .unmatched "$p") other app(s) have no exact Homebrew cask (built-in, App Store-less"
     echo "  # vendor apps, …) — not listed; see the audit."
   fi
+  if [ "$(jq .user_only "$p")" -gt 0 ]; then
+    echo "  # $(jq .user_only "$p") app(s) live in a user's ~/Applications — never adopted (a cask would"
+    echo "  # install a second, system-wide copy); not listed."
+  fi
   echo
   echo "  # ── Mac App Store apps present (NOT declared) ──────────────────────────────"
   case "$(jq -r .mas_source "$p")" in
-    mas)      echo "  # Installed under an Apple ID; declaring them would make activation run"
-              echo "  # \`mas install\` against whichever Apple ID is signed in. Owner decides later." ;;
-    receipts) echo "  # Installed under an Apple ID (App Store receipt in the bundle; \`mas\` was"
-              echo "  # not installed, so no ids). Owner decides later." ;;
-    none)     echo "  # The audit predates App Store detection and \`mas\` was not installed: check"
-              echo "  # that none of the casks above is an App Store copy before merging." ;;
+    mas|bundles)
+          echo "  # Installed under an Apple ID; declaring them would make activation run"
+          echo "  # \`mas install\` against whichever Apple ID is signed in, and a cask"
+          echo "  # would replace the App Store copy. Owner decides later."
+          if [ "$(jq '[.mas[] | select(.id == null)] | length' "$p")" -gt 0 ]; then
+            echo "  # (No id where \`mas\` was not installed — App Store receipt in the bundle.)"
+          fi ;;
+    none) echo "  # The audit predates application_bundles and \`mas\` was not installed: check"
+          echo "  # that none of the casks above is an App Store or ~/Applications copy." ;;
   esac
   if [ "$(jq '.mas | length' "$p")" -gt 0 ]; then
     jq -r '.mas[] | if .id then "  #   \(.id + (" " * ([11 - (.id | length), 1] | max)))\(.name)" else "  #   \(.name)" end' "$p"
@@ -414,7 +457,7 @@ if [ -n "$serial" ] && [ "${#serial}" -ge 6 ] && grep -qF "$serial" "$WORK/host.
 fi
 while IFS= read -r wname; do
   [ -n "$wname" ] || continue
-  if grep -qiF "$wname" "$WORK/host.nix"; then
+  if grep -qiwF -- "$wname" "$WORK/host.nix" "$WORK/entry.nix"; then
     echo "new-host: HYGIENE: a dropped wallet name would be written — refusing" >&2; exit 2
   fi
 done < <(jq -r '.wallet_names[]' "$WORK/plan.json")
@@ -440,8 +483,9 @@ if ! $APPLY; then
   echo "new-host: $(summary_line)"
   echo "new-host: DRY RUN — nothing written. Re-run with --apply to open the PR."
   if [ "$(jq -r .mas_source "$WORK/plan.json")" = none ]; then
-    echo "new-host: WARNING: this audit cannot tell App Store copies apart (no app_store_apps, no mas)."
-    echo "          Re-run after the Mac's next audit, or drop App Store apps from the cask list by hand."
+    echo "new-host: WARNING: this audit predates application_bundles and has no mas list — it cannot tell"
+    echo "          App Store or ~/Applications copies apart. Re-run after the Mac's next audit (the"
+    echo "          collector gains the section when this merges), or prune those casks by hand."
   fi
   [ "$ROLE" = workstation ] && echo "new-host: workstation = needsSecrets: run scripts/sops-add-host.sh $HOST <age1…> on a recipient before the Mac's first rebuild."
   exit 0
