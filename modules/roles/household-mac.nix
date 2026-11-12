@@ -10,6 +10,8 @@ let
     else map (f: f.target) (lib.filter (f: f.enable) (lib.attrValues hm.home.file));
   hmAllowedFiles = [ ".cache/.keep" ".local/state/.keep" ];
   postActivation = config.system.activationScripts.postActivation.text;
+  sshdDropIns = lib.filter (n: lib.hasPrefix "ssh/sshd_config.d/" n
+    && config.environment.etc.${n}.enable) (lib.attrNames config.environment.etc);
   # Homebrew belongs to the primary user (nix-darwin runs `brew bundle` as
   # her, so /opt/homebrew must be hers). For every OTHER account a plain
   # `brew` would fail on her prefix — or, worse, write files into it she can
@@ -30,6 +32,12 @@ let
       fi
     fi
   '';
+  compInitMarker = "# household-mac: compinit skips directories other accounts own";
+  compInit = lib.optionalString config.programs.zsh.enableCompletion ''
+    ${compInitMarker}
+    autoload -U compinit && compinit -i
+  '';
+  zshrc = config.environment.etc."zshrc".text;
 in
 {
   # ── Household Mac: ADOPT an in-use, shared Mac without wiping it ───────────
@@ -83,7 +91,7 @@ in
   #     The zsh prompt and Terminal.app integration are kept as macOS ships
   #     them (below); what does change for a shell that does not override it
   #     in ~/.zshrc: history 2000/2000 shared across sessions with duplicates
-  #     ignored (macOS: 2000/1000), emacs keymap, compinit;
+  #     ignored (macOS: 2000/1000), emacs keymap, `compinit -i` (below);
   #   - root LaunchDaemon org.rh7.fleet-update (nightly unattended switch from
   #     the host's channel), /usr/local/libexec/rh7-fleet-launcher, and the
   #     nix system profile in /run/current-system;
@@ -99,8 +107,8 @@ in
   #     are unless the host declares their cask — then rebuild.sh replaces
   #     the bundle with the Homebrew copy, owned by the primary user
   #     (rh7/dotfiles#116). Per-user app data in ~/Library is not touched.
-  #   - NOT changed: Remote Login, Screen Sharing (asserted below); no
-  #     Finder / Dock relaunch.
+  #   - NOT changed: Remote Login, Screen Sharing, SSH host keys and sshd
+  #     config (asserted below); no Finder / Dock relaunch.
   #
   # (b) PRIMARY USER (the daily user):
   #   - NO user defaults: Dock, Finder, keyboard, trackpad, screenshots stay
@@ -138,8 +146,36 @@ in
   programs.zsh.promptInit = ''PS1="%n@%m %1~ %# "'';
   programs.zsh.interactiveShellInit = ''
     [ -r "/etc/zshrc_$TERM_PROGRAM" ] && . "/etc/zshrc_$TERM_PROGRAM"
-  '' + brewShim;
+  '' + brewShim + compInit;
   programs.bash.interactiveShellInit = brewShim;
+
+  # compinit with -i instead of nix-darwin's bare `compinit`. /opt/homebrew
+  # belongs to the primary user, and `brew shellenv` (in an account's own
+  # ~/.zprofile) puts $prefix/share/zsh/site-functions on fpath — so for every
+  # OTHER account compaudit finds directories owned by neither root nor the
+  # account, and a bare compinit asks "Ignore insecure directories and files
+  # and continue [y] or abort compinit [n]?" in EVERY new shell (kassie-mbp-m1,
+  # rouven's account). -i silently skips the insecure directories (it does not
+  # trust them, unlike -u); for the primary user they are hers, i.e. secure,
+  # so her Homebrew completions still load. A compinit in an account's own
+  # ~/.zshrc is that account's business.
+  programs.zsh.enableGlobalCompInit = false;
+
+  # SSH server config stays macOS's. nix-darwin's services/openssh.nix and
+  # programs/ssh.nix act even with services.openssh.enable = null (the
+  # default, "let macOS manage it"): an `openssh` activation step runs
+  # ssh-keygen for /etc/ssh/ssh_host_{rsa,ecdsa,ed25519}_key whenever they are
+  # missing — i.e. on any Mac where Remote Login was never on, which printed
+  # "Generating public/private … key pair" on kassie-mbp-m1's first activation
+  # — and it links sshd_config.d drop-ins (099-host-keys, 100-nix-darwin,
+  # 101-authorized-keys). Neither turns Remote Login on, but this role leaves
+  # the SSH server entirely to the owner: no host keys, no sshd config. If
+  # Remote Login is switched on later, macOS's own sshd-keygen-wrapper creates
+  # the keys and sshd's built-in HostKey defaults find them. (The keys already
+  # created on kassie-mbp-m1 are not removed — sshd is off, they are unused.)
+  services.openssh.hostKeys = lib.mkForce [ ];
+  environment.etc."ssh/sshd_config.d/100-nix-darwin.conf".enable = false;
+  environment.etc."ssh/sshd_config.d/101-authorized-keys.conf".enable = false;
 
   assertions = [
     # Never let a household Mac lose an app to Homebrew cleanup: "zap" /
@@ -176,6 +212,14 @@ in
       message = "household-mac: Remote Login / Screen Sharing must not be enabled "
         + "— is modules/darwin/remote-access.nix imported?";
     }
+    # No SSH host key generation and no sshd_config.d drop-in (see above).
+    {
+      assertion = config.system.activationScripts.openssh.text == ""
+        && sshdDropIns == [ ];
+      message = "household-mac: nix-darwin must not generate SSH host keys or link "
+        + "sshd config (got: ${lib.concatStringsSep ", " sshdDropIns}) — is "
+        + "services.openssh.hostKeys set, or users.users.*.openssh.authorizedKeys?";
+    }
     # The daily user's own dotfiles stay: home-manager may link nothing into
     # her home beyond the empty xdg markers (mkMac homeProfile = "household").
     {
@@ -189,11 +233,22 @@ in
     # accounts' `brew` would write into the primary user's prefix).
     {
       assertion = !config.homebrew.enable
-        || (lib.hasInfix brewShimMarker config.environment.etc."zshrc".text
+        || (lib.hasInfix brewShimMarker zshrc
           && lib.hasInfix brewShimMarker config.environment.etc."bashrc".text);
       message = "household-mac: the Homebrew shell function for non-${primary} "
         + "accounts is missing from /etc/zshrc or /etc/bashrc — are programs.zsh "
         + "and programs.bash enabled?";
+    }
+    # /etc/zshrc runs compinit as `compinit -i` and not ALSO as nix-darwin's
+    # bare one (see above): that one prompts other accounts about the primary
+    # user's Homebrew directories in every new shell.
+    {
+      assertion = !config.programs.zsh.enableCompletion
+        || (!config.programs.zsh.enableGlobalCompInit
+          && lib.hasInfix "${compInitMarker}\nautoload -U compinit && compinit -i\n" zshrc
+          && !lib.hasInfix "compinit && compinit\n" zshrc);
+      message = "household-mac: /etc/zshrc must run compinit only as "
+        + "`compinit -i` — is programs.zsh.enableGlobalCompInit back on?";
     }
   ];
 }

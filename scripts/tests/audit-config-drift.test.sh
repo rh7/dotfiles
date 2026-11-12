@@ -129,11 +129,18 @@ while [ $# -gt 0 ]; do
 done
 STUB_AS_USER="$user" exec "$@"
 EOF
+# The prefix (the brew stub's grandparent, $W) belongs to kassie (a real chown
+# needs root); every other path keeps its real owner, so a lookup of the wrong
+# path (e.g. the cwd) does not pass by accident.
+cat >"$W/xuser/stat" <<'EOF'
+#!/bin/sh
+if [ "$1" = -f ] && [ "$2" = %Su ] && [ "$3" = "$STUB_BREW_PREFIX" ]; then echo kassie; else exec /usr/bin/stat "$@"; fi
+EOF
 chmod +x "$W/xuser"/*
 run_xuser() { # run_xuser <bash> [BREW_CMD]
   : >"$W/xlog"
   ( env PATH="$W/xuser:$W/stubs:/usr/bin:/bin" HOME="$W" XDG_CACHE_HOME="$W/cache" \
-      DOTFILES="$W/flake" DRIFT_APPS_DIR="$W/apps" STUB_LOG="$W/xlog" BREW_CMD="${2:-}" \
+      DOTFILES="$W/flake" DRIFT_APPS_DIR="$W/apps" STUB_LOG="$W/xlog" BREW_CMD="${2:-}" STUB_BREW_PREFIX="$W" \
       "$1" "$AUDIT" kassie-mbp-m1 >"$W/out" 2>&1 )
   echo $? >"$W/rc"
 }
@@ -145,6 +152,8 @@ for sh in "${shells[@]}"; do
     || bad "reproduced: as the invoker, a declared app reads as unmanaged" "$(cat "$W/out")"
   grep -q 'brew info failed for: firefox zoom' "$W/out" && good "as the invoker: the failed lookup is reported" \
     || bad "as the invoker: the failed lookup is reported" "$(cat "$W/out")"
+  grep -q 'Homebrew here belongs to kassie, not to you' "$W/out" && good "as the invoker: names the prefix owner" \
+    || bad "as the invoker: names the prefix owner" "$(cat "$W/out")"
 
   run_xuser "$sh" "sudo -n -u kassie -H brew"
   grep -q 'Firefox.app' "$W/out" && bad "BREW_CMD: a declared app is not unmanaged" "$(cat "$W/out")" \
@@ -153,6 +162,8 @@ for sh in "${shells[@]}"; do
     || bad "BREW_CMD: an undeclared app still is" "$(cat "$W/out")"
   grep -q 'brew info failed' "$W/out" && bad "BREW_CMD: no failed lookups" "$(cat "$W/out")" \
     || good "BREW_CMD: no failed lookups"
+  grep -q 'Homebrew here belongs to' "$W/out" && bad "BREW_CMD: no owner hint" "$(cat "$W/out")" \
+    || good "BREW_CMD: no owner hint"
   grep -q 'all casks match' "$W/out" && good "BREW_CMD: cask section unchanged" || bad "BREW_CMD: cask section" "$(cat "$W/out")"
   n=$(grep -c '^brew\[invoker\]' "$W/xlog" || true)
   [[ "$n" == 0 ]] && good "BREW_CMD: every brew call (list and info) ran as kassie" \
