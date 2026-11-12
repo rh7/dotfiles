@@ -38,7 +38,7 @@ notlogged() { if grep -qE -- "$2" "$W/log"; then bad "$1" "call log matched /$2/
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-FNS="ask_fix nix_missing_features restart_nix_daemon nix_conf_append require_nix_features
+FNS="cleanup ask_fix nix_missing_features restart_nix_daemon nix_conf_append require_nix_features
      authenticate_once host_flake_ref eval_failed eval_primary_user homebrew_enable_failed
      ensure_declared_lib brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary setup_brew_user
      etc_managed_targets sha256_of nix_block_stripped etc_stock_with_nix_block etc_body
@@ -349,6 +349,24 @@ check "apply: file changed since the check → stops (rc 1)" "$(cat "$W/rc")" 1
 MV_FAIL=1 run_case "ETC_RENAMES=\$(printf '%s\t%s\n' '$ETC/bashrc' \"\$(sha256_of '$ETC/bashrc')\"); etc_apply_renames; echo REACHED"
 check "apply: a failed mv stops the run (rc 1)" "$(cat "$W/rc")" 1
 hasnt "apply: nothing after a failed mv" "REACHED"
+
+# A run that stops after the moves (failed activation, Ctrl-C) must say which
+# files are still unlinked and how to undo — but never suggest restoring over
+# a link nix-darwin already installed.
+APPLY_BASH="PLAN_TMP=''; MAS_TMP=''; trap cleanup EXIT; trap 'exit 130' INT
+ETC_RENAMES=\$(printf '%s\t%s\n' '$ETC/bashrc' \"\$(sha256_of '$ETC/bashrc')\")
+etc_apply_renames"
+fixture "$(prepended "$STOCK_BASHRC")" "$STOCK_ZSHRC"
+run_case "$APPLY_BASH; exit 3"
+has "failed run after the move: names the unlinked file" "NOT yet replaced by nix-darwin"
+has "failed run after the move: exact undo" "sudo mv $ETC/bashrc.before-nix-darwin $ETC/bashrc"
+fixture "$(prepended "$STOCK_BASHRC")" "$STOCK_ZSHRC"
+run_case "$APPLY_BASH; kill -INT \$\$; sleep 5"
+check "interrupted after the move: exits via the INT trap" "$(cat "$W/rc")" 130
+has "interrupted after the move: still reports the undo" "sudo mv $ETC/bashrc.before-nix-darwin $ETC/bashrc"
+fixture "$(prepended "$STOCK_BASHRC")" "$STOCK_ZSHRC"; mkdir -p "$ETC/static"; echo x >"$ETC/static/bashrc"
+run_case "$APPLY_BASH; ln -s '$ETC/static/bashrc' '$ETC/bashrc'; exit 3"
+hasnt "activation already linked it: no rollback suggested" "sudo mv $ETC/bashrc.before-nix-darwin"
 
 # ═════════════════════════════════════════════════════════════════════════════
 echo ""

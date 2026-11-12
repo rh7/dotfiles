@@ -65,6 +65,12 @@ cleanup() {
   if [[ -n "$MAS_TMP" && -d "$MAS_TMP" ]]; then
     rm -rf "$MAS_TMP"
   fi
+  # /etc files this run moved aside that nix-darwin has NOT yet replaced
+  # (failed or interrupted run): say so and how to undo, on every exit path —
+  # Ctrl-C included. Prints nothing once activation has linked them.
+  if [[ -n "${ETC_RENAMED:-}" ]]; then
+    etc_restore_hint || true
+  fi
   # Close the sudo window immediately rather than letting the 5-minute default
   # lapse.
   #
@@ -722,15 +728,28 @@ etc_unexpected_lines() {
   fi
 }
 
-# etc_restore_hint — how to undo the moves, for a run that stops after them.
+# etc_restore_hint — for each file this run moved aside, if its replacement
+# link is still missing (activation never reached nix-darwin's etc phase),
+# how to undo the move. A path nix-darwin already re-linked is left alone:
+# restoring the old file over the managed link would be wrong. Called from
+# cleanup (the EXIT trap), so it covers failures and interrupts alike.
 etc_restore_hint() {
-  local f
-  [[ -n "$ETC_RENAMED" ]] || return 0
-  warn "Moved aside this run (nix-darwin's version is not in place until a switch succeeds):"
+  local f missing=""
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    echo "      $f → $f.before-nix-darwin   (undo: sudo mv $f.before-nix-darwin $f)"
+    [[ -e "$f" || -L "$f" ]] || missing+="$f"$'\n'
   done <<<"$ETC_RENAMED"
+  [[ -n "$missing" ]] || return 0
+  warn "Moved aside this run and NOT yet replaced by nix-darwin (new shells may lack nix on PATH):"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo "      $f → $f.before-nix-darwin"
+  done <<<"$missing"
+  warn "Re-run rebuild.sh to finish the switch, or undo with:"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo "      sudo mv $f.before-nix-darwin $f"
+  done <<<"$missing"
 }
 
 # etc_preflight — classifies every /etc file nix-darwin's check would reject;
@@ -814,15 +833,15 @@ etc_apply_renames() {
     now=$(sha256_of "$f" 2>/dev/null) || now=""
     if [[ "$now" != "$h" ]]; then
       err "$f changed since it was checked — not moving it. Stopping before any app is replaced or activation."
-      etc_restore_hint; exit 1
+      exit 1
     fi
     if [[ -e "$dest" || -L "$dest" ]] && { ! $FORCE || [[ -d "$dest" ]]; }; then
       err "$dest appeared since the check — not overwriting it. Stopping before any app is replaced or activation."
-      etc_restore_hint; exit 1
+      exit 1
     fi
     if ! sudo -n mv -f "$f" "$dest"; then
       err "Could not move $f. Stopping before any app is replaced or activation."
-      etc_restore_hint; exit 1
+      exit 1
     fi
     ETC_RENAMED+="$f"$'\n'
     ok "$f → $dest"
@@ -1784,7 +1803,7 @@ echo ""
 if [[ $ACTIVATION_RC -ne 0 ]]; then
   err "Activation FAILED (exit $ACTIVATION_RC) — the system was NOT fully switched."
   err "Skipping App Store upgrades. Build result kept in ./result for inspection."
-  etc_restore_hint
+  # (moved /etc files still unlinked are reported by cleanup on exit)
   echo "Log: $LOG_FILE"
   echo ""
   exit "$ACTIVATION_RC"
