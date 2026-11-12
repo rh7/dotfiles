@@ -448,6 +448,12 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   `*.before-nix-darwin`) so nix is on PATH. The role keeps macOS's prompt
   (`%n@%m %1~ %#`) and the Terminal.app integration; zsh history becomes
   2000/2000 and shared across sessions unless `~/.zshrc` sets its own.
+  Completion runs as `compinit -i`, not nix-darwin's bare `compinit`: for
+  every account but the primary user, Homebrew's `share/zsh/site-functions`
+  (on `fpath` via `brew shellenv`) belongs to someone else, and a bare
+  `compinit` asked "Ignore insecure directories … [y]/[n]?" in every new
+  shell. `-i` skips those directories (it does not trust them); the primary
+  user's own completions still load.
 - **`brew` from another account.** Homebrew belongs to the primary user, so
   `/etc/zshrc` and `/etc/bashrc` define `brew` for every other account: an
   **admin** runs it as her (`sudo -u kassie -H /opt/homebrew/bin/brew …`,
@@ -462,7 +468,12 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   App Store auto-update.
   Remote Login and Screen Sharing stay as set in System Settings → General →
   Sharing (both off on `kassie-mbp-m1` — the 2026-11-12 audit reports
-  `remote_login: false`).
+  `remote_login: false`). nix-darwin also creates no SSH host keys and links
+  no `/etc/ssh/sshd_config.d/*` drop-in here: by default it does both even
+  with `services.openssh.enable` unset (the role sets
+  `services.openssh.hostKeys = [ ]`; the keys a first activation already
+  generated on `kassie-mbp-m1` stay, unused while Remote Login is off).
+  `scripts/ci/check-household-compinit-sshd.sh` pins both.
 - **Adopt, don't add.** The host file declares only casks for apps already in
   `/Applications` (exact cask, not deprecated-and-disabled). Keep crypto
   wallets, licensed vendor installers (Adobe/Maxon) and Tailscale manual, and

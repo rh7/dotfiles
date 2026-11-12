@@ -435,6 +435,16 @@ done
 if [[ -n "$unresolved_casks" ]]; then
   note "brew info failed for:$unresolved_casks — their apps cannot be matched, so"
   note "  they may be listed below as unmanaged. Check: ${BREW_CMD:-brew} info --cask <name>"
+  # The usual cause: Homebrew belongs to another account (household Macs:
+  # system.primaryUser) and nothing ran it as that account — this audit run
+  # by hand, or by a rebuild.sh older than #125.
+  brew_bin=$(command -v brew 2>/dev/null || true)
+  brew_owner=""
+  [[ -n "$brew_bin" ]] && brew_owner=$(stat -f %Su "$(dirname "$(dirname "$brew_bin")")" 2>/dev/null || true)
+  if [[ -z "${BREW_CMD:-}" && -n "$brew_owner" && "$brew_owner" != "$(id -un)" ]]; then
+    note "  Homebrew here belongs to $brew_owner, not to you — run it as $brew_owner:"
+    note "    BREW_CMD=\"sudo -u $brew_owner -H $brew_bin\" $0 $HOST   (or just rebuild.sh)"
+  fi
 fi
 
 # Add MAS-installed apps (declared OR Apple stock — both are "expected" on this machine).
