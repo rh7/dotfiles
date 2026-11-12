@@ -497,7 +497,7 @@ declared_outdated_mas() {
   if ! "$mas_bin" outdated 2>/dev/null | awk '{print $1}' >"$MAS_TMP/outdated"; then
     return 1   # dir left for the EXIT trap, which can now see it
   fi
-  if ! declared_mas_ids "$FLAKE_REF" >"$MAS_TMP/declared"; then
+  if ! declared_mas_ids "$(host_flake_ref)" >"$MAS_TMP/declared"; then
     return 1
   fi
 
@@ -583,19 +583,19 @@ cask_app_targets() {
 cask_lifecycle_plan() {
   local declared_known="${1:-true}" managed_rc=0
   ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
-  homebrew_managed "$FLAKE_REF" || managed_rc=$?
+  homebrew_managed "$(host_flake_ref)" || managed_rc=$?
   if [[ $managed_rc -eq 1 ]]; then
     info "homebrew.enable = false for this host — no casks replaced or removed"
     return 0
   elif [[ $managed_rc -ne 0 ]]; then
-    homebrew_enable_failed "$FLAKE_REF"
+    homebrew_enable_failed "$(host_flake_ref)"
   fi
   if ! brew list --cask -1 >"$PLAN_TMP/installed_casks" 2>/dev/null; then
     warn "'brew list --cask' failed — install/replace/remove plan unavailable"
     return 0
   fi
 
-  if retired_cask_names "$FLAKE_REF" >"$PLAN_TMP/retired_casks"; then
+  if retired_cask_names "$(host_flake_ref)" >"$PLAN_TMP/retired_casks"; then
     RETIRE_CASKS=$(intersect_lines "$PLAN_TMP/installed_casks" "$PLAN_TMP/retired_casks" | xargs)
   else
     warn "Could not evaluate dotfiles.homebrew.retiredCasks — nothing will be removed"
@@ -742,7 +742,7 @@ load_critical_names() {
   CRITICAL_LOADED=true
   ensure_declared_lib
   local names
-  if names=$(critical_upgrade_names "$FLAKE_REF"); then
+  if names=$(critical_upgrade_names "$(host_flake_ref)"); then
     CRITICAL_NAMES="$names"
     CRITICAL_KNOWN=true
   else
@@ -838,11 +838,11 @@ homebrew_plan() {
   # Casks are evaluated even when the inventory failed: the cask lifecycle plan
   # below needs them and does not depend on `brew outdated`.
   declared_casks_known=false
-  if declared_brew_names casks "$FLAKE_REF" >"$PLAN_TMP/declared_casks"; then
+  if declared_brew_names casks "$(host_flake_ref)" >"$PLAN_TMP/declared_casks"; then
     declared_casks_known=true
   fi
   if $plan_known; then
-    if ! declared_brew_names brews "$FLAKE_REF" >"$PLAN_TMP/declared_formulae"; then
+    if ! declared_brew_names brews "$(host_flake_ref)" >"$PLAN_TMP/declared_formulae"; then
       warn "Could not evaluate homebrew.brews for $FLAKE_REF"
       plan_known=false
     elif ! $declared_casks_known; then

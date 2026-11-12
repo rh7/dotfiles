@@ -30,8 +30,9 @@ APP_MGMT_PANE="x-test:pane"
 source "$ROOT/lib/declared-packages.sh"
 # shellcheck disable=SC1090
 eval "$(sed -n '/^app_bundle_modifiable() {/,/^}/p; /^cask_app_targets() {/,/^}/p;
-               /^cask_lifecycle_plan() {/,/^}/p; /^ensure_app_management() {/,/^}/p' "$SCRIPT")"
-for f in app_bundle_modifiable cask_app_targets cask_lifecycle_plan ensure_app_management; do
+               /^cask_lifecycle_plan() {/,/^}/p; /^ensure_app_management() {/,/^}/p;
+               /^host_flake_ref() {/,/^}/p' "$SCRIPT")"
+for f in app_bundle_modifiable cask_app_targets cask_lifecycle_plan ensure_app_management host_flake_ref; do
   if ! declare -F "$f" >/dev/null; then
     echo "FATAL: could not extract $f from $SCRIPT" >&2
     exit 1
