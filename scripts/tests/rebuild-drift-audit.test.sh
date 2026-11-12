@@ -33,7 +33,9 @@ grep -q 'DRIFT_RESULT' "$BLOCK" || {
 
 # Harness: run the extracted block under the same shell options rebuild.sh uses,
 # against a stub audit that emits $STUB_OUT and exits $STUB_RC.
-# Echoes the block's own exit status as the last line of output.
+# Echoes the block's own exit status as the last line of output. $BLOCK_PRE
+# (optional) is evaluated before the block; the stub records the BREW_CMD it
+# was given in $TEST_ROOT/brew_cmd.
 run_block() {
   local os="$1" stub_rc="$2" stub_out="$3" auto_confirm="${4:-true}"
   local fake="$TEST_ROOT/fake-dotfiles"
@@ -45,19 +47,21 @@ $stub_out
 PAYLOAD
 )"
 [ -n "$stub_out" ] && echo
+echo "\${BREW_CMD-unset}" > "$TEST_ROOT/brew_cmd"
 exit $stub_rc
 STUB
   chmod +x "$fake/scripts/audit-config-drift.sh"
 
   env -i PATH="$PATH" HOME="$TEST_ROOT" \
     OS="$os" DOTFILES_DIR="$fake" FLAKE_REF="$fake#testhost" \
-    AUTO_CONFIRM="$auto_confirm" BLOCK="$BLOCK" \
+    AUTO_CONFIRM="$auto_confirm" BLOCK="$BLOCK" BLOCK_PRE="${BLOCK_PRE:-}" \
     bash -c '
       set -euo pipefail
       BOLD=""; NC=""
       info()  { echo "[INFO]  $*"; }
       warn()  { echo "[WARN]  $*"; }
       err()   { echo "[ERROR] $*" >&2; }
+      eval "$BLOCK_PRE"
       # shellcheck disable=SC1090
       source "$BLOCK"
       echo "BLOCK_RC:0"
@@ -145,6 +149,41 @@ case "$out" in
   *)
     echo "  ok   — Linux does not run the macOS-only audit"; pass=$((pass+1)) ;;
 esac
+
+echo ""
+echo "drift audit — Homebrew owned by system.primaryUser"
+
+# kassie-mbp-m1: the audit is a child process, so rebuild.sh's brew() wrapper
+# never reached it and its `brew info` ran as the invoker — 25 declared apps
+# read as unmanaged. The block hands the owner's invocation over as BREW_CMD,
+# inside the run's one authentication.
+XUSER='BREW_AS_PRIMARY=true; PRIMARY_USER=kassie; BREW_BIN=/opt/homebrew/bin/brew
+  SUDO_AUTHENTICATED=false
+  authenticate_once() { echo "AUTH_ONCE"; SUDO_AUTHENTICATED=true; }'
+NO_CRED='sudo() { echo "SUDO $*"; return 1; }'
+CRED='sudo() { echo "SUDO $*"; return 0; }'
+out=$(BLOCK_PRE="$XUSER; $NO_CRED; BUILD_ONLY=false" run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
+check "cross-user: audit runs Homebrew as the primary user" "$(cat "$TEST_ROOT/brew_cmd")" \
+  "sudo -n -u kassie -H /opt/homebrew/bin/brew"
+check_contains "cross-user: the run's one authentication comes first" "$out" "AUTH_ONCE"
+check "cross-user: proceeds" "$(rc_of "$out")" "0"
+
+# --build-only authenticates for nothing. Without a cached credential a
+# `sudo -n` BREW_CMD would fail every brew call — every declared cask would
+# read as missing — so the audit runs Homebrew as the invoker instead.
+out=$(BLOCK_PRE="$XUSER; $NO_CRED; BUILD_ONLY=true" run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
+check "cross-user --build-only, no credential: brew as the invoker" "$(cat "$TEST_ROOT/brew_cmd")" ""
+check_contains "cross-user --build-only, no credential: says so" "$out" "runs Homebrew as you"
+case "$out" in
+  *AUTH_ONCE*) echo "  FAIL — --build-only must not authenticate for the audit"; fail=$((fail+1)) ;;
+  *) echo "  ok   — --build-only does not authenticate for the audit"; pass=$((pass+1)) ;;
+esac
+out=$(BLOCK_PRE="$XUSER; $CRED; BUILD_ONLY=true" run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
+check "cross-user --build-only, cached credential: as the primary user" "$(cat "$TEST_ROOT/brew_cmd")" \
+  "sudo -n -u kassie -H /opt/homebrew/bin/brew"
+
+out=$(BLOCK_PRE='export BREW_CMD="stale from env"' run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
+check "same user: plain brew (an inherited BREW_CMD is cleared)" "$(cat "$TEST_ROOT/brew_cmd")" ""
 
 echo ""
 if [ "$fail" -gt 0 ]; then

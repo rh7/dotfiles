@@ -175,6 +175,9 @@ be built from a stale or half-edited checkout while every audit reports it
 compliant. To test a branch on one machine deliberately, pass
 `--allow-unmerged` (it warns loudly). Before that PR merges, `rebuild.sh` only
 runs `git pull --ff-only` on a clean tree and builds whatever is checked out.
+When the sync changes `rebuild.sh` itself, the run restarts the updated script
+(same arguments, same log, once) before anything is authenticated or changed,
+so a fix pulled by the sync applies to that same run.
 
 **`nrs-raw` skips all of that** and switches directly. Reach for it only when
 `rebuild.sh` is itself the thing that is broken.
