@@ -153,6 +153,14 @@ if $BUILD_ONLY && $PLAN_ONLY; then
   exit 1
 fi
 
+# A fragmentless --flake (`path`, `path#`) means this host. Pinned once, here,
+# so the Homebrew plan's evaluations and the build/switch target the same
+# configuration (darwin-rebuild would otherwise pick LocalHostName, which can
+# differ from `hostname -s`).
+if [[ "$FLAKE_REF" != *#* || "$FLAKE_REF" == *# ]]; then
+  FLAKE_REF="${FLAKE_REF%#}#${HOSTNAME}"
+fi
+
 # ── Log file ──
 # Mirror full output to ~/.local/state/dotfiles/rebuild/ so failures from brew
 # bundle / activation can be grepped after the fact. Keeps last 20 per host.
