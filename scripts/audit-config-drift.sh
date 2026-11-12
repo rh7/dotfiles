@@ -239,6 +239,21 @@ if [[ "$ACTION" == "diff" ]]; then
   exit 1
 fi
 
+# A crash is an error (2), never "drift" (1). Under `set -euo pipefail` bash
+# exits 1 on any failure — the code that means "drift detected" — so a crash
+# halfway through used to reach rebuild.sh as drift with no DRIFT_RESULT line,
+# which it then reported as "0 items pending". Only the complete audit below
+# (summary printed) may exit 0/1.
+AUDIT_COMPLETE=false
+audit_exit_guard() {
+  local rc=$?
+  if ! $AUDIT_COMPLETE && [[ $rc -ne 2 ]]; then
+    trap - EXIT
+    fail "audit aborted before completing (exit $rc) — drift is unknown, not zero"
+  fi
+}
+trap audit_exit_guard EXIT
+
 $JSON_OUTPUT || echo "Auditing $HOST against $FLAKE_DIR ..."
 
 # ── Dock drift ────────────────────────────────────────────────────────
@@ -297,16 +312,22 @@ fi
 APPLE_STOCK_MAS_IDS="408981434 409183694 409201541 409203825 682658836"
 
 # Casks that install via .pkg and don't expose a parseable .app artifact.
-# Map cask-name -> known .app filename so we can account for them in /Applications.
-declare -A PKG_CASK_APPS=(
-  [tailscale-app]="Tailscale.app"
-  [zoom]="zoom.us.app"
-  [gpg-suite-no-mail]="GPG Keychain.app"
-  [microsoft-excel]="Microsoft Excel.app"
-  [microsoft-word]="Microsoft Word.app"
-  [microsoft-powerpoint]="Microsoft PowerPoint.app"
-  [microsoft-teams]="Microsoft Teams.app"
-)
+# Maps cask name -> known .app filename so we can account for them in
+# /Applications. A `case`, not `declare -A`: on a Mac without a Nix bash this
+# runs under macOS's /bin/bash 3.2, which has no associative arrays — the
+# `[tailscale-app]=` subscript was evaluated as arithmetic and died with
+# "tailscale: unbound variable" (first adoption of kassie-mbp-m1).
+pkg_cask_app() {
+  case "$1" in
+    tailscale-app)        echo "Tailscale.app" ;;
+    zoom)                 echo "zoom.us.app" ;;
+    gpg-suite-no-mail)    echo "GPG Keychain.app" ;;
+    microsoft-excel)      echo "Microsoft Excel.app" ;;
+    microsoft-word)       echo "Microsoft Word.app" ;;
+    microsoft-powerpoint) echo "Microsoft PowerPoint.app" ;;
+    microsoft-teams)      echo "Microsoft Teams.app" ;;
+  esac
+}
 
 # Apps that must be installed manually (cask can't run non-interactively, etc.)
 # but are still "expected" — keep them out of the orphan-app warning.
@@ -369,8 +390,9 @@ for c in $declared_casks; do
            }')
   expected_apps+=$'\n'"$apps"
   # Manual override for Pkg-based casks.
-  if [[ -n "${PKG_CASK_APPS[$c]:-}" ]]; then
-    expected_apps+=$'\n'"${PKG_CASK_APPS[$c]}"
+  pkg_app=$(pkg_cask_app "$c")
+  if [[ -n "$pkg_app" ]]; then
+    expected_apps+=$'\n'"$pkg_app"
   fi
 done
 
@@ -457,6 +479,7 @@ if $JSON_OUTPUT; then
 else
   echo "DRIFT_RESULT: risky=$RISKY benign=$BENIGN informational=$INFORMATIONAL"
 fi
+AUDIT_COMPLETE=true
 
 if [[ $DRIFT -eq 0 ]]; then
   $JSON_OUTPUT || printf "\033[1;32mNo drift detected.\033[0m\n"

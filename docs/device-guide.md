@@ -438,6 +438,13 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   `*.before-nix-darwin`) so nix is on PATH. The role keeps macOS's prompt
   (`%n@%m %1~ %#`) and the Terminal.app integration; zsh history becomes
   2000/2000 and shared across sessions unless `~/.zshrc` sets its own.
+- **`brew` from another account.** Homebrew belongs to the primary user, so
+  `/etc/zshrc` and `/etc/bashrc` define `brew` for every other account: an
+  **admin** runs it as her (`sudo -u kassie -H /opt/homebrew/bin/brew …`,
+  from `/`, one Touch ID); a non-admin gets "Homebrew on this Mac is managed
+  by kassie; ask an admin". Kassie's own `brew` is untouched. Built from the
+  evaluated `system.primaryUser` and `homebrew.prefix`; household role only
+  (`scripts/ci/check-household-brew-shim.sh` pins both).
 - **Other accounts** (the maintainer's) get **nothing per-user**. Everybody
   sees the system-wide effects: declared apps in `/Applications`, the
   firewall (signed apps allowed automatically — no "accept incoming network
@@ -461,56 +468,59 @@ Done from the **owner's admin account** (`rouven`), in a **GUI session** at
 the Mac — Kassie does not need to be there. `rebuild.sh` evaluates
 `system.primaryUser` (`kassie`); because it differs from you, it runs **every
 Homebrew command** — plan, replacing hand-installed apps, upgrades, retired
-casks — as her (`sudo -u kassie -H`), inside the run's **one** Touch ID. Before
-anything else it checks that everything under `/opt/homebrew` is hers (a few
-seconds) and stops with the exact `chown` if not. The same-user path (you
-rebuilding your own Mac) is unchanged.
+casks — as her (`sudo -u kassie -H`), inside the run's **one** Touch ID. The
+same-user path (you rebuilding your own Mac) is unchanged.
+
+**What `rebuild.sh` will ask you** on a fresh Mac — each a single `[y/N]`
+question (default No; `--yes` never answers them), each fixed inside the
+run's one Touch ID, all **before** the plan, the build and any app
+replacement. Say No and it stops with the exact manual command instead;
+`--plan-only` only lists them as "will fix".
+
+- **Enable flakes?** — the official installer leaves `nix-command`/`flakes`
+  off and nothing turns them on for a Mac (`nix.enable = false`). It appends
+  `extra-experimental-features = nix-command flakes` to `/etc/nix/nix.conf`
+  (adds to any existing feature list, never replaces it) and restarts
+  `nix-daemon` — only if that file does not already set that key (then it
+  stops: edit that line by hand).
+- **Hand Homebrew to kassie?** — when anything under `/opt/homebrew` is not
+  hers it shows the owner and how many paths, then runs
+  `chown -R kassie:admin /opt/homebrew`. From then on other accounts run
+  Homebrew as her (the `brew` function above does it for admins).
+- **Move the /etc shell files aside?** — nix-darwin aborts activation with
+  "Unexpected files in /etc" on a file whose checksum it does not know. If
+  `/etc/bashrc`/`/etc/zshrc` are the stock macOS file plus only the Nix
+  installer's `# Nix … # End Nix` block (checked against nix-darwin's own
+  known stock checksums), it shows that block and moves each to
+  `<file>.before-nix-darwin` right after you confirm the switch. Anything
+  else in them — or an existing `.before-nix-darwin` (overwrite with
+  `--force`) — stops the run up front with the unexpected lines.
 
 1. **Ask Kassie to log out** (best) or at least quit her apps. The declared
    apps are replaced while they may be open in her session.
-2. **Prerequisites:**
+2. **Prerequisite:** she must be an admin (casks write `/Applications`):
 
    ```bash
-   dseditgroup -o checkmember -m kassie admin   # she must be an admin (casks write /Applications)
-   ls -ld /opt/homebrew                         # must be owned by kassie
+   dseditgroup -o checkmember -m kassie admin
    ```
 
 3. **Install Nix** with the official installer, from your GUI session (a
    headless/SSH-only session cannot create the Nix APFS volume) — NOT
    `setup.sh`, which turns Remote Login on and does a raw `darwin-rebuild`.
+   Open a new terminal afterwards.
 
    ```bash
    sh <(curl -L https://nixos.org/nix/install) --daemon
    ```
 
-   Then **enable flakes** — the official installer leaves `nix-command` and
-   `flakes` off, and nothing else turns them on for a Mac (the darwin config
-   sets `nix.enable = false`, so nix-darwin never writes `/etc/nix/nix.conf`).
-   `rebuild.sh` stops with this exact command if you skip it. Open a new
-   terminal afterwards.
-
-   ```bash
-   echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf \
-     && sudo launchctl kickstart -k system/org.nixos.nix-daemon
-   ```
-
-4. **Hand Homebrew to Kassie** (skip if `ls -ld /opt/homebrew` already shows
-   `kassie`):
-
-   ```bash
-   sudo chown -R kassie:admin /opt/homebrew
-   ```
-
-   From now on every other account runs Homebrew as her:
-   `sudo -u kassie brew …`.
-5. **Clone dotfiles into your own home:**
+4. **Clone dotfiles into your own home:**
 
    ```bash
    git clone https://github.com/rh7/dotfiles.git ~/dotfiles
    cd ~/dotfiles
    ```
 
-6. **Preview** — one Touch ID (Homebrew runs as kassie), then the plan: the
+5. **Preview** — one Touch ID (Homebrew runs as kassie), then the plan: the
    apps it will REPLACE (with a "Quit these first" list if any is running in
    her session), what it would install, upgrade or uninstall. Nothing is
    built, activated or upgraded.
@@ -522,18 +532,20 @@ rebuilding your own Mac) is unchanged.
    No `jq` on the Mac is fine: `rebuild.sh` takes it from `nix shell
    nixpkgs#jq` for the run. If App Management blocks a replacement, it opens
    the Settings page and tells you which app (your terminal) to allow.
-7. **Adopt** — build, show the changes, confirm, one Touch ID for everything
-   (replace hand-installed apps → activate → upgrades):
+6. **Adopt** — the questions above, build, show the changes, confirm, one
+   Touch ID for everything (move /etc files → replace hand-installed apps →
+   activate → upgrades):
 
    ```bash
    ./scripts/rebuild.sh
    ```
 
-8. **Verify:**
+7. **Verify:**
 
    ```bash
    darwin-version --configuration-revision            # = git rev-parse origin/main
    sudo -u kassie brew list --cask                    # the host file's casks
+   type brew                                          # (new terminal, your account) brew is a function → sudo -u kassie
    stat -f '%Su %N' /Applications/Firefox.app         # kassie (a replaced app)
    /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate   # enabled
    /usr/libexec/ApplicationFirewall/socketfilterfw --getallowsigned   # built-in + downloaded signed: ENABLED

@@ -156,6 +156,18 @@ confirmation before activation. It also holds a single sudo authentication open
 for the whole run, so `brew bundle`'s root-requiring casks reuse it rather than
 re-prompting once per cask — see `modules/darwin/sudo-rebuild.nix`.
 
+**First run on a fresh Mac.** Before the plan and the build, `rebuild.sh`
+checks the three things a freshly-Nix-installed Mac gets wrong and offers to fix
+each after one `[y/N]` question (default No; never answered by `--yes`), inside
+the run's single authentication: flakes off (append to `/etc/nix/nix.conf`,
+restart `nix-daemon`), a Homebrew prefix not owned by `system.primaryUser`
+(`chown -R`), and `/etc/bashrc`/`/etc/zshrc` that are stock macOS plus only the
+Nix installer block (moved to `*.before-nix-darwin` before any app is replaced,
+so nix-darwin's "Unexpected files in /etc" cannot fail activation halfway).
+Anything it does not recognise stops the run with the exact manual step;
+`--plan-only` just lists them. See the
+[household adoption guide](docs/device-guide.md#adopt-kassie-mbp-m1-from-the-owners-account).
+
 **Only merged config gets activated.** With `fix/312-rebuild-merged-only`,
 `rebuild.sh` fetches and refuses to activate unless `~/dotfiles` is on `main`,
 has a clean tracked tree, and `HEAD == origin/main` — so a machine can no longer

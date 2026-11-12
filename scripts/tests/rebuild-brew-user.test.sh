@@ -33,6 +33,7 @@ W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
 FNS="setup_brew_user host_flake_ref eval_failed eval_primary_user homebrew_enable_failed require_nix_features
+     ask_fix nix_missing_features restart_nix_daemon nix_conf_append
      brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary
      authenticate_once ensure_jq ensure_declared_lib homebrew_plan cask_lifecycle_plan
      cask_app_targets app_bundle_modifiable declared_outdated_mas select_by_mode
@@ -135,7 +136,12 @@ DOTFILES_DIR="$ROOT/.."
 FLAKE_REF="/flake#host"
 HOSTNAME=thishost
 UPGRADE_MODE=all
-AUTO_CONFIRM=false; FORCE_MAS=false
+AUTO_CONFIRM=false; FORCE_MAS=false; PLAN_ONLY=false; BUILD_ONLY=false; FORCE=false
+# No answer file: every first-adoption question reads EOF, i.e. No (the
+# accept paths are covered by rebuild-first-adoption.test.sh).
+PROMPT_TTY=/dev/null
+NIX_CONF="$W/nix.conf"
+$(grep -E '^FLAKES_LINE=' "$SCRIPT")
 REBUILD_MAS_BIN=/nonexistent/mas
 PLAN_TMP=""; MAS_TMP=""; SUDO_TOUCHED=false; SUDO_KEEPALIVE_PID=""
 PRIMARY_USER=""; BREW_AS_PRIMARY=false; BREW_BIN=""; SUDO_AUTHENTICATED=false
@@ -229,7 +235,7 @@ check "features on: rc 0" "$(cat "$W/rc")" 0
 grep -q PASSED "$W/out" && good "features on: continues" || bad "features on: continues" "$(cat "$W/out")"
 NOCMD=1 run_case 'require_nix_features; setup_brew_user; echo "REACHED"'
 check "nix-command off: stops (rc 1)" "$(cat "$W/rc")" 1
-grep -qF "echo 'experimental-features = nix-command flakes' | sudo tee -a /etc/nix/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon" "$W/out" \
+grep -qF "echo 'extra-experimental-features = nix-command flakes' | sudo tee -a $W/nix.conf && sudo launchctl kickstart -k system/org.nixos.nix-daemon" "$W/out" \
   && good "nix-command off: prints the exact macOS fix" || bad "nix-command off: prints the exact macOS fix" "$(cat "$W/out")"
 grep -q REACHED "$W/out" && bad "nix-command off: nothing after the check runs" "$(cat "$W/out")" \
   || good "nix-command off: nothing after the check runs"
