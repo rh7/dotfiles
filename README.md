@@ -322,7 +322,7 @@ once per app (each native app has its own cookie jar).
 See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, including:
 - Setting up a **brand new** device (`scripts/setup.sh`)
 - **Before migrating an existing Mac** — the checklist
-- Onboarding an **existing** device (audit first, then rebuild)
+- **Adopting an existing Mac in one command** (`scripts/adopt.sh` on the Mac; `scripts/new-host.sh` on an owner machine generates its flake entry from its audit)
 - **Fixing dashboard issues on a device** (`scripts/fleet-fix.sh`, dry-run by default)
 - Secrets onboarding (age key → `sops-add-host.sh` on an existing recipient)
 - **Restic backups** of the policy folders to the Studio (`rh7-restic-backup`, pilot: rouven-m5-pro), plus the folders the owner approved on the dashboard
@@ -337,6 +337,8 @@ See **[docs/device-guide.md](docs/device-guide.md)** for the full guide, includi
 ./scripts/rebuild.sh               # rebuild (= nrs)
 ./scripts/device secrets           # setup-secrets.sh — only after fix/310-sops-onboarding merges
 ./scripts/collector-runner.sh --install   # daily audit on any host without com.rh7.collector-runner
+curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/adopt.sh | bash   # adopt this Mac (--dry-run first)
+./scripts/new-host.sh <host> --role household --user <daily-user>   # owner: flake entry from the audit (--apply = PR)
 curl -fsSL https://config.rh7labs.com/enroll | bash   # enrol a device without a dotfiles clone
 ./scripts/fleet-fix.sh doctor      # this device's dashboard issues -> fix ids + plans; <fix-id> [--apply] to fix
 rh7-restic-backup status           # restic backup (resticBackup hosts): setup | run | status | snapshots | restore-hint
