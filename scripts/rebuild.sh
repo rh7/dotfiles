@@ -1502,7 +1502,9 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
   # `brew info` as the invoker failed — every declared app read as unmanaged.
   # Its sudo -n needs the run's one authentication, so that moves up to here
   # (the plan would take it next anyway). --build-only authenticates for
-  # nothing; there the audit reports the casks it could not resolve.
+  # nothing: without a cached credential its audit runs Homebrew as you —
+  # `brew list` still works from any account, and the casks whose apps
+  # `brew info` cannot resolve are reported as such.
   audit_brew_cmd=""
   if ${BREW_AS_PRIMARY:-false}; then
     if ! ${BUILD_ONLY:-false}; then
@@ -1510,7 +1512,11 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
       info "  (this one authentication also covers the plan and the activation later)."
       authenticate_once ""
     fi
-    audit_brew_cmd="sudo -n -u $PRIMARY_USER -H $BREW_BIN"
+    if ${SUDO_AUTHENTICATED:-false} || sudo -n true 2>/dev/null; then
+      audit_brew_cmd="sudo -n -u $PRIMARY_USER -H $BREW_BIN"
+    else
+      info "--build-only takes no authentication: the drift audit runs Homebrew as you, not $PRIMARY_USER."
+    fi
   fi
   BREW_CMD="$audit_brew_cmd" "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" 2>&1 \
     | tee "$audit_log" || audit_rc=${PIPESTATUS[0]}

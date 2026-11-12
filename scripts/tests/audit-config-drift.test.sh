@@ -156,6 +156,16 @@ for sh in "${shells[@]}"; do
   n=$(grep -c '^brew\[invoker\]' "$W/xlog" || true)
   [[ "$n" == 0 ]] && good "BREW_CMD: every brew call (list and info) ran as kassie" \
     || bad "BREW_CMD: every brew call ran as kassie" "$(cat "$W/xlog")"
+
+  # BREW_CMD that cannot run at all (sudo -n without a credential): cask
+  # drift is unknown — never "every declared cask missing".
+  run_xuser "$sh" "false"
+  grep -q 'cask drift is unknown' "$W/out" && good "unlistable: cask drift reported unknown" \
+    || bad "unlistable: cask drift reported unknown" "$(cat "$W/out")"
+  grep -q 'declared, not installed' "$W/out" && bad "unlistable: nothing reported missing" "$(cat "$W/out")" \
+    || good "unlistable: nothing reported missing"
+  grep -q 'all casks match' "$W/out" && bad "unlistable: not 'all casks match'" "$(cat "$W/out")" \
+    || good "unlistable: not 'all casks match'"
 done
 
 echo ""
