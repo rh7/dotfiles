@@ -44,7 +44,7 @@ with_marker() {
 g() { git -c user.name=t -c user.email=t@example.invalid -c init.defaultBranch=main "$@"; }
 
 # setup <case> — origin + checkout at v1 on main; origin/main one commit ahead.
-# <what> decides what that commit changes: script | other.
+# <what> decides what that commit changes: script | other | delete | none.
 setup() {
   local d="$W/$1" what="$2"
   mkdir -p "$d"
@@ -58,6 +58,7 @@ setup() {
   case "$what" in
     script) with_marker v2 >"$d/dot/scripts/rebuild.sh" ;;
     other)  echo two >"$d/dot/README" ;;
+    delete) g -C "$d/dot" rm -q scripts/rebuild.sh ;;
     none)   return 0 ;;
   esac
   g -C "$d/dot" commit -qam v2 && g -C "$d/dot" push -q origin HEAD:main
@@ -121,6 +122,15 @@ check "changed again after a re-exec: exit 1" "$(cat "$W/e/rc")" 1
 check "changed again after a re-exec: no second restart" "$(count e 'restarting')" 0
 check "changed again after a re-exec: nothing runs on" "$(count e 'MARKER')" 0
 grep -q 'changed again' "$W/e/out" && good "says why" || bad "says why" "$(cat "$W/e/out")"
+
+echo ""
+echo "sync removes rebuild.sh"
+setup f delete
+run f -- --build-only
+check "gone after the sync: exit 1" "$(cat "$W/f/rc")" 1
+check "gone after the sync: the stale version does not continue" "$(count f 'MARKER')" 0
+grep -q 'gone or unreadable after the checkout sync' "$W/f/out" && good "gone after the sync: says why" \
+  || bad "gone after the sync: says why" "$(cat "$W/f/out")"
 
 echo ""
 echo "structure"

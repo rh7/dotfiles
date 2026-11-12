@@ -1429,7 +1429,12 @@ fi
 # exec loses nothing and the run still authenticates once. --allow-unmerged
 # never touches the checkout, so it re-execs only if the file really changed.
 # Once per run: a second change means origin moved mid-run — stop, not loop.
-if [[ -n "$SELF" ]] && new_sum=$(cksum <"$SELF" 2>/dev/null) && [[ "$new_sum" != "$SELF_SUM" ]]; then
+# A script the sync removed or made unreadable is not "unchanged": stop too.
+if [[ -n "$SELF" ]] && ! new_sum=$(cksum 2>/dev/null <"$SELF"); then
+  err "rebuild.sh ($SELF) is gone or unreadable after the checkout sync. Nothing was built or changed."
+  exit 1
+fi
+if [[ -n "$SELF" && "$new_sum" != "$SELF_SUM" ]]; then
   if [[ -n "$REEXECED" ]]; then
     err "rebuild.sh changed again during this run's checkout sync. Nothing was built or changed — re-run it."
     exit 1

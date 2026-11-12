@@ -307,23 +307,18 @@ fi
 heading "Homebrew casks"
 declared_casks=$(eval_casks | sort -u)
 # A Homebrew that is there but cannot be listed (e.g. BREW_CMD's sudo had no
-# credential) makes cask drift UNKNOWN — not "every declared cask missing".
+# credential) makes the drift UNKNOWN — an error (exit 2), never "every
+# declared cask missing" nor a clean result with this section skipped.
 # No Homebrew at all is a real answer: nothing is installed yet.
-casks_known=true
 if [[ -z "${BREW_CMD:-}" ]] && ! command -v brew >/dev/null 2>&1; then
   installed_casks=""
 elif ! installed_casks=$(brew list --cask 2>/dev/null); then
-  installed_casks=""; casks_known=false
+  fail "could not list installed casks (${BREW_CMD:-brew} list --cask failed) — drift is unknown"
 fi
 installed_casks=$(sort -u <<<"$installed_casks")
 
-orphan=""; missing=""
-if $casks_known; then
-  orphan=$(comm -23 <(echo "$installed_casks") <(echo "$declared_casks"))
-  missing=$(comm -13 <(echo "$installed_casks") <(echo "$declared_casks"))
-else
-  note "could not list installed casks (${BREW_CMD:-brew} list --cask failed) — cask drift is unknown"
-fi
+orphan=$(comm -23 <(echo "$installed_casks") <(echo "$declared_casks"))
+missing=$(comm -13 <(echo "$installed_casks") <(echo "$declared_casks"))
 cleanup_mode=$(eval_str "homebrew.onActivation.cleanup")
 # Retired casks are declared state too ("must be absent"): rebuild.sh uninstalls
 # them, so a still-installed one is pending, not merely preserved.
@@ -340,7 +335,7 @@ if [[ -n "$orphan" ]]; then
   done <<<"$orphan"
 fi
 [[ -n "$missing" ]] && while read -r c; do sub "$c (declared, not installed)"; done <<<"$missing"
-[[ -z "$orphan$missing" ]] && $casks_known && ok "all casks match"
+[[ -z "$orphan$missing" ]] && ok "all casks match"
 
 # Apple stock MAS apps that ship pre-bundled and re-appear after install.
 # These show up in `mas list` but aren't worth flagging as drift.

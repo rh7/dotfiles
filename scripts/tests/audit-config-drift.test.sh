@@ -135,6 +135,7 @@ run_xuser() { # run_xuser <bash> [BREW_CMD]
   ( env PATH="$W/xuser:$W/stubs:/usr/bin:/bin" HOME="$W" XDG_CACHE_HOME="$W/cache" \
       DOTFILES="$W/flake" DRIFT_APPS_DIR="$W/apps" STUB_LOG="$W/xlog" BREW_CMD="${2:-}" \
       "$1" "$AUDIT" kassie-mbp-m1 >"$W/out" 2>&1 )
+  echo $? >"$W/rc"
 }
 for sh in "${shells[@]}"; do
   echo ""
@@ -157,15 +158,16 @@ for sh in "${shells[@]}"; do
   [[ "$n" == 0 ]] && good "BREW_CMD: every brew call (list and info) ran as kassie" \
     || bad "BREW_CMD: every brew call ran as kassie" "$(cat "$W/xlog")"
 
-  # BREW_CMD that cannot run at all (sudo -n without a credential): cask
-  # drift is unknown — never "every declared cask missing".
+  # BREW_CMD that cannot run at all (sudo -n without a credential): the drift
+  # is unknown — an error, never "every declared cask missing" or clean.
   run_xuser "$sh" "false"
-  grep -q 'cask drift is unknown' "$W/out" && good "unlistable: cask drift reported unknown" \
-    || bad "unlistable: cask drift reported unknown" "$(cat "$W/out")"
+  [[ "$(cat "$W/rc")" == 2 ]] && good "unlistable: exit 2 (error)" || bad "unlistable: exit 2 (error)" "exit $(cat "$W/rc")"
+  grep -q 'could not list installed casks' "$W/out" && good "unlistable: says why" \
+    || bad "unlistable: says why" "$(cat "$W/out")"
   grep -q 'declared, not installed' "$W/out" && bad "unlistable: nothing reported missing" "$(cat "$W/out")" \
     || good "unlistable: nothing reported missing"
-  grep -q 'all casks match' "$W/out" && bad "unlistable: not 'all casks match'" "$(cat "$W/out")" \
-    || good "unlistable: not 'all casks match'"
+  grep -q '^DRIFT_RESULT:' "$W/out" && bad "unlistable: no summary line" "$(cat "$W/out")" \
+    || good "unlistable: no summary line"
 done
 
 echo ""
