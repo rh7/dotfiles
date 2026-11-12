@@ -2,7 +2,7 @@
 
 {
   # ── macOS Software Update policy — CLIENT Macs only ─────────────────────────
-  # Imported by the workstation-mac and personal-mac roles, NOT fleet-member-mac:
+  # Imported by the workstation-mac, personal-mac and household-mac roles, NOT fleet-member-mac:
   # the Mac Studio is the control plane (config service, inference stack), and an
   # OS install there is a scheduled, attended event, never a background one.
   #

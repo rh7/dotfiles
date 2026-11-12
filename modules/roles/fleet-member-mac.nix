@@ -25,6 +25,9 @@
   #   - zsh/session config (~/.zshrc is a store symlink);
   #   - sops-nix secrets wiring (via needsSecrets in mkMac);
   #   - the fleet-audit schedule (imported by mkMac for every Mac in flake.nix).
+  #   - Remote Login + Screen Sharing (remote-access.nix) and the maintainer's
+  #     Dock/Finder/keyboard user defaults (workstation-defaults.nix) — both
+  #     were in the global defaults.nix before it was split; imported below.
   #
   # What it deliberately DROPS, and who owns it instead:
   #   - Homebrew casks/brews/taps + activation-time upgrades → brew is
@@ -38,4 +41,9 @@
   # NOTE: mkMac imports modules/darwin/homebrew.nix unconditionally, so the
   # disable must be forced here rather than by omitting an import.
   homebrew.enable = lib.mkForce false;
+
+  imports = [
+    ../darwin/remote-access.nix      # Remote Login + Screen Sharing (reached over SSH)
+    ../darwin/workstation-defaults.nix  # opinionated Dock/Finder/keyboard user defaults
+  ];
 }

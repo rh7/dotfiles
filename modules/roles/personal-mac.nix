@@ -10,6 +10,10 @@
     ../darwin/profiles/media.nix
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
     ../darwin/software-update.nix   # macOS update policy (client Macs only)
+    # Kept on Kassie-M5-Air13 (she already has these) — the household-mac
+    # role is the one that leaves both out.
+    ../darwin/remote-access.nix     # Remote Login + Screen Sharing for fleet management
+    ../darwin/workstation-defaults.nix  # opinionated Dock/Finder/keyboard user defaults
   ];
 
   # Personal-specific apps (not in shared profiles)

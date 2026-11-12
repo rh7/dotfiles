@@ -14,6 +14,8 @@
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
     ../darwin/software-update.nix   # macOS update policy (client Macs only)
     ../darwin/sudo-rebuild.nix      # one Touch ID per rebuild, not one per cask
+    ../darwin/remote-access.nix     # Remote Login + Screen Sharing for fleet management
+    ../darwin/workstation-defaults.nix  # opinionated Dock/Finder/keyboard user defaults
   ];
 
   homebrew.casks = [
