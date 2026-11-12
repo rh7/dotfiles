@@ -35,7 +35,17 @@
       # Daily restic backup of the policy folders to the Studio's REST server
       # (modules/darwin/restic-backup.nix). Inert until `rh7-restic-backup setup`.
       resticBackup ? false,
+      # Which home-manager config the primary user gets:
+      #   "full"      — configurations/macos/home.nix + modules/common.nix: the
+      #                 maintainer's shell (zsh/starship/git dotfiles become store
+      #                 symlinks), CLI/dev toolchain, Update.command, zed config;
+      #   "household" — configurations/macos/home-household.nix: nothing of the
+      #                 above, so a daily user's own dotfiles stay untouched.
+      # fleet-audit.nix is added in both cases. A switch here, not in the role:
+      # roles are nix-darwin modules and cannot REMOVE home-manager imports.
+      homeProfile ? "full",
     }:
+      assert nixpkgs.lib.assertOneOf "mkMac homeProfile" homeProfile [ "full" "household" ];
       nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
         modules = [
@@ -75,9 +85,13 @@
             home-manager.users.${username} = { pkgs, lib, ... }: {
               home.username = lib.mkForce username;
               home.homeDirectory = lib.mkForce "/Users/${username}";
-              imports = [
-                ./configurations/macos/home.nix  # user config (imports profiles)
-                ./modules/common.nix             # CLI tools + git + shell
+              imports = {
+                full = [
+                  ./configurations/macos/home.nix  # user config (imports profiles)
+                  ./modules/common.nix             # CLI tools + git + shell
+                ];
+                household = [ ./configurations/macos/home-household.nix ];
+              }.${homeProfile} ++ [
                 # Declarative daily fleet audit (com.rh7.collector-runner).
                 # Darwin-only on purpose: mkNixOS/mkLinux hosts don't get it
                 # (systemd --user timers need linger — see the module header).
@@ -216,18 +230,18 @@
       };
 
       # ── Shared household MacBook Pro M1 (adopted in place, NOT wiped) ──
-      # primaryUser is the maintainer (rouven); Kassie's account gets nothing
-      # per-user from nix. See modules/roles/household-mac.nix.
-      # Caveat: the nightly fleet-update's home-manager step and the daily
-      # audit agent need a rouven LOGIN SESSION (launchctl gui domain). Kassie
-      # is the day-to-day user, so keep rouven logged in in the background
-      # (fast user switching); otherwise nightly runs record
-      # failed/activation-failed (harmless, retried) and audits go stale.
+      # primaryUser is the day-to-day user (kassie), like Kassie-M5-Air13: the
+      # nightly fleet-update's home-manager step and the daily audit agent need
+      # the primary user's LOGIN SESSION (launchctl gui domain), and adopted
+      # casks end up owned by her. homeProfile "household": her own ~/.zshrc,
+      # git config etc. are never replaced. The maintainer's account (rouven)
+      # gets nothing per-user from nix. See modules/roles/household-mac.nix.
       "kassie-mbp-m1" = mkMac {
         hostname = "kassie-mbp-m1";
-        username = "rouven";
+        username = "kassie";
         autoUpdate = "fleet/stable";
         role = ./modules/roles/household-mac.nix;
+        homeProfile = "household";
         needsSecrets = false;
         extraModules = [ ./configurations/macos/kassie-mbp-m1.nix ];
       };

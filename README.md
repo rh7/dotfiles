@@ -17,9 +17,9 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `rouven-air-m3` | MacBook Air M3 | workstation | `macbook.nix` |
 | `rouven-pro-m4` | MacBook Pro M4 | workstation | `macbook.nix` |
 | `rouvens-mac-mini` → `rouvens-mac-mini-m4` | Mac mini M4 (office) | workstation | `mac-mini-office.nix`, smart-home |
-| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS `defaults.nix`, Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix`, `fleet-audit.nix` |
+| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS defaults + `workstation-defaults.nix` + `remote-access.nix`, Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix`, `fleet-audit.nix` |
 | `Kassie-M5-Air13` | MacBook Air M5 (user `kassie`) | personal | `macbook.nix`; `needsSecrets = false` |
-| `kassie-mbp-m1` | MacBook Pro M1 Pro, shared (primary user `rouven`; `kassie` untouched) | household (adopted in place: firewall + update policy, no Dock, adopts hand-installed casks) | `kassie-mbp-m1.nix`; `needsSecrets = false` |
+| `kassie-mbp-m1` | MacBook Pro M1 Pro, shared (primary user `kassie`, minimal home-manager; `rouven` untouched) | household (adopted in place: firewall + update policy, no user defaults, no Dock, no Remote Login/Screen Sharing management, adopts hand-installed casks) | `kassie-mbp-m1.nix`; `homeProfile = "household"`; `needsSecrets = false` |
 | `nixos-vm` | UTM VM (aarch64) | workstation-linux (NixOS) | `vm.nix` |
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
 | `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
@@ -197,7 +197,9 @@ modules/
   shell/zsh.nix                        # Zsh, starship, aliases, mackup
 
   darwin/
-    defaults.nix                       # macOS system defaults (dock, finder, keyboard)
+    defaults.nix                       # base macOS settings for every Mac (guest login off, auto time zone, Touch ID sudo)
+    workstation-defaults.nix           # opinionated per-user defaults (dock, finder, keyboard, trackpad) — imported by roles, not household
+    remote-access.nix                  # Remote Login + Screen Sharing on — imported by roles, not household
     homebrew.nix                       # Homebrew scaffold (behavior config only)
     restic-backup.nix                  # opt-in daily restic backup -> Studio REST server (mkMac resticBackup = true)
     fleet-launcher.nix                 # /usr/local/libexec/rh7-fleet-launcher: ONE binary for the audit + restic jobs (optional Full Disk Access grant)
@@ -228,11 +230,11 @@ modules/
   roles/                               # Composable role bundles
     workstation-mac.nix                #   imports all darwin profiles
     workstation-linux.nix              #   imports desktop + all nixos profiles
-    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit (+ defaults.nix via mkMac); Homebrew disabled
+    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit + workstation-defaults + remote-access; Homebrew disabled
     ai-inference.nix                   #   lm-studio (not imported by any host today)
     smart-home.nix                     #   sensibo, sonos, homey (Mac Mini)
     personal-mac.nix                   #   lighter setup for non-developers
-    household-mac.nix                  #   adopt a shared Mac in place: no Dock, no new apps
+    household-mac.nix                  #   adopt a shared Mac in place: no user defaults, no Dock, no SSH/Screen Sharing, no new apps
 
 configurations/
   macos/
@@ -241,6 +243,7 @@ configurations/
     mac-mini-office.nix                # Mac Mini overrides
     mac-studio.nix                     # Mac Studio overrides
     kassie-mbp-m1.nix                  # shared M1 Pro: adopted casks only
+    home-household.nix                 # minimal home-manager (mkMac homeProfile = "household"): audit agent only, no dotfiles
   nixos/
     home.nix                           # NixOS user config (imports dev + editor + docker + Search Light)
     vm.nix                             # UTM VM hardware

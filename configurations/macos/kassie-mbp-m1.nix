@@ -2,9 +2,10 @@
 
 {
   # ── kassie-mbp-m1: shared household MacBook Pro (M1 Pro), ADOPTED in place ──
-  # Not wiped. Two accounts: `rouven` (admin, maintainer, nix primaryUser) and
-  # `kassie` (main day-to-day user — nix touches nothing per-user there). See
-  # modules/roles/household-mac.nix for exactly what activation changes.
+  # Not wiped. Two accounts: `kassie` (main day-to-day user, nix primaryUser —
+  # minimal home-manager, no user defaults) and `rouven` (admin, maintainer —
+  # nix touches nothing per-user there). See modules/roles/household-mac.nix
+  # for exactly what activation changes.
   #
   # Casks below ADOPT apps that were already installed by hand in
   # /Applications and have an exact Homebrew cask (owner's pre-adoption audit).
@@ -82,8 +83,10 @@
 
   # ── Mac App Store apps present (NOT declared) ──────────────────────────────
   # Installed under an Apple ID; declaring them would make activation run
-  # `mas install` as the primary user (rouven), i.e. against HIS Apple ID.
-  # Owner decides later. Present at adoption (id  name):
+  # `mas install` as the primary user (kassie), i.e. against whichever Apple ID
+  # is signed in to her App Store — and an unattended run cannot install
+  # anyway (fleet-update.nix). Owner decides later. Present at adoption
+  # (id  name):
   #   961632517  Be Focused Pro
   #   1500855883 CapCut
   #   1225393668 Code Reader - QR Reader

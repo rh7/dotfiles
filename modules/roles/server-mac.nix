@@ -10,6 +10,8 @@
     ../darwin/profiles/core.nix      # base: Tailscale, 1Password, Dropbox, mas
     ../darwin/profiles/dev-apps.nix  # OrbStack, Ghostty, zellij, editors
     ../darwin/profiles/ai-tools.nix  # Claude, ChatGPT, LM Studio, Ollama
+    ../darwin/remote-access.nix      # Remote Login + Screen Sharing (reached over SSH)
+    ../darwin/workstation-defaults.nix  # opinionated Dock/Finder/keyboard user defaults
   ];
 
   # ── Minimal dock — only what's useful when screen-sharing into the box ──
