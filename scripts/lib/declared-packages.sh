@@ -88,6 +88,49 @@ critical_upgrade_names() {
     <<<"$raw" 2>/dev/null || return 1
 }
 
+# retired_cask_names <flake_ref>
+#
+# Prints dotfiles.homebrew.retiredCasks (modules/darwin/homebrew.nix), one name
+# per line: casks rebuild.sh uninstalls if present. Same contract as above —
+# nonzero on failure, so a failed eval never reads as "nothing to remove".
+retired_cask_names() {
+  local flake_ref="$1"
+  local dir="${flake_ref%#*}" host="${flake_ref##*#}"
+  local raw
+
+  raw=$(nix eval --json \
+    "${dir}#darwinConfigurations.\"${host}\".config.dotfiles.homebrew.retiredCasks" \
+    2>/dev/null) || return 1
+
+  jq -e 'if type=="array" then true
+         else error("retiredCasks was \(type), expected array") end' \
+    >/dev/null <<<"$raw" 2>/dev/null || return 1
+
+  jq -r '.[] | (strings // error("retiredCasks entry is not a string"))' \
+    <<<"$raw" 2>/dev/null || return 1
+}
+
+# homebrew_managed <flake_ref>
+#
+# 0 when the host's config sets homebrew.enable = true, 1 when it is false
+# (e.g. modules/roles/fleet-member-mac.nix forces it off on the Studio, whose
+# casks are imperatively owned), 2 when evaluation fails. Callers that mutate
+# Homebrew state must treat 1 AND 2 as "hands off".
+homebrew_managed() {
+  local flake_ref="$1"
+  local dir="${flake_ref%#*}" host="${flake_ref##*#}"
+  local raw
+
+  raw=$(nix eval --json \
+    "${dir}#darwinConfigurations.\"${host}\".config.homebrew.enable" \
+    2>/dev/null) || return 2
+  case "$raw" in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # declared_mas_ids <flake_ref>
 #
 # Prints one Mac App Store app ID per line. Returns nonzero if evaluation or

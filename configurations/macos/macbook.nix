@@ -18,6 +18,11 @@
 
     # ── Personal ──
     # vlc — declared in modules/darwin/profiles/media.nix (every MacBook role imports it)
+    "zen"          # Zen browser (Firefox-based)
+
+    # ── AI ──
+    "artcraft"     # AI image/video creation
+    "openclaw"     # self-hosted personal AI agent
 
   ];
 
@@ -42,5 +47,6 @@
   # (Crypto Pro is declared in workstation-mac.nix; modules/darwin/profiles/finance.nix is unimported.)
   system.activationScripts.postActivation.text = ''
     mas_install 1225393668 "QR Scanner"
+    mas_install 1672085276 "Aiko"   # on-device Whisper transcription
   '';
 }

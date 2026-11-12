@@ -8,6 +8,11 @@
 CC        | https://cc.rh7labs.com/
 Penumbra  | https://messaging.rh7labs.com/
 Kubera    | https://app.kubera.com/
+Proton Mail | https://mail.proton.me/
+X         | https://x.com/
+Grok      | https://grok.com/
+Replit    | https://replit.com/~
+Mercury   | https://app.mercury.com/home
 
 # Add more below (uncomment / edit):
 # Gmail        | https://mail.google.com/mail/u/0/

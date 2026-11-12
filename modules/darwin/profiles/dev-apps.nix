@@ -29,6 +29,7 @@
     "ripgrep"    # fast recursive search
     "tmux"       # terminal multiplexer
     "yq"         # YAML/JSON processor
+    "xcodegen"   # generate Xcode projects from YAML
   ];
 
   # Mac App Store apps — mas_install helper defined in modules/darwin/mas.nix.
