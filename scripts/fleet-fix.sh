@@ -778,11 +778,12 @@ fu_explain_dock_held() {
     st_manual "update HELD (dock-protect): the daemon could not read the primary user's Dock (com.apple.dock.plist missing or unreadable) — it holds rather than risk wiping it; have that user log in once, then re-run the dry-run below"
     return 0
   fi
-  st_manual "update HELD (dock-protect): activating it would REMOVE these apps from the primary user's Dock — nothing was built or changed"
+  st_manual "update HELD (dock-protect): activating it would REMOVE these items from the primary user's Dock — nothing was built or changed"
   [ -n "$items" ] && printf '%s\n' "$items" | sed 's/^/             - /'
   info "resolve with ONE of:"
-  info "  1. keep them: add them to this host's declared Dock (system.defaults.dock.persistent-apps"
-  info "     in its role/host config in rh7/dotfiles), merge to main; the next run proceeds"
+  info "  1. keep them: add them to this host's declared Dock (system.defaults.dock.persistent-apps,"
+  info "     or persistent-others for folders/stacks/files, in its role/host config in"
+  info "     rh7/dotfiles), merge to main; the next run proceeds"
   info "  2. drop them: run ./scripts/rebuild.sh here — it shows the Dock drift and asks before"
   info "     removing anything; once the Dock matches, the daemon proceeds"
 }

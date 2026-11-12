@@ -32,13 +32,15 @@
 #                         R unmerged/local/-dirty, or T and R diverged
 #                                                    -> refused / not-fast-forward
 #   4. no-op          T already applied and the system is still that generation
-#   5. dock-protect   evaluate T's system.defaults.dock.persistent-apps; when it
-#                     is set (the Dock is managed), activation REPLACES the
-#                     primary user's Dock, so every app now in it that T does
-#                     not declare would vanish -> skipped / dock-protect (with
-#                     the list in state.dock_protect). An unreadable Dock plist
-#                     holds too (fail safe). Additions only, or an unmanaged
-#                     Dock, proceed. Only rebuild.sh, which shows the drift and
+#   5. dock-protect   evaluate T's system.defaults.dock.persistent-apps and
+#                     persistent-others; each one that is set (that side of
+#                     the Dock is managed) REPLACES that side of the primary
+#                     user's Dock on activation, so every app, folder, stack,
+#                     file or web link now in it that T does not declare would
+#                     vanish -> skipped / dock-protect (with the list in
+#                     state.dock_protect). An unreadable Dock plist holds too
+#                     (fail safe). Additions only, or an unmanaged Dock,
+#                     proceed. Only rebuild.sh, which shows the drift and
 #                     asks, may remove Dock items. The Dock is compared again
 #                     after the build, right before activation (step 7).
 #                     evaluation fails             -> failed / build-failed
@@ -185,7 +187,7 @@ STATE_CONTRACT='
     and (if has("error") then .error == "unreadable" else true end)
     and (.checked_at | iso)
     and (.would_remove | type == "array" and length <= 30
-         and all(.[]; type == "string" and startswith("/")));
+         and all(.[]; type == "string" and (startswith("/") or startswith("web link: "))));
   type == "object"
   and ((keys - ["dock_protect"]) == ["applied_commit", "channel", "consecutive_failures", "enabled",
                 "generation", "last_result", "last_run_at", "last_success_at", "reason", "schema",
@@ -424,11 +426,13 @@ verify_signature() {
 is_ancestor() { g merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
 
 # ── Dock protection ──────────────────────────────────────────────────────────
-# nix-darwin's system.defaults.dock.persistent-apps REPLACES the primary user's
-# whole Dock on activation, so an app she pinned by hand silently disappears.
-# Unattended, that is never acceptable: a run that would remove anything is
-# held (skipped / dock-protect) until a human either declares the app or
-# confirms the removal through rebuild.sh (which shows the drift and asks).
+# nix-darwin's system.defaults.dock.persistent-apps (left side) and
+# persistent-others (right side: folders, stacks, files) each REPLACE that part
+# of the primary user's Dock on activation, so anything she added by hand
+# silently disappears. Unattended, that is never acceptable: a run that would
+# remove anything is held (skipped / dock-protect) until a human either
+# declares the item or confirms the removal through rebuild.sh (which shows
+# the drift and asks).
 DOCK_MAX_REPORTED=30
 
 # dock_path <_CFURLString> — one Dock entry as a POSIX path: file:// (or
@@ -448,65 +452,95 @@ dock_path() {
 }
 
 # dock_declaration — the checked-out commit's primary user and Dock
-# declaration as {"user": ..., "apps": [...] | null}. Evaluated, not built.
+# declaration as {"user", "apps": [...] | null, "others": [...] | null}.
+# Evaluated, not built.
 dock_declaration() {
   run_timeout "$EVAL_TIMEOUT" nix --extra-experimental-features 'nix-command flakes' \
     --option accept-flake-config false \
     eval --json --no-update-lock-file \
     "$CHECKOUT#darwinConfigurations.\"$FLAKE_ATTR\".config" \
-    --apply 'c: { user = c.system.primaryUser; apps = c.system.defaults.dock.persistent-apps; }' </dev/null
+    --apply 'c: { user = c.system.primaryUser; apps = c.system.defaults.dock.persistent-apps; others = c.system.defaults.dock.persistent-others; }' </dev/null
 }
 
-# current_dock <user> — the user's current Dock app paths, one per line, read
-# from the plist FILE (read-only; root needs no GUI session or cfprefsd). Any
-# entry that is neither an app URL nor a spacer makes the Dock unreadable.
+# current_dock <user> <persistent-apps|persistent-others> — that side of the
+# user's current Dock, one entry per line: file/folder tiles as paths, web
+# links as "web link: <host>". Read from the plist FILE (read-only; root needs
+# no GUI session or cfprefsd). An entry that is none of those nor a spacer
+# makes the Dock unreadable. A missing persistent-others key is an empty
+# right side; a missing persistent-apps key is unreadable.
 current_dock() {
-  local plist="$ROOT/Users/$1/Library/Preferences/com.apple.dock.plist" n i url type
+  local plist="$ROOT/Users/$1/Library/Preferences/com.apple.dock.plist" key="$2" n i url type host
   [[ -f "$plist" && -r "$plist" ]] || return 1
-  n=$(plutil -extract persistent-apps raw -o - "$plist" 2>/dev/null) || return 1
+  if ! n=$(plutil -extract "$key" raw -o - "$plist" 2>/dev/null); then
+    [[ "$key" == persistent-others ]] && plutil -extract persistent-apps raw -o - "$plist" >/dev/null 2>&1 \
+      && return 0
+    return 1
+  fi
   [[ "$n" =~ ^[0-9]+$ ]] || return 1
   for ((i = 0; i < n; i++)); do
-    if url=$(plutil -extract "persistent-apps.$i.tile-data.file-data._CFURLString" raw -o - "$plist" 2>/dev/null); then
+    if url=$(plutil -extract "$key.$i.tile-data.file-data._CFURLString" raw -o - "$plist" 2>/dev/null); then
       dock_path "$url"
-    else
-      type=$(plutil -extract "persistent-apps.$i.tile-type" raw -o - "$plist" 2>/dev/null) || return 1
-      [[ "$type" == *spacer* ]] || return 1
+      continue
     fi
+    type=$(plutil -extract "$key.$i.tile-type" raw -o - "$plist" 2>/dev/null) || return 1
+    case "$type" in
+      *spacer*) ;;
+      url-tile)
+        # A web link; nix-darwin cannot declare one. Report its host only.
+        url=$(plutil -extract "$key.$i.tile-data.url._CFURLString" raw -o - "$plist" 2>/dev/null) || return 1
+        host=${url#*://}; host=${host%%[/?#]*}; host=${host##*@}
+        [[ "$host" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || host="?"
+        printf 'web link: %s\n' "$host" ;;
+      *) return 1 ;;
+    esac
   done
+}
+
+# declared_dock <apps|others> — the declared paths of that side (spacers carry
+# no URL; entries are nix-darwin tiles, or plain paths).
+declared_dock() {
+  local raw
+  raw=$(jq -r --arg k "$1" '.[$k][] | if type == "string" then .
+    else (.["tile-data"]?["file-data"]?["_CFURLString"]? // empty) end' <<<"$DOCK_DECL") || return 1
+  while IFS= read -r p; do [[ -z "$p" ]] || dock_path "$p"; done <<<"$raw"
 }
 
 # check_dock — 0: activation removes nothing from the primary user's Dock
 # (unmanaged, or additions/reorders only). 1: hold; DOCK_PROTECT_JSON is set.
 # 2: the declaration could not be evaluated. Run twice: before the build and
-# again right before activation (she may pin an app during an hours-long
+# again right before activation (she may add an item during an hours-long
 # build); the declaration is evaluated once, the Dock re-read each time.
 DOCK_DECL=""
 check_dock() {
-  local decl user declared current removals
+  local user side key declared current removals="" managed=0
   if [[ -z "$DOCK_DECL" ]]; then
     DOCK_DECL=$(dock_declaration) || { DOCK_DECL=""; log "could not evaluate the Dock declaration of $TARGET"; return 2; }
   fi
-  decl=$DOCK_DECL
-  jq -e 'type == "object" and has("apps") and (.apps == null or (.apps | type == "array"))' \
-    <<<"$decl" >/dev/null 2>&1 || { log "unexpected Dock declaration: $decl"; return 2; }
-  if jq -e '.apps == null' <<<"$decl" >/dev/null; then
-    log "dock: persistent-apps unset in $TARGET — Dock unmanaged, nothing to protect"
+  jq -e 'type == "object" and has("apps") and has("others")
+         and all(.apps, .others; . == null or type == "array")' \
+    <<<"$DOCK_DECL" >/dev/null 2>&1 || { log "unexpected Dock declaration: $DOCK_DECL"; DOCK_DECL=""; return 2; }
+  user=$(jq -r '.user // ""' <<<"$DOCK_DECL")
+  for side in apps others; do
+    # null = that side of the Dock is unmanaged: activation leaves it alone.
+    jq -e --arg k "$side" '.[$k] == null' <<<"$DOCK_DECL" >/dev/null && continue
+    managed=1
+    key="persistent-$side"
+    declared=$(declared_dock "$side") || return 2
+    if [[ ! "$user" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]] || ! current=$(current_dock "$user" "$key"); then
+      log "dock-protect: cannot read ${user:-the primary user}'s Dock ($key in $ROOT/Users/${user:-?}/Library/Preferences/com.apple.dock.plist) — holding (fail safe)"
+      DOCK_PROTECT_JSON=$(jq -cn --arg now "$(now_iso)" \
+        '{would_remove: [], error: "unreadable", checked_at: $now}')
+      return 1
+    fi
+    # current − declared, in Dock order, each entry once.
+    removals+=$(awk 'NR == FNR { d[$0]; next } $0 != "" && !($0 in d) && !s[$0]++' \
+      <(printf '%s\n' "$declared") <(printf '%s\n' "$current"))$'\n'
+  done
+  if [[ $managed -eq 0 ]]; then
+    log "dock: persistent-apps and persistent-others unset in $TARGET — Dock unmanaged, nothing to protect"
     return 0
   fi
-  # Spacers carry no URL; entries are nix-darwin tiles (or plain paths).
-  declared=$(jq -r '.apps[] | if type == "string" then .
-    else (.["tile-data"]?["file-data"]?["_CFURLString"]? // empty) end' <<<"$decl") || return 2
-  declared=$(while IFS= read -r p; do [[ -n "$p" ]] && dock_path "$p"; done <<<"$declared")
-  user=$(jq -r '.user // ""' <<<"$decl")
-  if [[ ! "$user" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]] || ! current=$(current_dock "$user"); then
-    log "dock-protect: cannot read ${user:-the primary user}'s Dock ($ROOT/Users/${user:-?}/Library/Preferences/com.apple.dock.plist) — holding (fail safe)"
-    DOCK_PROTECT_JSON=$(jq -cn --arg now "$(now_iso)" \
-      '{would_remove: [], error: "unreadable", checked_at: $now}')
-    return 1
-  fi
-  # current − declared, in Dock order, each path once.
-  removals=$(awk 'NR == FNR { d[$0]; next } $0 != "" && !($0 in d) && !s[$0]++' \
-    <(printf '%s\n' "$declared") <(printf '%s\n' "$current"))
+  removals=$(grep -v '^$' <<<"$removals" || true)
   if [[ -z "$removals" ]]; then
     log "dock: $TARGET removes nothing from $user's Dock"
     return 0

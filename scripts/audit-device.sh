@@ -3516,9 +3516,10 @@ print(json.dumps(result) if result else '{}')
 #   - otherwise                    -> the state file, restricted to the contract
 #                                     fields (nothing else is ever forwarded).
 #                                     A skipped/dock-protect state also carries
-#                                     `dock_protect` (would_remove paths: app
-#                                     folders verbatim, ~/Applications without
-#                                     the user name, anything else basename only).
+#                                     `dock_protect` (would_remove entries: app
+#                                     folders verbatim, the user's home as ~
+#                                     without the user name, anything else
+#                                     basename only).
 # Linux has no such daemon -> {"enabled": false}. Paths are parameters so the
 # test suite can point them at fixtures.
 collect_fleet_update() {
@@ -3545,17 +3546,17 @@ KEYS = ("schema", "enabled", "channel", "last_run_at", "last_result", "reason",
         "target_commit", "applied_commit", "last_success_at", "generation",
         "consecutive_failures")
 DOCK_MAX = 30
-USER_APPS = re.compile(r"^/Users/[^/]+/Applications/(.+)$")
+USER_HOME = re.compile(r"^/Users/[^/]+/(.+)$")
 
 def dock_path(p):
-    # Only app folders are relayed as paths; a user's ~/Applications loses the
-    # user name, anything else (or any ".." trick) keeps only its basename.
+    # App folders are relayed verbatim; a path in a user's home loses the user
+    # name (~/...); anything else (or any ".." trick) keeps only its basename.
     if "/../" not in p and not p.endswith("/.."):
         if p.startswith(("/Applications/", "/System/Applications/")):
             return p
-        m = USER_APPS.match(p)
+        m = USER_HOME.match(p)
         if m:
-            return "~/Applications/" + m.group(1)
+            return "~/" + m.group(1)
     return p.rstrip("/").rsplit("/", 1)[-1]
 
 def valid_dock(d):
