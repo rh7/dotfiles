@@ -354,10 +354,8 @@ probe_dotfiles() {
 probe_is_ancestor() { git -C "$DOTFILES_DIR" merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
 probe_local_origin_rev() { git -C "$DOTFILES_DIR" rev-parse origin/main 2>/dev/null; }
 probe_age_key()     { [ -s "$HOME/.config/sops/age/keys.txt" ]; }
-probe_fleet_update() {
-  launchctl print system/org.rh7.fleet-update >/dev/null 2>&1 ||
-    [ -e /Library/LaunchDaemons/org.rh7.fleet-update.plist ]
-}
+# Loaded per launchd — a plist on disk is not proof it was bootstrapped.
+probe_fleet_update() { launchctl print system/org.rh7.fleet-update >/dev/null 2>&1; }
 probe_firewall()    { "$SOCKETFILTERFW" --getglobalstate 2>/dev/null | grep -qi enabled; }
 probe_launcher()    { [ -x "$FLEET_LAUNCHER" ]; }
 probe_restic_configured() { [ -s "$1/.config/rh7-restic/repo-password" ] 2>/dev/null; }
@@ -373,12 +371,13 @@ probe_audit_at() {
 utc_minus_2m() {
   date -u -v-2M '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -u -d '2 minutes ago' '+%Y-%m-%d %H:%M:%S'
 }
-# audit_landed <since>: the service holds an audit of this host from <since>
-# on. The collector only WARNS when its upload fails and still exits 0, so a
-# runner exit status alone is no proof the owner has data for new-host.sh.
+# audit_landed <since> <before>: the latest audit is from this run — it changed
+# from <before> (what the service held just before) and is not older than
+# <since>. The collector only WARNS when its upload fails and still exits 0, so
+# a runner exit status alone is no proof the owner has data for new-host.sh.
 audit_landed() {
   local at; at=$(probe_audit_at)
-  [ -n "$at" ] && ! [[ "$at" < "$1" ]]
+  [ -n "$at" ] && [ "$at" != "$2" ] && ! [[ "$at" < "$1" ]]
 }
 probe_registry_role() {
   [ -n "$CS_URL" ] || return 1
@@ -582,7 +581,7 @@ phase_preflight() {
 # ═════════════════════════════════════════════════════════════════════════════
 phase_no_flake_entry() {
   section "b. No flake entry for '$HOST'"
-  local since
+  local since before
   if [ -n "$FLAKE_CASE_MATCH" ]; then
     say_ask "If this Mac IS '$FLAKE_CASE_MATCH', rename it (then re-run):"
     say_info "sudo scutil --set HostName $FLAKE_CASE_MATCH && sudo scutil --set LocalHostName $FLAKE_CASE_MATCH && sudo scutil --set ComputerName $FLAKE_CASE_MATCH"
@@ -600,9 +599,9 @@ phase_no_flake_entry() {
     if [ -z "$CS_URL" ]; then
       say_warn "config service unreachable — the audit cannot upload; fix Tailscale first"
     elif ask y "Run one fleet audit now (read-only; uploads to $CS_URL)?" auto; then
-      since=$(utc_minus_2m)
+      since=$(utc_minus_2m); before=$(probe_audit_at)
       act_audit_remote || true
-      if audit_landed "$since"; then say_ok "audit uploaded to $CS_URL"
+      if audit_landed "$since" "$before"; then say_ok "audit uploaded to $CS_URL"
       else say_warn "no new audit of $HOST reached $CS_URL — see the output above; new-host.sh needs one"; fi
     fi
   fi
@@ -797,7 +796,7 @@ phase_rebuild() {
 # ═════════════════════════════════════════════════════════════════════════════
 phase_verify() {
   section "f. Verify"
-  local fails=0 role_reg l home restic_cmd since
+  local fails=0 role_reg l home restic_cmd since before
 
   if [ -n "$P_AUTOUPDATE" ]; then
     if probe_fleet_update; then say_ok "org.rh7.fleet-update loaded (channel $P_AUTOUPDATE)"
@@ -815,9 +814,9 @@ phase_verify() {
   if $DRY_RUN; then say_plan "would run one audit (rh7-fleet-audit, else ~/dotfiles/scripts/collector-runner.sh)"
   elif [ -z "$CS_URL" ]; then say_warn "config service unreachable — skipping the audit"
   elif ask y "Run one fleet audit now (read-only; uploads to $CS_URL)?" auto; then
-    since=$(utc_minus_2m)
+    since=$(utc_minus_2m); before=$(probe_audit_at)
     act_audit || true
-    if audit_landed "$since"; then say_ok "audit uploaded to $CS_URL"; state_set audit.at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if audit_landed "$since" "$before"; then say_ok "audit uploaded to $CS_URL"; state_set audit.at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     else say_warn "no new audit of $HOST reached $CS_URL — re-run: ~/dotfiles/scripts/collector-runner.sh"; fails=$((fails + 1)); fi
   fi
 

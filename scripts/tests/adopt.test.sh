@@ -84,8 +84,14 @@ probe_launcher()        { return 0; }
 probe_restic_configured() { return 0; }
 probe_registry_role()   { echo household; }
 probe_homebrew()        { [ "${S_BREW:-1}" = 1 ] || [ -e "$CALLS.brew" ]; }
-# The audit "lands" unless S_AUDIT_LOST=1 (the collector exits 0 on a failed POST).
-probe_audit_at()        { [ "${S_AUDIT_LOST:-0}" = 1 ] && echo "2000-01-01 00:00:00" || echo "2999-01-01 00:00:00"; }
+# The service's latest audit advances only when an audit action ran and its
+# upload "worked" (S_AUDIT_LOST=1: the collector exited 0 but the POST failed).
+probe_audit_at() {
+  # S_AUDIT_SAME=1: the service already holds a seconds-old audit and this run's upload fails.
+  if [ "${S_AUDIT_SAME:-0}" = 1 ]; then echo "2999-01-01 00:00:00"; return; fi
+  [ -e "$CALLS.landed" ] && echo "2999-01-01 00:00:00" || echo "2000-01-01 00:00:00"
+}
+landed()                { [ "${S_AUDIT_LOST:-0}" = 1 ] || : >"$CALLS.landed"; }
 act_install_brew()      { rec install_brew; : >"$CALLS.brew"; }
 user_home()             { echo "/Users/$1"; }
 source_nix()            { return 0; }
@@ -98,8 +104,8 @@ act_ff()                { rec ff; }
 act_setup_secrets()     { rec setup_secrets; return "${S_SECRETS_RC:-0}"; }
 act_rebuild()           { shift; rec rebuild "$@"; return "${S_REBUILD_RC:-0}"; }
 act_prewipe()           { rec prewipe; }
-act_audit_remote()      { rec audit_remote; }
-act_audit()             { rec audit; }
+act_audit_remote()      { rec audit_remote; landed; }
+act_audit()             { rec audit; landed; }
 act_open_fda()          { rec open_fda; }
 # Answers come from S_ANSWERS ("y n …"), one per question; none left = no tty.
 read_answer() {
@@ -165,6 +171,13 @@ echo "== no flake entry: an audit whose upload failed is not reported as uploade
 run noentrylost S_HOST=unknown-mac S_AUDIT_LOST=1 -- --yes
 hasnt "no false success" "$OUT" "audit uploaded"
 has "says no audit reached the service" "$OUT" "no new audit of unknown-mac reached"
+run noentrysame S_HOST=unknown-mac S_AUDIT_SAME=1 S_AUDIT_LOST=1 -- --yes
+hasnt "a seconds-old earlier audit is not this run's" "$OUT" "audit uploaded"
+
+echo "== verify: a lost upload counts as a failed check =="
+run verifylost S_MANAGED=1 S_AUDIT_LOST=1 -- --yes
+has "warns" "$OUT" "no new audit of test-mac reached"
+has "verify summary flags it" "$OUT" "1 check(s) need attention"
 
 echo "== Homebrew missing =="
 run brewyes S_BREW=0 S_DOTFILES=absent -- --yes

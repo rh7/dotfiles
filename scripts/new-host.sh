@@ -259,7 +259,10 @@ jq -n \
   | ($sysapps | map({ key: ., value: true }) | from_entries) as $issys
   | ($sysapps | map(select($isstore[.] | not))) as $apps
   | ($sysapps + $userapps + $storenames | unique) as $allnames
-  | def pick($app; $c):
+  # A wallet by its name, or by the catalogue entry of any cask shipping an app
+  # of that exact name (App Store copies and generic names included).
+  | def iswallet: wallet or (($byapp[.] // []) | any(. as $t | ($bytoken[$t].walletcask // false)));
+    def pick($app; $c):
       if ($c | length) == 1 then $c[0]
       else ($c | map(select(contains("@") | not))) as $plain
         | if ($plain | length) == 1 then $plain[0]
@@ -303,21 +306,21 @@ jq -n \
   # Names that must never be written: every wallet-looking app, cask token and
   # cask display name (the hygiene guard greps the output for each).
   | ([ ($classified[] | select(.class == "wallet") | (.app // empty), .token, (($bytoken[.token].names // [])[])),
-       ($allnames[] | select(wallet)) ] | unique) as $wnames
+       ($allnames[] | select(iswallet) | ., (($byapp[.] // [])[] | ., (($bytoken[.].names // [])[]))) ] | unique) as $wnames
   | {
       adopt:     [ $classified[] | select(.class == "adopt") | { token, deprecated } ] | unique_by(.token),
       manual:    [ $classified[] | select(.class == "manual") | { token, why } ] | unique_by(.token),
       role:      [ $classified[] | select(.class == "role") | .token ] | unique,
       # Dropped when one of its casks is already classified (e.g. via the
       # server gap list) or when it is a wallet.
-      ambiguous: [ $ambiguous[] | select(.app | wallet | not)
+      ambiguous: [ $ambiguous[] | select(.app | iswallet | not)
                    | select(.cands | any(. as $t | ($bytoken[$t].walletcask // false)) | not)
                    | select(.cands | any(. as $t | $classified | map(.token) | index($t)) | not)
                    | { app: (.app | clean), cands: (.cands | map(select(contains("@") | not))) } ],
-      mas:       [ $mas[] | select(.name | wallet | not) ] | sort_by(.name | ascii_downcase),
+      mas:       [ $mas[] | select(.name | iswallet | not) ] | sort_by(.name | ascii_downcase),
       # every wallet-looking app, with or without a cask, App Store or not
       wallets:   ([ ($classified[] | select(.class == "wallet") | (.app // .token)),
-                    ($allnames[] | select(wallet)) ] | unique | length),
+                    ($allnames[] | select(iswallet)) ] | unique | length),
       wallet_names: $wnames,
       user_only: ($userapps | length),
       unmatched: $unmatched,

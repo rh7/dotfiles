@@ -56,7 +56,7 @@ cat >"$T/audit.json" <<'EOF'
     { "name": "Crypto Pro", "location": "system", "app_store": true },
     { "name": "Notion", "location": "user", "app_store": false },
     { "name": "Discord", "location": "user", "app_store": false },
-    { "name": "Harbor", "location": "system", "app_store": false }
+    { "name": "Harbor", "location": "system", "app_store": true }
   ],
   "mas_apps": { "installed": true, "apps": [ { "id": 803453959, "name": "Slack" }, { "id": 980888073, "name": "Crypto Pro" } ] },
   "homebrew": { "casks": [ "miniconda" ] }
