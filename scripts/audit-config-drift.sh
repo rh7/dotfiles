@@ -438,7 +438,8 @@ if [[ -n "$unresolved_casks" ]]; then
   # The usual cause: Homebrew belongs to another account (household Macs:
   # system.primaryUser) and nothing ran it as that account — this audit run
   # by hand, or by a rebuild.sh older than #125.
-  brew_bin=$(command -v brew 2>/dev/null || true)
+  # type -P: the binary, not the brew() function above (`command -v` → "brew").
+  brew_bin=$(type -P brew 2>/dev/null || true)
   brew_owner=""
   [[ -n "$brew_bin" ]] && brew_owner=$(stat -f %Su "$(dirname "$(dirname "$brew_bin")")" 2>/dev/null || true)
   if [[ -z "${BREW_CMD:-}" && -n "$brew_owner" && "$brew_owner" != "$(id -un)" ]]; then

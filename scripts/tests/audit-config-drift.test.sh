@@ -129,16 +129,18 @@ while [ $# -gt 0 ]; do
 done
 STUB_AS_USER="$user" exec "$@"
 EOF
-# The prefix belongs to kassie (a real chown needs root).
+# The prefix (the brew stub's grandparent, $W) belongs to kassie (a real chown
+# needs root); every other path keeps its real owner, so a lookup of the wrong
+# path (e.g. the cwd) does not pass by accident.
 cat >"$W/xuser/stat" <<'EOF'
 #!/bin/sh
-if [ "$1" = -f ] && [ "$2" = %Su ]; then echo kassie; else exec /usr/bin/stat "$@"; fi
+if [ "$1" = -f ] && [ "$2" = %Su ] && [ "$3" = "$STUB_BREW_PREFIX" ]; then echo kassie; else exec /usr/bin/stat "$@"; fi
 EOF
 chmod +x "$W/xuser"/*
 run_xuser() { # run_xuser <bash> [BREW_CMD]
   : >"$W/xlog"
   ( env PATH="$W/xuser:$W/stubs:/usr/bin:/bin" HOME="$W" XDG_CACHE_HOME="$W/cache" \
-      DOTFILES="$W/flake" DRIFT_APPS_DIR="$W/apps" STUB_LOG="$W/xlog" BREW_CMD="${2:-}" \
+      DOTFILES="$W/flake" DRIFT_APPS_DIR="$W/apps" STUB_LOG="$W/xlog" BREW_CMD="${2:-}" STUB_BREW_PREFIX="$W" \
       "$1" "$AUDIT" kassie-mbp-m1 >"$W/out" 2>&1 )
   echo $? >"$W/rc"
 }
