@@ -29,6 +29,7 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; printf '      %s\n' "$2"; fail
 ok()   { echo "[OK] $*"; }
 warn() { echo "[WARN] $*"; }
 err()  { echo "[ERROR] $*"; }
+info() { echo "[INFO] $*"; }
 LOG_FILE="/tmp/rebuild-activation-test.log"
 
 # shellcheck disable=SC1090
@@ -60,6 +61,16 @@ run_case 1 "Homebrew bundle..." "Error: You have not agreed to the Xcode license
 run_case 3 "boom"
 [[ $RC -eq 3 ]] && good "failure propagates the actual code (3)" \
   || bad "failure propagates the actual code (3)" "got $RC"
+
+# Household guard: the primary user was logged out — still a success, with a
+# note that her LaunchAgents load at her next login.
+run_case 0 "Activating home-manager configuration for kassie" \
+  "rh7: no GUI login session for kassie — LaunchAgents installed; they load at the next login"
+[[ $RC -eq 0 ]] && good "logged-out primary user: still success" || bad "logged-out primary user: still success" "got $RC"
+grep -q "load at her next login" <<<"$OUT" && good "logged-out primary user: note printed" \
+  || bad "logged-out primary user: note printed" "got: $OUT"
+run_case 0 "setting up /etc..."
+grep -q "next login" <<<"$OUT" && bad "no note without the marker" "got: $OUT" || good "no note without the marker"
 
 echo ""
 echo "run_darwin_rebuild — cause reporting"
