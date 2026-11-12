@@ -32,24 +32,22 @@
 #
 # PROTECTED FOLDERS (TCC) — why ~/Desktop, ~/Documents, ~/Downloads are NOT in
 # the defaults: macOS privacy protection judges the program a launchd job
-# starts, and without Full Disk Access (FDA) that program cannot read those
-# folders, iCloud Drive or external volumes — restic gets EPERM ("operation not
-# permitted"). Terminal's FDA does not carry over to launchd jobs. iCloud
-# Desktop & Documents already replicates those two folders. To opt in anyway:
-#   1. add e.g. "~/Documents" to `paths` and rebuild;
-#   2. System Settings → Privacy & Security → Full Disk Access → "+" → ⇧⌘G →
-#      /usr/local/libexec/rh7-restic-launcher → Open, switch it on;
-#   3. `launchctl kickstart -k gui/$(id -u)/org.rh7.restic-backup` and check
-#      `rh7-restic-backup status` (permission-denied = the grant did not take).
-# Grant FDA to THAT file, not to the wrapper script (a script runs as its
-# interpreter, a nix-store bash whose identity changes on every nixpkgs bump)
-# and not to restic (a child; TCC asks about the responsible process). The
-# launcher is a tiny C program (restic-launcher.c) COPIED to that fixed path and
-# ad-hoc signed, and only replaced when `launcherVersion` below changes — so a
-# grant survives rebuilds and flake.lock bumps. It spawns the wrapper as a child
-# and waits, staying the responsible process. FDA lets that one binary read
-# everything the user can; that is the price of the opt-in.
-# Disabling the module leaves the inert launcher in /usr/local/libexec.
+# starts, and without Full Disk Access (FDA) it cannot read those folders,
+# iCloud Drive or external volumes — restic gets EPERM ("operation not
+# permitted"). iCloud Desktop & Documents already replicates those two folders.
+# The job runs through the fleet's ONE launcher,
+# `/usr/local/libexec/rh7-fleet-launcher restic` (modules/darwin/fleet-launcher.nix),
+# so the optional per-Mac FDA grant described there covers this job AND the
+# daily audit. With the grant, add a protected path to `paths` or approve it on
+# the dashboard; without it an approved protected folder is skipped up front
+# (skipped_paths: permission-denied) rather than failing the run.
+#
+# OWNER-APPROVED PATHS: each run also fetches the paths the owner marked
+# "back up" in the control plane's data inventory
+# (GET /api/fleet/data/<host>/backup-paths), validates them on the device and
+# adds them to `paths` — see scripts/restic-backup.sh "APPROVED PATHS". The
+# wrapper therefore ships restic-backup.sh together with the config-service
+# resolver it loads (scripts/lib/config-service.sh + collector-runner.sh).
 #
 # WHY THE PLIST POINTS AT FIXED PATHS: nix-darwin reloads a user agent whose
 # plist changed, killing a backup in flight. Paths, excludes and tools live in
@@ -60,14 +58,16 @@
 let
   cfg = config.services.rh7.resticBackup;
 
-  # Bump to make activation replace the installed launcher (and invalidate any
-  # FDA grant on it — say so in the PR that bumps it).
-  launcherVersion = "1";
-  launcherPath = "/usr/local/libexec/rh7-restic-launcher";
+  # Installed by modules/darwin/fleet-launcher.nix (imported for every Mac).
+  launcherPath = "/usr/local/libexec/rh7-fleet-launcher";
 
-  launcher = pkgs.runCommandCC "rh7-restic-launcher" { } ''
-    mkdir -p $out/bin
-    $CC -O2 -Wall -Werror -o $out/bin/rh7-restic-launcher ${./restic-launcher.c}
+  # restic-backup.sh + the config-service resolver it loads for the approved
+  # paths, in the scripts/ layout it expects.
+  scripts = pkgs.runCommand "rh7-restic-scripts" { } ''
+    mkdir -p $out/scripts/lib
+    cp ${../../scripts/restic-backup.sh} $out/scripts/restic-backup.sh
+    cp ${../../scripts/collector-runner.sh} $out/scripts/collector-runner.sh
+    cp ${../../scripts/lib/config-service.sh} $out/scripts/lib/config-service.sh
   '';
 
   runner = pkgs.writeShellScriptBin "rh7-restic-backup" ''
@@ -78,7 +78,7 @@ let
     export RH7_RESTIC_PATHS=${lib.escapeShellArg (lib.concatStringsSep "\n" cfg.paths)}
     export RH7_RESTIC_EXCLUDES=${lib.escapeShellArg (lib.concatStringsSep "\n" cfg.exclude)}
     export RH7_RESTIC_EXCLUDE_LARGER_THAN=${lib.escapeShellArg cfg.excludeLargerThan}
-    exec ${pkgs.bash}/bin/bash ${../../scripts/restic-backup.sh} "$@"
+    exec ${pkgs.bash}/bin/bash ${scripts}/scripts/restic-backup.sh "$@"
   '';
 in
 {
@@ -169,23 +169,10 @@ in
     # commands for listing and restoring.
     environment.systemPackages = [ runner pkgs.restic ];
 
-    # Copy, never symlink: TCC binds a grant to this file's code identity.
-    system.activationScripts.postActivation.text = lib.mkAfter ''
-      rh7_launcher=${launcherPath}
-      if [ ! -x "$rh7_launcher" ] || [ "$(cat "$rh7_launcher.version" 2>/dev/null)" != ${launcherVersion} ]; then
-        echo "installing $rh7_launcher (version ${launcherVersion})" >&2
-        mkdir -p "$(dirname "$rh7_launcher")"
-        install -m 0755 -o root -g wheel ${launcher}/bin/rh7-restic-launcher "$rh7_launcher.new"
-        /usr/bin/codesign --force --sign - --identifier org.rh7.restic-launcher "$rh7_launcher.new"
-        mv -f "$rh7_launcher.new" "$rh7_launcher"
-        echo ${launcherVersion} >"$rh7_launcher.version"
-      fi
-    '';
-
     launchd.user.agents.restic-backup.serviceConfig = {
       Label = "org.rh7.restic-backup";
       # Fixed paths on purpose — see "WHY THE PLIST POINTS AT FIXED PATHS".
-      ProgramArguments = [ launcherPath "run" ];
+      ProgramArguments = [ launcherPath "restic" ];
       StartCalendarInterval = [{ Hour = cfg.hour; Minute = cfg.minute; }];
       RunAtLoad = false;
       # The script keeps its own log (~/.local/state/rh7-restic/backup.log);

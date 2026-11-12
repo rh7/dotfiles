@@ -111,6 +111,174 @@ run_timeout() {
   fi
 }
 
+# >>> BEGIN SHARED DATA CLASSIFICATION >>>
+# What a folder on a Mac IS, for deciding whether its loss matters. This block is
+# duplicated VERBATIM in scripts/pre-wipe-check.sh (bash 3.2, reads it through
+# data_class_rule) and scripts/audit-device.sh (its data_inventory Python reads
+# the same variables from the environment), and
+# scripts/tests/data-inventory.test.sh fails if the two copies drift.
+#
+# It cannot be a sourced library or a Python module: both scripts are
+# distributed as SINGLE SELF-CONTAINED FILES (the collector as one
+# `git show <ref>:scripts/audit-device.sh` blob, pre-wipe-check via
+# `curl … | bash`), so a sibling file never reaches the device. Plain data in a
+# shell variable is the one format both a bash 3.2 `case` and Python's fnmatch
+# read the same way. Same pattern as the shared config-service resolver.
+#
+# DATA_CLASS_RULES rows: scope|pattern|kind|category|status|note — first match
+# wins, pattern is a shell glob (no `|`, no brackets).
+#   scope    home = a top-level entry of $HOME; appdata = an entry of
+#            ~/Library/Application Support, Containers or Group Containers
+#   kind     pre-wipe-check's own judgement. home: skip dd standard music cloud
+#            secret vm cache other; appdata: RED AMBER VM NONE, or - (no flag)
+#   category data_inventory category; for kind=cloud the coverage token
+#            (icloud, dropbox, cloud-storage) of everything under that root
+#   status   data_inventory status: reinstallable / unprotected, or skip and
+#            cloud (not an item: excluded from the inventory)
+# Not listed = kind other, category user-data (home) / app-data, unprotected.
+DATA_CLASS_RULES='home|Library|skip|-|skip|
+home|.Trash|skip|-|skip|
+home|Applications|skip|-|skip|
+home|.DS_Store|skip|-|skip|
+home|.CFUserTextEncoding|skip|-|skip|
+home|.localized|skip|-|skip|
+home|Desktop|dd|user-data|unprotected|
+home|Documents|dd|user-data|unprotected|
+home|Downloads|standard|downloads|unprotected|Downloads is never synced by iCloud
+home|Movies|standard|user-data|unprotected|
+home|Pictures|standard|user-data|unprotected|Photos libraries are listed separately
+home|Public|standard|user-data|unprotected|
+home|Sites|standard|user-data|unprotected|
+home|Music|music|user-data|unprotected|purchases re-download; imported music does not
+home|iCloud Drive (Archive)*|other|user-data|unprotected|local copy left when iCloud Drive was turned off
+home|Dropbox|cloud|dropbox|cloud|
+home|Dropbox (*|cloud|dropbox|cloud|
+home|OneDrive|cloud|cloud-storage|cloud|
+home|OneDrive*|cloud|cloud-storage|cloud|
+home|Google Drive|cloud|cloud-storage|cloud|
+home|Google Drive (*|cloud|cloud-storage|cloud|
+home|Creative Cloud Files*|cloud|cloud-storage|cloud|
+home|Box|cloud|cloud-storage|cloud|
+home|Box Sync|cloud|cloud-storage|cloud|
+home|iCloud Drive|cloud|icloud|cloud|
+home|.ssh|secret|user-data|unprotected|credentials: escrow private keys
+home|.gnupg|secret|user-data|unprotected|credentials: escrow secret keys
+home|.aws|secret|user-data|unprotected|credentials
+home|.kube|secret|user-data|unprotected|credentials
+home|.netrc|secret|user-data|unprotected|credentials
+home|.git-credentials|secret|user-data|unprotected|credentials
+home|.password-store|secret|user-data|unprotected|credentials
+home|.orbstack|vm|app-data|unprotected|VM/container disks are local only (images re-pull)
+home|OrbStack|vm|app-data|unprotected|VM/container disks are local only (images re-pull)
+home|.lima|vm|app-data|unprotected|VM disks are local only
+home|.colima|vm|app-data|unprotected|VM disks are local only
+home|.docker|vm|app-data|unprotected|container config and contexts
+home|.vagrant.d|vm|app-data|unprotected|VM boxes re-download; VM disks do not
+home|Parallels|vm|app-data|unprotected|VM disks are local only
+home|Virtual Machines|vm|app-data|unprotected|VM disks are local only
+home|Virtual Machines.localized|vm|app-data|unprotected|VM disks are local only
+home|VirtualBox VMs|vm|app-data|unprotected|VM disks are local only
+home|.dropbox|cache|app-data|reinstallable|Dropbox internal state (sync database, cache); re-created when Dropbox signs in
+home|.dropbox-dist|cache|tooling|reinstallable|Dropbox app binaries
+home|.dropbox-master|cache|app-data|reinstallable|Dropbox internal state
+home|.cache|cache|cache|reinstallable|
+home|.npm|cache|cache|reinstallable|
+home|.pnpm-store|cache|cache|reinstallable|
+home|.yarn|cache|cache|reinstallable|
+home|.node-gyp|cache|cache|reinstallable|
+home|.gradle|cache|cache|reinstallable|
+home|.m2|cache|cache|reinstallable|
+home|.pub-cache|cache|cache|reinstallable|
+home|.dartServer|cache|cache|reinstallable|
+home|.cocoapods|cache|cache|reinstallable|
+home|.zsh_sessions|cache|cache|reinstallable|
+home|.ollama|cache|tooling|reinstallable|model weights re-download (ollama pull)
+home|.lmstudio|cache|tooling|reinstallable|model weights re-download
+home|.huggingface|cache|tooling|reinstallable|model weights re-download
+home|.npm-global|cache|tooling|reinstallable|
+home|.cargo|cache|tooling|reinstallable|
+home|.rustup|cache|tooling|reinstallable|
+home|.bun|cache|tooling|reinstallable|
+home|.nvm|cache|tooling|reinstallable|
+home|.pyenv|cache|tooling|reinstallable|
+home|.rbenv|cache|tooling|reinstallable|
+home|.gem|cache|tooling|reinstallable|
+home|.vscode|cache|tooling|reinstallable|editor extensions
+home|.vscode-insiders|cache|tooling|reinstallable|editor extensions
+home|.cursor|cache|tooling|reinstallable|editor extensions
+home|.windsurf|cache|tooling|reinstallable|editor extensions
+home|.deno|cache|tooling|reinstallable|
+home|.expo|cache|tooling|reinstallable|
+home|.android|cache|tooling|reinstallable|
+home|.swiftpm|cache|tooling|reinstallable|
+home|.platformio|cache|tooling|reinstallable|
+home|go|cache|tooling|reinstallable|
+home|.nix-defexpr|cache|tooling|reinstallable|
+home|.nix-profile|cache|tooling|reinstallable|
+home|.conda|cache|tooling|reinstallable|
+home|miniconda3|cache|tooling|reinstallable|
+home|anaconda3|cache|tooling|reinstallable|
+appdata|Signal|RED|app-data|unprotected|Signal Desktop history is not synced to a new install
+appdata|org.whispersystems.signal-desktop*|RED|app-data|unprotected|Signal Desktop history is not synced to a new install
+appdata|*WhatsApp*|AMBER|app-data|reinstallable|WhatsApp Desktop history lives on the phone; re-link after the wipe
+appdata|*whatsapp*|AMBER|app-data|reinstallable|WhatsApp Desktop history lives on the phone; re-link after the wipe
+appdata|com.utmapp.UTM|VM|app-data|unprotected|virtual machine disks are local only
+appdata|*Parallels*|VM|app-data|unprotected|virtual machine disks are local only
+appdata|*parallels*|VM|app-data|unprotected|virtual machine disks are local only
+appdata|VMware Fusion|VM|app-data|unprotected|virtual machine disks are local only
+appdata|com.vmware.fusion*|VM|app-data|unprotected|virtual machine disks are local only
+appdata|com.docker.docker|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|Docker Desktop|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|*dev.orbstack*|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|OrbStack|AMBER|app-data|unprotected|container volumes are local only (images re-pull)
+appdata|MobileSync|NONE|app-data|unprotected|iPhone/iPad backups made by Finder (pre-wipe-check judges them under Data cleanup candidates)
+appdata|obsidian|NONE|app-data|reinstallable|Obsidian app settings; the vaults are separate folders
+appdata|Dropbox|-|app-data|reinstallable|Dropbox app state; re-created on sign-in
+appdata|CloudDocs|-|app-data|reinstallable|iCloud Drive internal state
+appdata|Ollama|-|tooling|reinstallable|
+appdata|LM Studio|-|tooling|reinstallable|
+appdata|Steam|-|tooling|reinstallable|games re-download; saves sync via Steam Cloud
+appdata|Caches|-|cache|reinstallable|'
+
+# Chromium-family browsers: "Label:path under ~/Library/Application Support".
+CHROMIUM_BROWSERS="Google Chrome:Google/Chrome
+Brave:BraveSoftware/Brave-Browser
+Microsoft Edge:Microsoft Edge
+Vivaldi:Vivaldi
+Arc:Arc/User Data
+Dia:Dia/User Data
+Chromium:Chromium"
+
+# Wallet apps: "Name|keys|app bundles;…|data dirs under ~;…". keys=local means
+# the app's own files may hold (encrypted) private keys; hardware means the
+# keys are on a device and the app data is a cache. Folders are only tested
+# for existence and sized — never opened.
+WALLET_APPS="Exodus|local|Exodus.app|Library/Application Support/Exodus
+Electrum|local|Electrum.app|.electrum;Library/Application Support/Electrum
+Ledger Live|hardware|Ledger Live.app|Library/Application Support/Ledger Live
+MyCrypto|local|MyCrypto.app|Library/Application Support/MyCrypto
+KeepKey|hardware|KeepKey Desktop.app;KeepKey Client.app;KeepKey.app|Library/Application Support/KeepKey;Library/Application Support/keepkey-desktop;Library/Application Support/KeepKey Desktop
+Cypherock|hardware|cySync.app;Cypherock cySync.app;Cypherock.app|Library/Application Support/cySync;Library/Application Support/Cypherock
+Atomic Wallet|local|Atomic Wallet.app|Library/Application Support/atomic;Library/Application Support/Atomic Wallet"
+# Wallet browser extensions (Chrome Web Store ids): "id|Name".
+WALLET_EXTENSIONS="nkbihfbeogaeaoehlefnkodbefgpgknn|MetaMask
+bfnaelmomeimhlpmgjnjophhpkkoljpa|Phantom
+hnfanknocfeofbddgcijnmhnfnkdnaad|Coinbase Wallet
+acmacodkjbdgmoleebolmdjonilkdbch|Rabby"
+
+# data_class_rule SCOPE NAME → "kind|category|status|note" of the first
+# matching row; returns 1 when no row matches. bash 3.2-safe, no temp files.
+data_class_rule() {
+  local scope="$1" name="$2" s pat kind cat st note
+  while IFS='|' read -r s pat kind cat st note; do
+    [ "$s" = "$scope" ] || continue
+    # shellcheck disable=SC2254  # $pat IS the glob
+    case "$name" in $pat) printf '%s|%s|%s|%s\n' "$kind" "$cat" "$st" "$note"; return 0 ;; esac
+  done < <(printf '%s\n' "$DATA_CLASS_RULES")
+  return 1
+}
+# <<< END SHARED DATA CLASSIFICATION <<<
+
 # ── Validate mode up front ──────────────────────────────────────────────
 # Fail loud on an unrecognized mode instead of silently running a no-op audit:
 # the early-exit guards (--install/--uninstall/--checklist) use exact matches and
@@ -2200,6 +2368,704 @@ print(json.dumps(result))
 PYEOF
 }
 
+# Data inventory (rh-device-management fleet data view): what important data
+# this account holds that nothing replicates, for a per-item owner decision
+# (back up / ignore / delete later). Contract: top-level `data_inventory`,
+# schema 1 — items (path, category, size, files, newest mtime, coverage,
+# status) + the 20 largest files. Folder/file NAMES and sizes only, never
+# contents.
+#
+# Privacy: without Full Disk Access (probed via TCC.db, which never prompts)
+# the macOS-protected folders are not opened — they are reported
+# `not-inspected` (Photos: `unprotected` unless iCloud Photos is on). Granting
+# FDA to /usr/local/libexec/rh7-fleet-launcher (modules/darwin/fleet-launcher.nix)
+# unlocks them for the scheduled run.
+#
+# Cost: one wall-clock budget (AUDIT_DATA_BUDGET, 90s) with a du cap per item;
+# sizes are cached in ~/.local/state/rh7-audit/data-inventory-cache.json and
+# reused for a week unless the folder's mtime changed, so a daily run is
+# seconds once warm. The cache is the one file this collector writes.
+# Classification rules: the SHARED DATA CLASSIFICATION block above.
+collect_data_inventory() {
+  DATA_CLASS_RULES="$DATA_CLASS_RULES" WALLET_APPS="$WALLET_APPS" WALLET_EXTENSIONS="$WALLET_EXTENSIONS" \
+  CHROMIUM_BROWSERS="$CHROMIUM_BROWSERS" GIT_REPOS_JSON="${GIT_REPOS_JSON:-}" \
+    python3 - <<'PYEOF' 2>/dev/null || echo '{"schema": 1, "error": "collector-failed", "items": [], "largest_files": []}'
+import calendar, fnmatch, json, pwd, os, platform, plistlib, re, shutil, stat, subprocess, sys, time
+
+T0 = time.monotonic()
+NOW = time.time()
+
+def knob(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+BUDGET = knob('AUDIT_DATA_BUDGET', 90)            # whole-section wall clock
+DU_TIMEOUT = knob('AUDIT_DATA_DU_TIMEOUT', 20)    # one du
+WALK_TIMEOUT = knob('AUDIT_DATA_WALK_TIMEOUT', 5)  # file count / newest mtime walk
+LARGEST_TIMEOUT = knob('AUDIT_DATA_LARGEST_TIMEOUT', 45)
+LARGEST_MIN_MB = int(knob('AUDIT_DATA_LARGEST_MIN_MB', 500))
+REUSE_SECS = 7 * 86400   # a cached measurement is reused for a week ...
+FRESH_HOURS = 48         # restic / Time Machine count only when this recent
+MB = 1024 * 1024
+APPDATA_MIN = 100 * MB   # app-data folders smaller than this are not items
+SMALL = 1 * MB           # home folders smaller than this are noise ...
+DEADLINE = T0 + BUDGET
+
+HOME = os.path.realpath(os.path.expanduser('~'))
+SYSTEM = os.environ.get('AUDIT_DATA_PLATFORM') or platform.system()
+DARWIN = SYSTEM == 'Darwin'
+INCLUDE_PROTECTED = os.environ.get('AUDIT_INCLUDE_PROTECTED') == '1'
+STATE_DIR = os.environ.get('AUDIT_DATA_STATE_DIR') or os.path.join(HOME, '.local/state/rh7-audit')
+CACHE_FILE = os.path.join(STATE_DIR, 'data-inventory-cache.json')
+LIB = os.path.join(HOME, 'Library')
+
+budget_exhausted = False
+
+def tilde(p):
+    if p == HOME:
+        return '~'
+    return '~/' + p[len(HOME) + 1:] if p.startswith(HOME + '/') else p
+
+def iso(epoch):
+    try:
+        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(float(epoch)))
+    except Exception:
+        return None
+
+def under(p, root):
+    return p == root or p.startswith(root.rstrip('/') + '/')
+
+def remaining():
+    return DEADLINE - time.monotonic()
+
+# ── shared classification (DATA_CLASS_RULES, see the shared block) ──────────
+RULES = []
+for line in os.environ.get('DATA_CLASS_RULES', '').split('\n'):
+    f = line.split('|')
+    if len(f) >= 6:
+        RULES.append((f[0], f[1], f[2], f[3], f[4], '|'.join(f[5:])))
+
+def rule(scope, name):
+    for s, pat, kind, cat, st, note in RULES:
+        if s == scope and fnmatch.fnmatchcase(name, pat):
+            return {'kind': kind, 'category': cat, 'status': st, 'note': note or None}
+    return None
+
+CLOUD_ROOTS = []   # (abs path, coverage token)
+try:
+    for name in os.listdir(HOME):
+        r = rule('home', name)
+        if r and r['status'] == 'cloud':
+            CLOUD_ROOTS.append((os.path.join(HOME, name), r['category']))
+except Exception:
+    pass
+CLOUD_ROOTS.append((os.path.join(LIB, 'Mobile Documents'), 'icloud'))
+CLOUD_ROOTS.append((os.path.join(LIB, 'CloudStorage'), 'cloud-storage'))
+
+# ── access: Full Disk Access and the protected folders ──────────────────────
+# TCC.db is readable only with Full Disk Access, and a denied FDA check never
+# raises a prompt — unlike opening Desktop/Documents/Downloads, which can. So
+# without FDA the protected folders are NOT touched (stat at most) unless the
+# operator opted in with --include-protected for a one-off deep audit.
+def fda_granted():
+    if not DARWIN:
+        return True
+    try:
+        with open(os.path.join(LIB, 'Application Support/com.apple.TCC/TCC.db'), 'rb') as f:
+            f.read(1)
+        return True
+    except Exception:
+        return False
+
+FDA = fda_granted()
+PROTECTED_HOME = {'Desktop', 'Documents', 'Downloads', 'Pictures', 'Movies', 'Music'}
+PROTECTED_LIB = [os.path.join(LIB, n) for n in ('Messages', 'Mail', 'Containers', 'Group Containers', 'Safari')]
+MAY_TOUCH_PROTECTED = FDA or INCLUDE_PROTECTED or not DARWIN
+
+def is_protected(p):
+    if not DARWIN:
+        return False
+    for n in PROTECTED_HOME:
+        if under(p, os.path.join(HOME, n)):
+            return True
+    if under(p, os.path.join(HOME, '.Trash')):
+        return True
+    return any(under(p, q) for q in PROTECTED_LIB)
+
+touched_ok, touched_denied = [], []
+
+def accessible(p):
+    """True = may be measured. Protected paths are probed only when allowed."""
+    if is_protected(p) and not MAY_TOUCH_PROTECTED:
+        return False
+    try:
+        if os.path.isdir(p):
+            os.listdir(p)
+        else:
+            with open(p, 'rb'):
+                pass
+        if is_protected(p):
+            touched_ok.append(p)
+        return True
+    except Exception:
+        if is_protected(p):
+            touched_denied.append(p)
+        return False
+
+# ── iCloud / cloud account state (preferences only: never protected) ───────
+def plist(path):
+    try:
+        with open(path, 'rb') as f:
+            return plistlib.load(f)
+    except Exception:
+        return {}
+
+icloud_services = {}
+if DARWIN:
+    accts = plist(os.path.join(LIB, 'Preferences/MobileMeAccounts.plist')).get('Accounts') or []
+    if accts and isinstance(accts[0], dict):
+        for s in accts[0].get('Services') or []:
+            if isinstance(s, dict) and s.get('Name'):
+                icloud_services[s['Name']] = {'enabled': s.get('Enabled') is True, 'status': s.get('status')}
+finder = plist(os.path.join(LIB, 'Preferences/com.apple.finder.plist')) if DARWIN else {}
+dd_both = icloud_services.get('CLOUDDESKTOP', {}).get('status') == 'active'
+DD_SYNCED = {
+    'Desktop': dd_both or finder.get('FXICloudDriveDesktop') in (1, True),
+    'Documents': dd_both or finder.get('FXICloudDriveDocuments') in (1, True),
+}
+icloud_photos = any(icloud_services.get(n, {}).get('enabled') for n in ('PHOTO_STREAM', 'PHOTOS', 'CLOUDPHOTOS'))
+photos_prefs = plist(os.path.join(LIB, 'Preferences/com.apple.photos.shareddefaults.plist')) if DARWIN else {}
+icloud_photos_ever = bool(photos_prefs.get('iCloudPhotoLibraryHasBeenEnabledAccountIdentifiers'))
+
+# ── backups that can cover a path ───────────────────────────────────────────
+def run(cmd, timeout=8):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=max(1, timeout))
+        return r.returncode, r.stdout
+    except Exception:
+        return 1, ''
+
+def parse_iso(s):
+    try:
+        return calendar.timegm(time.strptime(s[:19], '%Y-%m-%dT%H:%M:%S')) if s else None
+    except Exception:
+        return None
+
+restic_paths = []   # absolute roots of the latest fresh rh7-restic snapshot
+restic_snap = None  # its time (epoch)
+# restic --exclude-larger-than (status.json `exclude_larger_than`; the module
+# default before the field existed): a folder holding a bigger file is NOT
+# fully in any snapshot, so it is not reported restic-covered.
+def size_cap(v):
+    m = re.match(r'^\s*(\d+)\s*([KMGT]?)i?B?\s*$', str(v or ''), re.I)
+    if not m:
+        return None
+    return int(m.group(1)) * 1024 ** ' KMGT'.index((m.group(2) or ' ').upper())
+restic_cap = 100 * MB
+try:
+    job = (os.path.exists(os.path.join(LIB, 'LaunchAgents/org.rh7.restic-backup.plist'))
+           or bool(shutil.which('rh7-restic-backup')))
+    with open(os.path.join(HOME, '.local/state/rh7-restic/status.json')) as f:
+        st = json.load(f)
+    snap = parse_iso(st.get('last_snapshot_time') or '')
+    if job and st.get('schema') == 1 and snap and NOW - snap < FRESH_HOURS * 3600:
+        restic_snap = snap
+        restic_cap = size_cap(st.get('exclude_larger_than')) or restic_cap
+        for p in st.get('paths') or []:
+            if isinstance(p, str):
+                a = HOME + p[1:] if p == '~' or p.startswith('~/') else p
+                if a.startswith('/'):
+                    restic_paths.append(a.rstrip('/') or '/')
+except Exception:
+    pass
+
+tm_fresh = False
+tm_snap = None   # time of the latest Time Machine backup (epoch)
+if DARWIN and shutil.which('tmutil'):
+    rc, di = run(['tmutil', 'destinationinfo'])
+    if rc == 0 and di.strip() and 'No destinations' not in di:
+        rc, latest = run(['tmutil', 'latestbackup'])
+        m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest or '')
+        if m:
+            try:
+                tm_snap = time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S'))
+                tm_fresh = NOW - tm_snap < FRESH_HOURS * 3600
+            except Exception:
+                pass
+
+try:
+    git = json.loads(os.environ.get('GIT_REPOS_JSON') or '{}')
+except Exception:
+    git = {}
+repos = {}
+for r in git.get('repos') or []:
+    if isinstance(r, dict) and isinstance(r.get('path'), str):
+        p = r['path']
+        repos[HOME + p[1:] if p.startswith('~/') else p] = r
+
+# A backup can only hold what existed when it ran: a folder created after the
+# latest restic snapshot / Time Machine backup is in neither, however fresh the
+# backup and whatever its include rules say. Birth time where the platform has
+# one (macOS), else ctime — later than creation, so it errs toward NOT covered.
+def born_before(p, epoch):
+    if epoch is None:
+        return False
+    try:
+        st = os.stat(p)
+    except Exception:
+        return False
+    return (getattr(st, 'st_birthtime', None) or st.st_ctime) < epoch
+
+def coverage_of(p, max_file=None, notes=None):
+    cov = []
+    for root, token in CLOUD_ROOTS:
+        if under(p, root) and token not in cov:
+            cov.append(token)
+    for n in ('Desktop', 'Documents'):
+        if DD_SYNCED[n] and under(p, os.path.join(HOME, n)) and 'icloud' not in cov:
+            cov.append('icloud')
+    r = repos.get(p)
+    if r is not None and not r.get('at_risk'):
+        cov.append('git-remote')
+    if any(under(p, rp) for rp in restic_paths) and born_before(p, restic_snap):
+        if max_file is not None and max_file <= restic_cap:
+            cov.append('restic')
+        elif notes is not None:
+            notes.append('in the restic backup, but files over its size cap are not' if max_file is not None
+                         else 'in the restic backup; not confirmed complete (no full file scan for its size cap)')
+    return cov
+
+# ── measuring: du for size, a bounded walk for files/newest, weekly cache ──
+try:
+    with open(CACHE_FILE) as f:
+        CACHE = json.load(f)
+    if not isinstance(CACHE, dict) or CACHE.get('schema') != 1:
+        raise ValueError
+except Exception:
+    CACHE = {'schema': 1, 'items': {}, 'largest': None}
+CACHE.setdefault('items', {})
+cache_dirty = False
+
+def dir_mtime(p):
+    try:
+        return os.stat(p).st_mtime
+    except Exception:
+        return None
+
+def du_bytes(p, timeout):
+    """(bytes|None, state): ok, partial (some subtree unreadable), timeout, error."""
+    try:
+        r = subprocess.run(['du', '-skx', p], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, 'timeout'
+    except Exception:
+        return None, 'error'
+    lines = [l for l in r.stdout.strip().split('\n') if l.strip()]
+    kb = lines[-1].split('\t')[0].strip() if lines else ''
+    if not kb.isdigit():
+        return None, 'error'
+    return int(kb) * 1024, ('partial' if r.returncode != 0 else 'ok')
+
+def walk_stats(p, timeout):
+    """(files, newest mtime, largest file bytes), or Nones when the walk did not finish."""
+    end = time.monotonic() + timeout
+    files, newest, biggest, n = 0, None, 0, 0
+    stack = [p]
+    try:
+        dev = os.lstat(p).st_dev
+    except Exception:
+        return None, None, None
+    while stack:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except Exception:
+            continue
+        with it:
+            for e in it:
+                n += 1
+                if n % 2000 == 0 and time.monotonic() > end:
+                    return None, None, None
+                try:
+                    s = e.stat(follow_symlinks=False)
+                except Exception:
+                    continue
+                if stat.S_ISDIR(s.st_mode):
+                    if s.st_dev == dev:
+                        stack.append(e.path)
+                elif stat.S_ISREG(s.st_mode):
+                    files += 1
+                    biggest = max(biggest, s.st_size)
+                    if newest is None or s.st_mtime > newest:
+                        newest = s.st_mtime
+    if os.path.isfile(p):
+        try:
+            s = os.stat(p)
+            return 1, s.st_mtime, s.st_size
+        except Exception:
+            return None, None, None
+    return files, newest, biggest
+
+def measure(p):
+    """Cached-or-fresh measurement of one path, within the section budget."""
+    global budget_exhausted, cache_dirty
+    c = CACHE['items'].get(p)
+    mt = dir_mtime(p)
+    if c and NOW - c.get('measured_at', 0) < REUSE_SECS and c.get('dir_mtime') == mt:
+        return c, None
+    left = remaining()
+    if left < 1:
+        budget_exhausted = True
+        if c and c.get('size_bytes') is not None:
+            return c, 'size from %s (time budget exhausted)' % (iso(c.get('measured_at')) or '?')[:10]
+        return None, 'not sized: time budget exhausted'
+    size, state = du_bytes(p, min(DU_TIMEOUT, left))
+    if state == 'timeout':
+        budget_exhausted = True
+        # Remembered, so a folder too big for the cap is not retried daily.
+        CACHE['items'][p] = {'size_bytes': None, 'timed_out': True, 'measured_at': NOW, 'dir_mtime': mt}
+        cache_dirty = True
+        return None, 'not sized: du exceeded %ds (retried weekly)' % int(DU_TIMEOUT)
+    if state == 'error':
+        return None, 'not sized: du failed'
+    files, newest, biggest = walk_stats(p, max(0.5, min(WALK_TIMEOUT, remaining())))
+    c = {'size_bytes': size, 'files': files, 'newest_mtime': newest, 'max_file_bytes': biggest,
+         'partial': state == 'partial',
+         'measured_at': NOW, 'dir_mtime': mt}
+    CACHE['items'][p] = c
+    cache_dirty = True
+    return c, None
+
+# ── candidates ──────────────────────────────────────────────────────────────
+cands = {}   # abs path -> dict(category, status(rule), note, kind, protected_item)
+
+def add(p, category, status='unprotected', note=None, kind=None, always=False, min_size=0):
+    if p in cands:
+        return
+    cands[p] = {'category': category, 'rule_status': status, 'notes': [note] if note else [],
+                'kind': kind, 'always': always, 'min_size': min_size}
+
+# 1. top-level home folders
+try:
+    names = sorted(os.listdir(HOME))
+except Exception:
+    names = []
+for name in names:
+    p = os.path.join(HOME, name)
+    if os.path.islink(p) or not os.path.isdir(p):
+        continue
+    r = rule('home', name) or {'kind': 'other', 'category': 'user-data', 'status': 'unprotected', 'note': None}
+    if r['status'] in ('skip', 'cloud'):
+        continue
+    # Protected folders stay listed even unmeasured: "not-inspected" is the point.
+    keep = r['kind'] in ('secret', 'dd') or name == 'Downloads' or (DARWIN and name in PROTECTED_HOME)
+    add(p, r['category'], r['status'], r['note'], r['kind'], always=keep, min_size=0 if keep else SMALL)
+
+# 2. Photos libraries (owner rule: always reported)
+pictures = os.path.join(HOME, 'Pictures')
+photo_libs = []
+photo_default_assumed = False
+if DARWIN:
+    if accessible(pictures):
+        for base in [pictures] + [e.path for e in os.scandir(pictures) if e.is_dir() and not e.name.endswith('.photoslibrary')]:
+            try:
+                photo_libs += [e.path for e in os.scandir(base) if e.name.endswith('.photoslibrary') and e.is_dir()]
+            except Exception:
+                pass
+    # Evidence from preferences only: even a stat inside ~/Library/Containers
+    # can raise macOS's "access data from other apps" prompt.
+    elif photos_prefs or icloud_photos or os.path.exists(os.path.join(LIB, 'Preferences/com.apple.Photos.plist')):
+        photo_libs.append(os.path.join(pictures, 'Photos Library.photoslibrary'))
+        photo_default_assumed = True
+for lib in sorted(set(photo_libs)):
+    add(lib, 'photos', always=True)
+
+# 3. Messages, Mail
+if DARWIN:
+    for sub, cat, note in [
+        ('Messages', 'messages', None),
+        ('Mail', 'mail', 'IMAP/Exchange mail re-downloads; local "On My Mac" mailboxes do not'),
+    ]:
+        p = os.path.join(LIB, sub)
+        if os.path.isdir(p):
+            add(p, cat, note=note, always=True)
+
+# 4. wallets (size only; never opened)
+for line in (os.environ.get('WALLET_APPS') or '').split('\n'):
+    f = line.split('|')
+    if len(f) < 4:
+        continue
+    name, keys, dirs = f[0], f[1], f[3]
+    for d in dirs.split(';'):
+        p = os.path.join(HOME, d)
+        if d and os.path.isdir(p):
+            if keys == 'hardware':
+                add(p, 'wallet', 'reinstallable', '%s: keys live on the hardware device; this is app data' % name, always=True)
+            else:
+                add(p, 'wallet', 'unprotected', '%s: may hold encrypted private keys — confirm the seed phrase is stored offline' % name, always=True)
+exts = [l.split('|', 1) for l in (os.environ.get('WALLET_EXTENSIONS') or '').split('\n') if '|' in l]
+for line in (os.environ.get('CHROMIUM_BROWSERS') or '').split('\n'):
+    if ':' not in line:
+        continue
+    browser, rel = line.split(':', 1)
+    root = os.path.join(LIB, 'Application Support', rel)
+    if not os.path.isdir(root):
+        continue
+    try:
+        profiles = [e.name for e in os.scandir(root) if e.is_dir() and (e.name == 'Default' or e.name.startswith('Profile '))]
+    except Exception:
+        profiles = []
+    for prof in sorted(profiles):
+        for ext_id, ext_name in exts:
+            p = os.path.join(root, prof, 'Local Extension Settings', ext_id)
+            if os.path.isdir(p):
+                add(p, 'wallet', 'unprotected', '%s extension (%s, %s): encrypted vault — the seed phrase is the backup'
+                    % (ext_name, browser, prof), always=True)
+
+# 5. app data: Application Support (non-protected), Containers + Group Containers (protected)
+appdata_roots = [os.path.join(LIB, 'Application Support')]
+if DARWIN:
+    appdata_roots += [os.path.join(LIB, 'Containers'), os.path.join(LIB, 'Group Containers')]
+for root in appdata_roots:
+    if not os.path.isdir(root):
+        continue
+    if is_protected(root) and not accessible(root):
+        add(root, 'app-data', note='sandboxed app data (listed per app once Full Disk Access is granted)', always=True)
+        continue
+    try:
+        entries = sorted(e.path for e in os.scandir(root) if e.is_dir(follow_symlinks=False))
+    except Exception:
+        continue
+    for p in entries:
+        name = os.path.basename(p)
+        r = rule('appdata', name)
+        if r:
+            add(p, r['category'], r['status'], r['note'], always=r['status'] == 'unprotected',
+                min_size=0 if r['status'] == 'unprotected' else APPDATA_MIN)
+        else:
+            add(p, 'app-data', note='app data a reinstall does not restore — confirm it syncs or is disposable',
+                min_size=APPDATA_MIN)
+
+# 6. git repos at risk (from the git_repos section)
+for p, r in sorted(repos.items()):
+    if r.get('at_risk'):
+        why = []
+        if r.get('dirty'):
+            why.append('%d uncommitted change(s)' % r['dirty'])
+        if not r.get('has_remote'):
+            why.append('no remote')
+        if r.get('unpushed'):
+            why.append('%d unpushed commit(s)' % r['unpushed'])
+        if p in cands:   # a top-level folder that is itself a repo
+            cands[p]['category'] = 'repo'
+            cands[p]['always'] = True
+            cands[p]['notes'].append('git: ' + ', '.join(why or ['at risk']))
+        else:
+            add(p, 'repo', note='git: ' + ', '.join(why or ['at risk']), always=True)
+
+# Home folders that hold repos: say so (untracked/ignored files are not in git).
+for p, c in cands.items():
+    held = [rp for rp in repos if rp != p and under(rp, p)]
+    if held:
+        risky = len([rp for rp in held if repos[rp].get('at_risk')])
+        c['notes'].append('holds %d git repo(s), %d at risk' % (len(held), risky))
+
+# ── measure (unmeasured first, so a short budget fills in over a few days) ──
+# The largest-files list is cached per access scope: names found WITH access
+# to protected folders must never be reported once that access is gone.
+LARGEST_SCOPE = 'all' if MAY_TOUCH_PROTECTED else 'unprotected'
+largest_cached = CACHE.get('largest') if isinstance(CACHE.get('largest'), dict) else None
+if largest_cached and largest_cached.get('scope') != LARGEST_SCOPE:
+    largest_cached = None
+largest_fresh = bool(largest_cached and NOW - largest_cached.get('measured_at', 0) < REUSE_SECS)
+if not largest_fresh:
+    DEADLINE = T0 + max(BUDGET * 0.5, BUDGET - LARGEST_TIMEOUT)   # leave room for the find
+order = sorted(cands, key=lambda p: (p in CACHE['items'], CACHE['items'].get(p, {}).get('measured_at', 0), p))
+results = {}
+for p in order:
+    c = cands[p]
+    inspectable = accessible(p) if is_protected(p) else os.access(p, os.R_OK | os.X_OK) or os.path.isfile(p)
+    if not inspectable:
+        results[p] = (None, 'denied' if (MAY_TOUCH_PROTECTED or not is_protected(p)) else 'not-allowed')
+        continue
+    results[p] = measure(p)
+DEADLINE = T0 + BUDGET
+
+# ── items ───────────────────────────────────────────────────────────────────
+lib_bytes = 0
+lib_unknown = False
+for lib in photo_libs:
+    m = results.get(lib, (None, None))[0] if isinstance(results.get(lib, (None, None))[0], dict) else None
+    if m and m.get('size_bytes') is not None:
+        lib_bytes += m['size_bytes']
+    else:
+        lib_unknown = True
+
+items = []
+for p, c in cands.items():
+    m, extra = results.get(p, (None, None))
+    inspected = isinstance(m, dict) or extra not in ('denied', 'not-allowed')
+    notes = list(c['notes'])
+    size = files = newest = None
+    if isinstance(m, dict):
+        size, files, newest = m.get('size_bytes'), m.get('files'), m.get('newest_mtime')
+        if m.get('partial'):
+            notes.append('partly unreadable: size is a lower bound')
+        if m.get('timed_out'):
+            notes.append('not sized: du exceeded its cap (retried weekly)')
+    elif extra == 'not-allowed':
+        notes.append('not inspected: no Full Disk Access')
+    elif extra == 'denied':
+        notes.append('not inspected: access denied')
+    elif extra:
+        notes.append(extra)
+    if isinstance(m, dict) and extra:
+        notes.append(extra)
+    if p == pictures and size is not None and photo_libs:
+        size = max(0, size - lib_bytes)
+        notes.append('excludes Photos libraries' + (' (some unsized)' if lib_unknown else ''))
+    if not c['always'] and (not inspected or (size is not None and size < c['min_size'])):
+        continue   # too small to matter, or a size-gated candidate that could not be judged
+    cov = coverage_of(p, m.get('max_file_bytes') if isinstance(m, dict) else None, notes)
+    if c['category'] == 'photos':
+        if icloud_photos and 'icloud' not in cov:
+            cov.append('icloud')
+            notes.append('iCloud Photos on (best effort); whether originals are kept on this Mac is not detectable')
+        elif not icloud_photos:
+            notes.append('iCloud Photos not confirmed' + (' (was enabled at some point)' if icloud_photos_ever else ''))
+        if photo_default_assumed:
+            notes.append('default library location assumed, existence not verified')
+    if c['rule_status'] == 'reinstallable':
+        status = 'reinstallable'
+    elif cov:
+        status = 'covered'
+    elif not inspected and c['category'] != 'photos':
+        status = 'not-inspected'
+    else:
+        status = 'unprotected'
+    items.append({
+        '_abs': p, '_inspected': inspected,
+        'path': tilde(p),
+        'category': c['category'],
+        'size_bytes': size if inspected else None,
+        'files': files if inspected else None,
+        'newest_mtime': iso(newest) if (inspected and newest) else None,
+        'coverage': cov,
+        'status': status,
+        'note': '; '.join(n for n in notes if n) or None,
+    })
+
+# Time Machine: one batched `tmutil isexcluded`, only for paths that may be
+# stat'ed, and only when the latest backup is fresh. Best effort.
+if tm_fresh:
+    tm_paths = [i['_abs'] for i in items if i['_inspected']]
+    if tm_paths and remaining() > 2:
+        rc, out = run(['tmutil', 'isexcluded'] + tm_paths, timeout=min(15, remaining()))
+        included = set()
+        for line in out.split('\n'):
+            mm = re.match(r'^\[Included\]\s+(.*\S)\s*$', line.strip())
+            if mm:
+                included.add(mm.group(1))
+        for i in items:
+            if i['_abs'] in included and born_before(i['_abs'], tm_snap):
+                i['coverage'].append('time-machine')
+                if i['status'] in ('unprotected',):
+                    i['status'] = 'covered'
+for i in items:
+    del i['_abs'], i['_inspected']
+
+# ── largest files (top 20 over the threshold) ───────────────────────────────
+def find_largest(timeout):
+    prune = [os.path.join(LIB, 'Caches'), os.path.join(HOME, '.cache')] + [r for r, _ in CLOUD_ROOTS]
+    roots = [HOME]
+    if DARWIN and not MAY_TOUCH_PROTECTED:
+        prune += [LIB, os.path.join(HOME, '.Trash')] + [os.path.join(HOME, n) for n in sorted(PROTECTED_HOME)]
+        roots.append(os.path.join(LIB, 'Application Support'))
+    expr = []
+    for q in prune:
+        expr += ['-path', q, '-o']
+    expr += ['-name', '*.photoslibrary']
+    out, timed_out = '', False
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        left = min(timeout, remaining())
+        if left < 2:
+            timed_out = True
+            break
+        cmd = ['find', root, '-xdev', '('] + expr + [')', '-prune', '-o', '-type', 'f',
+               '-size', '+%dM' % LARGEST_MIN_MB, '-print0']
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=left)
+            out += r.stdout.decode('utf-8', 'replace')
+        except subprocess.TimeoutExpired as e:
+            timed_out = True
+            out += (e.stdout or b'').decode('utf-8', 'replace')
+        except Exception:
+            pass
+    rows = []
+    for p in set(x for x in out.split('\0') if x):
+        try:
+            s = os.stat(p)
+            rows.append({'path': tilde(p), 'size_bytes': s.st_size, 'mtime': iso(s.st_mtime)})
+        except Exception:
+            pass
+    rows.sort(key=lambda r: (-r['size_bytes'], r['path']))
+    return rows[:20], timed_out
+
+if largest_fresh:
+    largest = largest_cached.get('files') or []
+else:
+    largest, to = find_largest(LARGEST_TIMEOUT)
+    if to:
+        budget_exhausted = True
+        if not largest and largest_cached:
+            largest = largest_cached.get('files') or []
+    else:
+        CACHE['largest'] = {'measured_at': NOW, 'scope': LARGEST_SCOPE, 'files': largest}
+        cache_dirty = True
+
+# Belt and braces: whatever the source, no protected path leaves this Mac
+# while this run may not look there.
+if not MAY_TOUCH_PROTECTED:
+    largest = [f for f in largest if not is_protected(HOME + f['path'][1:] if f['path'].startswith('~/') else f['path'])]
+
+# ── cache write (atomic, 0600: it holds folder and file names) ──────────────
+if cache_dirty:
+    try:
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+        tmp = CACHE_FILE + '.%d.tmp' % os.getpid()
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(CACHE, f)
+        os.replace(tmp, CACHE_FILE)
+    except Exception:
+        pass
+
+if not DARWIN or FDA:
+    access = 'granted'
+elif touched_ok:
+    access = 'partial'
+else:
+    access = 'denied'
+
+order_status = {'unprotected': 0, 'not-inspected': 1, 'covered': 2, 'reinstallable': 3}
+items.sort(key=lambda i: (order_status.get(i['status'], 9), -(i['size_bytes'] or 0), i['path']))
+print(json.dumps({
+    'schema': 1,
+    'collected_at': iso(NOW),
+    'account': pwd.getpwuid(os.getuid()).pw_name,
+    'protected_access': access,
+    'budget_exhausted': budget_exhausted,
+    'elapsed_seconds': round(time.monotonic() - T0, 1),
+    'items': items,
+    'largest_files': largest,
+}))
+PYEOF
+}
+
 # Secret inventory (rh-device-management#68). Normalized secret records for
 # cross-device orphan detection (GROUP BY fingerprint server-side). Captures
 # whole classes not previously inventoried: GPG secret keys, cloud/CLI cred
@@ -2722,6 +3588,9 @@ collect_audit_scope() {
 }
 
 echo "Auditing $HOSTNAME ($OS/$ARCH)..." >&2
+# git_repos is computed once: its own section AND data_inventory's repo items
+# and git-remote coverage read it.
+GIT_REPOS_JSON="$(collect_git_repos)"
 
 AUDIT=$(python3 -c "
 import json, sys
@@ -2819,7 +3688,9 @@ $(collect_browser_extensions)
 ---SECTION: backup_posture
 $(collect_backup_posture)
 ---SECTION: git_repos
-$(collect_git_repos)
+$GIT_REPOS_JSON
+---SECTION: data_inventory
+$(collect_data_inventory)
 ---SECTION: secret_inventory
 $(collect_secret_inventory)
 ---SECTION: fleet_update

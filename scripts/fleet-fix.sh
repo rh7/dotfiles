@@ -335,7 +335,7 @@ backup_local_darwin() {
 
 # rh7-restic (modules/darwin/restic-backup.nix): what its own status file says.
 backup_restic() {
-  local conf result reason snap age paths job=0
+  local conf result reason snap age paths approved skipped asource job=0
   # The job exists = its LaunchAgent or the wrapper (same test as audit-device.sh).
   { [ -f "$HOME/Library/LaunchAgents/org.rh7.restic-backup.plist" ] || command -v rh7-restic-backup >/dev/null 2>&1; } && job=1
   if [ "$job" -eq 0 ]; then
@@ -360,9 +360,13 @@ if t:
     age = str(int((datetime.datetime.now(datetime.timezone.utc) - d).total_seconds() // 3600))
 print("\x1f".join(["1" if s.get("configured") is True else "0", str(s.get("last_result") or "?"),
                    str(s.get("reason") or "-"), str(s.get("snapshot_id") or "-"), age,
-                   " ".join(p for p in (s.get("paths") or []) if isinstance(p, str)) or "-"]))
+                   " ".join(p for p in (s.get("paths") or []) if isinstance(p, str)) or "-",
+                   " ".join(p for p in (s.get("approved_paths") or []) if isinstance(p, str)) or "-",
+                   ", ".join("%s (%s)" % (k.get("path"), k.get("reason")) for k in (s.get("skipped_paths") or [])
+                             if isinstance(k, dict)) or "-",
+                   str(s.get("approved_source") or "-")]))
 PY
-  if ! IFS=$'\x1f' read -r conf result reason snap age paths <"$FF_TMP/restic.line"; then
+  if ! IFS=$'\x1f' read -r conf result reason snap age paths approved skipped asource <"$FF_TMP/restic.line"; then
     st_manual "restic: status file unreadable" "cat $(tilde "$RESTIC_STATUS")"
     return 0
   fi
@@ -372,6 +376,14 @@ PY
     return 0
   fi
   info "restic: last run $result$([ "$reason" = "-" ] || echo " ($reason)"); last snapshot $snap, $([ "$age" = never ] && echo never || echo "${age}h ago"); paths: $paths"
+  # Owner-approved paths (rh-device-management data inventory "back up").
+  if [ "$asource" = "-" ]; then
+    info "restic: approved paths: none fetched yet (the next run asks the control plane)"
+  else
+    info "restic: approved paths (from $asource): $approved"
+    [ "$skipped" = "-" ] || st_manual "restic: approved path(s) NOT backed up: $skipped — permission-denied needs Full Disk Access for /usr/local/libexec/rh7-fleet-launcher; other reasons: change the decision on the dashboard" \
+      "rh7-restic-backup status"
+  fi
   info "its encryption key must be escrowed (not verifiable here): ~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password --apply"
   case "$result:$reason" in
     failed:auth-failed)
@@ -381,7 +393,7 @@ PY
         *"REST token"*) st_manual "restic: the server rejected this device — re-issue the token on the Studio (scripts/restic-server-add-host.sh $HOST_LC --rotate), then re-run setup" "rh7-restic-backup setup" ;;
         *) st_manual "restic: authentication failed — either the REST token (re-issue: scripts/restic-server-add-host.sh $HOST_LC --rotate) or the encryption key (restore repo-password from 1Password); the log says which" "tail -40 $(tilde "$RESTIC_LOG")" ;;
       esac ;;
-    failed:permission-denied) st_manual "restic: macOS privacy blocked a path — grant Full Disk Access to /usr/local/libexec/rh7-restic-launcher, or drop the protected path (modules/darwin/restic-backup.nix header)" \
+    failed:permission-denied) st_manual "restic: macOS privacy blocked a path — grant Full Disk Access to /usr/local/libexec/rh7-fleet-launcher, or drop the protected path (modules/darwin/fleet-launcher.nix header)" \
       "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'" ;;
     failed:*) st_manual "restic: last run failed ($reason) — read the log, then retry" "tail -40 $(tilde "$RESTIC_LOG") && rh7-restic-backup run" ;;
     *)

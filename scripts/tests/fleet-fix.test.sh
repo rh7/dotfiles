@@ -336,10 +336,22 @@ reset; rstatus true ok null 5; ff MOCK_ONLINE=0 -- backup
 has "fresh snapshot -> OK with age" "[OK]     restic: snapshot 5h old"
 has "shows paths" "paths: ~/code ~/.ssh"
 has "escrow reminder" "escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password --apply"
+has "no list fetched yet: says so" "restic: approved paths: none fetched yet"
+reset; rstatus true ok null 5
+"$REAL_PY" - "$RS_DIR/status.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s.update(approved_paths=["~/Proton", "~/test"], skipped_paths=[{"path": "~/Downloads", "reason": "permission-denied"}],
+         approved_source="control-plane")
+json.dump(s, open(sys.argv[1], "w"))
+PY
+ff MOCK_ONLINE=0 -- backup
+has "shows owner-approved paths and their source" "restic: approved paths (from control-plane): ~/Proton ~/test"
+has "skipped approved path -> MANUAL with the reason" "[MANUAL] restic: approved path(s) NOT backed up: ~/Downloads (permission-denied)"
 reset; rstatus true skipped offline 100; ff MOCK_ONLINE=0 -- backup
 has "stale snapshot behind skips -> MANUAL" "restic: no snapshot in 48h (last run: skipped, offline)"
 reset; rstatus true failed permission-denied 3; ff MOCK_ONLINE=0 -- backup
-has "permission-denied -> Full Disk Access" "grant Full Disk Access to /usr/local/libexec/rh7-restic-launcher"
+has "permission-denied -> Full Disk Access" "grant Full Disk Access to /usr/local/libexec/rh7-fleet-launcher"
 reset; rstatus true failed auth-failed 3; ff MOCK_ONLINE=0 -- backup
 has "auth-failed, no log: names both credentials" "either the REST token (re-issue: scripts/restic-server-add-host.sh test-mac --rotate) or the encryption key"
 reset; rstatus true failed auth-failed 3

@@ -22,10 +22,14 @@
 #   ~/.local/state/rh7-restic/status.json last run (contract below; read by
 #                                         audit-device.sh and fleet-fix.sh backup)
 #   ~/.local/state/rh7-restic/backup.log  run log (rotated at 1 MB)
+#   ~/.local/state/rh7-restic/approved-paths.json
+#                                         last good owner-approved list fetched
+#                                         from the control plane (see APPROVED)
 #
 # STATUS CONTRACT (schema 1, atomic write, rh-device-management backup coverage):
 #   {schema, enabled, configured, last_run_at, last_result, reason,
-#    last_snapshot_time, snapshot_id, files_new, bytes_added, paths, repo_host}
+#    last_snapshot_time, snapshot_id, files_new, bytes_added, paths, repo_host,
+#    exclude_larger_than, approved_paths, skipped_paths, approved_source}
 #   last_result: ok | failed | skipped | not-configured
 #   reason:      on-battery | offline | auth-failed | repo-locked |
 #                permission-denied | unknown | null
@@ -34,6 +38,33 @@
 #                taken, as "~/…" under $HOME (absolute otherwise). A run that
 #                makes no snapshot carries the snapshot fields AND its paths
 #                forward (before the first snapshot: the existing paths).
+#   exclude_larger_than: the size cap the run used ("100M"): a file over it is
+#                in no snapshot, so the audit does not call a folder holding one
+#                restic-covered
+#   approved_paths:  owner-approved paths (control plane) that passed device
+#                    validation, "~/…" — given to restic, or already inside a
+#                    module path / another approved path
+#   skipped_paths:   [{path, reason}] approved paths refused here; reason:
+#                    not-home-relative | control-character | home-root |
+#                    dot-segment | excluded-location | not-found |
+#                    outside-home | permission-denied
+#   approved_source: control-plane | cache | none — where the list came from.
+#                    The three approved fields are carried forward by a run
+#                    that stops before fetching (not configured, battery,
+#                    offline).
+#
+# APPROVED PATHS (rh-device-management data inventory): the owner marks
+# folders "back up" on the dashboard; `run` fetches
+#   GET <config service>/api/fleet/data/<host>/backup-paths  (10 s cap)
+# found by the fleet's one config-service resolver (scripts/lib/config-service.sh),
+# validates every entry HERE — the server is not trusted to keep this device's
+# backup sane — and merges the survivors with the module's paths. A path must
+# be "~/…", free of control characters and . / .. segments, not the home
+# itself, not under ~/Library/Caches, ~/.Trash, ~/Library/CloudStorage,
+# ~/Library/Mobile Documents or ~/Dropbox*, exist, resolve inside the home,
+# and be readable by this job (macOS privacy). Refused entries are skipped and
+# reported, never fatal. Fetch failure → the last good list
+# (approved-paths.json); no list ever fetched → module paths only.
 #
 # POLICY
 #   - Never forgets or prunes: the server is append-only, retention is a
@@ -71,6 +102,9 @@ MIN_BATTERY="${RH7_RESTIC_MIN_BATTERY:-30}"
 EXCLUDE_LARGER="${RH7_RESTIC_EXCLUDE_LARGER_THAN:-100M}"
 PATHS_SPEC="${RH7_RESTIC_PATHS:-}"
 EXCLUDES_SPEC="${RH7_RESTIC_EXCLUDES:-}"
+APPROVED_CACHE="$STATE_DIR/approved-paths.json"
+APPROVED_TIMEOUT="${RH7_RESTIC_APPROVED_TIMEOUT:-10}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNAPSHOT_TAG="rh7-restic"
 ESCROW_CMD="~/rh-device-management/scripts/escrow-secrets-1password.sh --env ~/.config/rh7-restic/repo-password"
 
@@ -126,7 +160,8 @@ battery_low() {
 
 # write_status <result> <reason|""> <configured 0|1> <paths-json> [summary-json run_started]
 # Snapshot fields: from the summary when this run made a snapshot, else carried
-# forward from the previous status file.
+# forward from the previous status file. Approved fields: from this run when
+# it fetched (APPROVED_SOURCE set), else carried forward.
 write_status() {
   local result="$1" reason="$2" conf="$3" paths="$4" summary="${5:-}" started="${6:-}" prev='{}' tmp
   mkdir -p "$STATE_DIR" || return 1
@@ -134,7 +169,8 @@ write_status() {
   tmp="$(mktemp "$STATE_DIR/.status.json.XXXXXX")" || return 1
   if jq -n --argjson prev "$prev" --arg now "$(now_iso)" --arg result "$result" --arg reason "$reason" \
       --argjson conf "$conf" --argjson paths "$paths" --arg summary "$summary" --arg started "$started" \
-      --arg host "$REPO_HOST" '
+      --arg host "$REPO_HOST" --argjson approved "$APPROVED_JSON" --argjson skipped "$SKIPPED_JSON" \
+      --arg asource "$APPROVED_SOURCE" --arg cap "$EXCLUDE_LARGER" '
     ($summary | if . == "" then null else fromjson end) as $s
     | (if $s != null and ($s.snapshot_id // "") != "" then
          { last_snapshot_time: $started, snapshot_id: ($s.snapshot_id[0:8]),
@@ -152,7 +188,10 @@ write_status() {
         last_result: $result, reason: (if $reason == "" then null else $reason end),
         last_snapshot_time: $snap.last_snapshot_time, snapshot_id: $snap.snapshot_id,
         files_new: $snap.files_new, bytes_added: $snap.bytes_added,
-        paths: ($snap.paths // $paths), repo_host: $host }' >"$tmp"; then
+        paths: ($snap.paths // $paths), repo_host: $host, exclude_larger_than: $cap,
+        approved_paths: (if $asource != "" then $approved else ($prev.approved_paths // []) end),
+        skipped_paths: (if $asource != "" then $skipped else ($prev.skipped_paths // []) end),
+        approved_source: (if $asource != "" then $asource else ($prev.approved_source // null) end) }' >"$tmp"; then
     chmod 0644 "$tmp"
     mv -f "$tmp" "$STATUS_FILE"
   else
@@ -180,11 +219,126 @@ resolve_paths() {
       LINK_FROM+=("$abs"); LINK_TO+=("$real")
     fi
     RUN_PATHS+=("$real"); RUN_PATHS_TILDE+=("$(tilde "$abs")")
-  done <<<"$PATHS_SPEC"
+  done <<<"$PATHS_SPEC"$'\n'"$APPROVED_SPEC"
 }
 
 paths_json() { # paths_json <tilde-path>... ; '[]' for none
   if [ $# -eq 0 ]; then echo '[]'; else printf '%s\n' "$@" | jq -R . | jq -cs .; fi
+}
+
+# ── approved paths (control plane, see APPROVED PATHS above) ─────────────────
+APPROVED_SPEC=""; APPROVED_JSON='[]'; SKIPPED_JSON='[]'; APPROVED_SOURCE=""
+
+# The fleet's ONE config-service resolver (pins, impostor check, fail-closed),
+# loaded from the sibling lib — the nix wrapper ships this script together
+# with scripts/collector-runner.sh and scripts/lib/.
+load_resolver() {
+  declare -F find_config_service >/dev/null && return 0
+  [ -r "$SCRIPT_DIR/lib/config-service.sh" ] || return 1
+  # shellcheck source=lib/config-service.sh
+  . "$SCRIPT_DIR/lib/config-service.sh" && load_config_service_resolver "$SCRIPT_DIR/.."
+}
+
+# fetch_approved <host> → the response body; 1 on any failure (no service,
+# non-2xx, timeout, not the documented shape, or a list for another host).
+fetch_approved() {
+  local host="$1" url body
+  load_resolver || { log "approved paths: config-service resolver not found next to this script"; return 1; }
+  url="$(find_config_service 2>/dev/null)"
+  [ -n "$url" ] || return 1
+  body="$(curl -fsS --connect-timeout 5 --max-time "$APPROVED_TIMEOUT" "${url%/}/api/fleet/data/$host/backup-paths" 2>/dev/null)" || return 1
+  jq -e --arg h "$host" 'type == "object" and (.paths | type) == "array" and all(.paths[]; type == "string")
+    and ((.hostname // $h) | ascii_downcase) == ($h | ascii_downcase)' <<<"$body" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$body"
+}
+
+# 0 = a home-relative path (no leading "~/", any case: APFS is
+# case-insensitive) that must never be backed up from an approval.
+excluded_rel() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    library/caches|library/caches/*|.trash|.trash/*|library/cloudstorage|library/cloudstorage/*) return 0 ;;
+    "library/mobile documents"|"library/mobile documents/"*|dropbox*) return 0 ;;
+  esac
+  return 1
+}
+
+# "~/Pictures/" and "~/Pictures//" are "~/Pictures": strip trailing slashes
+# before anything compares, dedupes or merges paths.
+strip_slashes() { local p="$1"; while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done; printf '%s' "$p"; }
+
+# approved_reason <path> → nothing when acceptable, else the skip reason.
+# Control characters (NUL, newline, …) are refused before this, on the JSON.
+approved_reason() {
+  local p rest real home_real
+  p="$(strip_slashes "$1")"
+  case "$p" in "~") echo home-root; return ;; "~/"*) ;; *) echo not-home-relative; return ;; esac
+  rest="${p#\~/}"
+  [ -n "$rest" ] && [ "$rest" != . ] || { echo home-root; return; }
+  case "/$rest/" in */../*|*/./*|*//*) echo dot-segment; return ;; esac
+  excluded_rel "$rest" && { echo excluded-location; return; }
+  [ -e "$HOME/$rest" ] || { echo not-found; return; }
+  real="$(realpath "$HOME/$rest" 2>/dev/null)" || { echo not-found; return; }
+  home_real="$(realpath "$HOME" 2>/dev/null)" || home_real="$HOME"
+  case "$real" in "$home_real"/*) ;; *) echo outside-home; return ;; esac
+  excluded_rel "${real#"$home_real"/}" && { echo excluded-location; return; }
+  # macOS privacy: a folder this job may not list would fail the whole run
+  # (EPERM = permission-denied); refuse it here and say so instead.
+  if [ -d "$real" ]; then ls -A "$real" >/dev/null 2>&1 || { echo permission-denied; return; }
+  elif [ ! -r "$real" ]; then echo permission-denied; return; fi
+}
+
+# apply_approved: fetch (or fall back to the cached list), validate, and set
+# APPROVED_SPEC (what resolve_paths adds to the module paths) plus the three
+# status fields. Never fails the run.
+apply_approved() {
+  local host body p q d reason kind abs covered tmp skipped=""
+  local -a ok=()
+  host="$(server_user)"; [ -n "$host" ] || host="$(canonical_host)"
+  if body="$(fetch_approved "$host")"; then
+    APPROVED_SOURCE=control-plane
+    if mkdir -p "$STATE_DIR" && tmp="$(mktemp "$STATE_DIR/.approved.XXXXXX")"; then
+      # Stamped with the identity it was fetched for: after a re-setup under
+      # another name the old host's approvals must not be reused.
+      jq --arg h "$host" '. + {hostname: $h}' <<<"$body" >"$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$APPROVED_CACHE" || rm -f "$tmp"
+    fi
+  elif jq -e --arg h "$host" 'type == "object" and (.paths | type) == "array"
+      and ((.hostname // "") | ascii_downcase) == ($h | ascii_downcase)' "$APPROVED_CACHE" >/dev/null 2>&1; then
+    APPROVED_SOURCE=cache; body="$(cat "$APPROVED_CACHE")"
+    log "approved paths: control plane unavailable — using the last good list (updated $(jq -r '.updated_at // "?"' <<<"$body"))"
+  else
+    APPROVED_SOURCE=none; body='{"paths":[]}'
+    log "approved paths: control plane unavailable and no list cached for $host — module paths only"
+  fi
+  while IFS=$'\t' read -r kind p; do
+    [ -n "$kind" ] || continue
+    if [ "$kind" = BAD ]; then reason=control-character; else p="$(strip_slashes "$p")"; reason="$(approved_reason "$p")"; fi
+    if [ -n "$reason" ]; then
+      log "approved path skipped: $p ($reason)"
+      skipped+="$(jq -cn --arg p "$p" --arg r "$reason" '{path: $p, reason: $r}')"$'\n'
+      continue
+    fi
+    for q in "${ok[@]+"${ok[@]}"}"; do [ "$q" = "$p" ] && continue 2; done
+    ok+=("$p")
+  done < <(jq -r '.paths[] | select(type == "string")
+    | if (explode | any(. < 32 or . == 127)) then "BAD\t" + tojson else "OK\t" + . end' <<<"$body" 2>/dev/null)
+  # Already inside a module path, or inside another approved path: covered
+  # by that root — listed as approved, not given to restic twice.
+  APPROVED_SPEC=""
+  for p in "${ok[@]+"${ok[@]}"}"; do
+    abs="$(untilde "$p")"; covered=0
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      d="$(untilde "$d")"
+      case "$abs" in "$d"|"$d"/*) covered=1 ;; esac
+    done <<<"$PATHS_SPEC"
+    for q in "${ok[@]}"; do
+      case "$abs" in "$(untilde "$q")"/*) covered=1 ;; esac
+    done
+    [ "$covered" = 1 ] || APPROVED_SPEC+="$p"$'\n'
+  done
+  APPROVED_JSON="$(paths_json "${ok[@]+"${ok[@]}"}")"
+  SKIPPED_JSON="$(printf '%s' "$skipped" | jq -cs .)"
+  [ "${#ok[@]}" -eq 0 ] || log "approved by the owner ($APPROVED_SOURCE): ${ok[*]}"
 }
 
 # restic matches excludes against the paths it archives, i.e. a symlinked
@@ -267,6 +421,9 @@ cmd_run() {
     log "skipped: $REPO_HOST:$PORT unreachable"
     write_status skipped offline 1 "$pj"; return 0
   fi
+  apply_approved
+  resolve_paths
+  pj="$(paths_json "${RUN_PATHS_TILDE[@]+"${RUN_PATHS_TILDE[@]}"}")"
   if [ ${#RUN_PATHS[@]} -eq 0 ]; then
     log "failed: none of the configured paths exists"
     write_status failed unknown 1 "$pj"; return 1
