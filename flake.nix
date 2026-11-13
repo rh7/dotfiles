@@ -56,6 +56,8 @@
           # app firewall OFF the Mac Studio config-service host (#93).
           ./modules/darwin/homebrew.nix
           ./modules/darwin/mas.nix
+          # /etc/rh7/config-service — the fleet's config-service pin.
+          ./modules/darwin/config-service-pin.nix
           ./modules/darwin/xcode-license.nix
           ./modules/darwin/fleet-update.nix
           ./modules/darwin/restic-backup.nix

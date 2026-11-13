@@ -774,12 +774,26 @@ etc_restore_hint() {
   done <<<"$missing"
 }
 
+# etc_config_service_pin <file> — prints the URL when the file is a plain
+# config-service pin: exactly one non-comment, non-blank line (parsed like
+# find_config_service's _config_service_pin: '#' comments and whitespace
+# stripped) that is an http(s)://host[:port] URL. Anything else is not a pin
+# and stays "unexpected content".
+etc_config_service_pin() {
+  local lines
+  [[ -f "$1" ]] || return 1
+  lines=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$1" 2>/dev/null | grep . || true)
+  [[ -n "$lines" && "$lines" != *$'\n'* ]] || return 1
+  [[ "$lines" =~ ^https?://[^/#]+(:[0-9]+)?/?$ ]] || return 1
+  printf '%s' "$lines"
+}
+
 # etc_preflight — classifies every /etc file nix-darwin's check would reject;
 # asks once to move the recognised ones aside, stops on anything else.
 # --plan-only / --build-only only report.
 etc_preflight() {
   [[ "$OS" == Darwin ]] || return 0
-  local targets t known f h dest fixable="" stop=false preview=false
+  local targets t known f h dest pin recognised fixable="" stop=false preview=false
   if $PLAN_ONLY || $BUILD_ONLY; then preview=true; fi
   if ! targets=$(etc_managed_targets); then exit 1; fi
   while IFS=$'\t' read -r t known; do
@@ -793,12 +807,19 @@ etc_preflight() {
       # Known hash: nix-darwin moves it aside itself.
       if [[ -n "$h" && " $known " == *" $h "* ]]; then continue; fi
     fi
-    dest="$f.before-nix-darwin"
+    dest="$f.before-nix-darwin"; recognised=false
     if [[ -n "$h" ]] && etc_stock_with_nix_block "$f" "$known"; then
+      recognised=true
       warn "$f: stock macOS file + the Nix installer's block — nix-darwin would abort activation on it."
       echo "      Differs from the stock file only by:"
       { diff <(nix_block_stripped "$f" "$ETC_MATCH_EB" "$ETC_MATCH_EA") "$f" \
           | sed -n 's/^> \{0,1\}/      + /p'; } || true
+    elif [[ -n "$h" && "$t" == rh7/config-service ]] && pin=$(etc_config_service_pin "$f"); then
+      recognised=true
+      warn "$f: hand-written config-service pin ($pin) — nix-darwin would abort activation on it."
+      echo "      The configuration now declares the pin itself; the old file is kept as $dest."
+    fi
+    if $recognised; then
       if [[ -e "$dest" || -L "$dest" ]] && { ! $FORCE || [[ -d "$dest" ]]; }; then
         err "  $dest already exists — refusing to overwrite it."
         err "  Compare it (diff $dest $f), remove or rename it yourself, or re-run with --force to overwrite it."
