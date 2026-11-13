@@ -42,7 +42,7 @@ FNS="cleanup ask_fix nix_missing_features restart_nix_daemon nix_conf_append req
      authenticate_once host_flake_ref eval_failed eval_primary_user homebrew_enable_failed
      ensure_declared_lib brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary setup_brew_user
      etc_managed_targets sha256_of nix_block_stripped etc_stock_with_nix_block etc_body
-     etc_unexpected_lines etc_restore_hint etc_preflight etc_apply_renames"
+     etc_unexpected_lines etc_restore_hint etc_config_service_pin etc_preflight etc_apply_renames"
 for f in $FNS; do
   # one-line definitions (`f() { …; }`) first: a range would run on to the
   # NEXT function's closing brace
@@ -341,6 +341,55 @@ fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"
 ETC_FAIL=1 run_case 'etc_preflight; echo REACHED'
 check "environment.etc unevaluable: fatal (rc 1)" "$(cat "$W/rc")" 1
 has "environment.etc unevaluable: shows the nix error" "etc eval exploded"
+
+# /etc/rh7/config-service: a hand-written pin the configuration now declares.
+DECLARED_PIN='http://100.100.241.110:3456
+'
+cp "$W/targets" "$W/targets.shell"
+printf 'bashrc\t%s\nzshrc\t%s\nrh7/config-service\t%s\n' \
+  "$(sum "$STOCK_BASHRC")" "$(sum "$STOCK_ZSHRC")" "$(sum "$DECLARED_PIN")" >"$W/targets"
+pin_fixture() { fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; mkdir -p "$ETC/rh7"; printf '%s' "$1" >"$ETC/rh7/config-service"; }
+
+pin_fixture "$DECLARED_PIN"; answer y
+run_case 'etc_preflight; echo "RENAMES=[$ETC_RENAMES]"'
+check "pin equal to the declared one: rc 0" "$(cat "$W/rc")" 0
+has "pin equal to the declared one: left to nix-darwin (known hash)" "RENAMES=[]"
+
+pin_fixture "http://rouvens-mac-studio:3456  # probed
+"; answer y
+run_case 'etc_preflight; echo "RENAMES=$(cut -f1 <<<"$ETC_RENAMES" | xargs)"; etc_apply_renames'
+check "other valid pin: accepted (rc 0)" "$(cat "$W/rc")" 0
+has "other valid pin: names the old URL" "hand-written config-service pin (http://rouvens-mac-studio:3456)"
+has "other valid pin: queued" "RENAMES=$ETC/rh7/config-service"
+check "other valid pin: moved aside, content kept" "$(cat "$ETC/rh7/config-service.before-nix-darwin")" \
+  "http://rouvens-mac-studio:3456  # probed"
+
+pin_fixture "http://rouvens-mac-studio:3456
+"; answer n
+run_case 'etc_preflight; echo REACHED'
+check "valid pin, declined: stops (rc 1)" "$(cat "$W/rc")" 1
+[[ -f "$ETC/rh7/config-service" ]] && good "valid pin, declined: untouched" || bad "valid pin, declined: untouched" "$(ls "$ETC/rh7")"
+
+for junk in "not a url" "http://a:3456
+http://b:3456" "http://a:3456/api/../evil" "http://a:notaport" "export X=1"; do
+  pin_fixture "$junk
+"; answer y
+  run_case 'etc_preflight; echo REACHED'
+  check "not a single-URL pin ($(head -1 <<<"$junk")): stops (rc 1)" "$(cat "$W/rc")" 1
+  has "not a single-URL pin ($(head -1 <<<"$junk")): reported as unexpected" "unexpected content"
+done
+
+pin_fixture "http://rouvens-mac-studio:3456
+"; echo old >"$ETC/rh7/config-service.before-nix-darwin"; answer y
+run_case 'etc_preflight'
+check "valid pin, .before-nix-darwin exists: refuses (rc 1)" "$(cat "$W/rc")" 1
+
+# the same file under any OTHER target is not a pin
+printf 'bashrc\t%s\nzshrc\t%s\nrh7/other\t\n' "$(sum "$STOCK_BASHRC")" "$(sum "$STOCK_ZSHRC")" >"$W/targets"
+fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; mkdir -p "$ETC/rh7"; echo http://a:3456 >"$ETC/rh7/other"; answer y
+run_case 'etc_preflight'
+check "URL-shaped file at another target: stops (rc 1)" "$(cat "$W/rc")" 1
+mv "$W/targets.shell" "$W/targets"
 
 fixture "$(prepended "$STOCK_BASHRC")" "$STOCK_ZSHRC"
 run_case "ETC_RENAMES=\$(printf '%s\t%s\n' '$ETC/bashrc' deadbeef); etc_apply_renames; echo REACHED"

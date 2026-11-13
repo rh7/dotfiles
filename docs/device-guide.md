@@ -28,6 +28,12 @@ not hard-code one name: `audit-device.sh` / `collector-runner.sh` resolve it fro
 `~/.config/rh7/config-service`), then the fallbacks `rouvens-mac-studio`,
 `Rouvens-Mac-Studio.local`, `100.100.241.110`, and check the answer really is
 the config service.
+On nix-darwin Macs the pin is declared: `modules/darwin/config-service-pin.nix`
+writes `/etc/rh7/config-service` from the one option
+`services.rh7.configServiceUrl` (default `http://100.100.241.110:3456` — the
+Tailscale IP, so hosts with MagicDNS off still resolve it). A hand-written pin
+identical to it is moved aside by nix-darwin itself; any other single-URL pin is
+offered to be moved to `*.before-nix-darwin` by `rebuild.sh`'s /etc preflight.
 
 ```bash
 CS=http://rouvens-mac-studio:3456
