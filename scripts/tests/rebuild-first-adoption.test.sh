@@ -371,7 +371,7 @@ check "valid pin, declined: stops (rc 1)" "$(cat "$W/rc")" 1
 [[ -f "$ETC/rh7/config-service" ]] && good "valid pin, declined: untouched" || bad "valid pin, declined: untouched" "$(ls "$ETC/rh7")"
 
 for junk in "not a url" "http://a:3456
-http://b:3456" "http://a:3456/api/../evil" "export X=1"; do
+http://b:3456" "http://a:3456/api/../evil" "http://a:notaport" "export X=1"; do
   pin_fixture "$junk
 "; answer y
   run_case 'etc_preflight; echo REACHED'

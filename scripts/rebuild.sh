@@ -784,7 +784,7 @@ etc_config_service_pin() {
   [[ -f "$1" ]] || return 1
   lines=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$1" 2>/dev/null | grep . || true)
   [[ -n "$lines" && "$lines" != *$'\n'* ]] || return 1
-  [[ "$lines" =~ ^https?://[^/#]+(:[0-9]+)?/?$ ]] || return 1
+  [[ "$lines" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || return 1
   printf '%s' "$lines"
 }
 
