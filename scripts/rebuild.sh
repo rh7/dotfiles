@@ -149,7 +149,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --plan-only    Show the Homebrew upgrade plan only — no build, no"
       echo "                 activation, no upgrades, no root. Does refresh brew"
       echo "                 metadata (network + Homebrew repo state). Run from"
-      echo "                 another account than system.primaryUser, it takes"
+      echo "                 another account than homebrew.user, it takes"
       echo "                 one authentication to run Homebrew as that user."
       echo "  --allow-unmerged"
       echo "                 Build/activate the checkout as it is on disk even"
@@ -247,23 +247,32 @@ ensure_jq() {
   return 1
 }
 
-# ── Homebrew owner: rebuilding from ANOTHER account than system.primaryUser ──
-# nix-darwin runs `brew bundle` as system.primaryUser, so on a household Mac
-# (primaryUser = the daily user) /opt/homebrew belongs to her — and the owner
-# rebuilds from his own admin account. Homebrew run as him would then fail on
-# her prefix, or worse, create files there she can no longer update. So when
-# the evaluated primaryUser differs from the invoking user, EVERY Homebrew
-# command of this run (plan, adoption, upgrades, retirement) runs as her via
-# `sudo -u <primary> -H` — the same form nix-darwin's activation uses — inside
-# the run's one authentication. The same-user path is untouched: `brew` stays
-# the plain command and nothing below runs.
+# ── Homebrew owner: homebrew.user, which need not be you or system.primaryUser ──
+# nix-darwin runs `brew bundle` as homebrew.user (default: system.primaryUser).
+# Most hosts leave it at that default and rebuild from that same account: then
+# `brew` stays the plain command and nothing below runs. On a household Mac the
+# two can differ: primaryUser is the daily user (home-manager, her LaunchAgents)
+# while homebrew.user is an ADMIN account (kassie-mbp-m1: rouven), because a
+# standard user cannot write /Applications — Homebrew then falls back to its own
+# `sudo cp` as her, asking for HER password for every new cask.
 #
-# The prefix must be hers. Checked before anything else (before the plan, the
-# drift audit and the build): a foreign-owned prefix fails halfway through
-# activation otherwise, so setup_brew_user offers the chown, or stops.
+# When homebrew.user differs from the invoking user, EVERY Homebrew command of
+# this run (plan, adoption, upgrades, retirement) runs as that user via
+# `sudo -u <user> -H` — the same form nix-darwin's activation uses — inside the
+# run's one authentication. When it IS the invoker, brew runs directly.
+#
+# The prefix — and the app bundles of the casks installed into it — must be
+# the brew user's. Checked before anything else (before the plan, the drift
+# audit and the build) whenever homebrew.user is not simply the invoker's own
+# default (it differs from the invoker or from primaryUser): a foreign-owned
+# prefix fails halfway through activation, a foreign bundle makes Homebrew's
+# own sudo prompt on its next upgrade. setup_brew_user offers the chown, or stops.
 PRIMARY_USER=""
-BREW_AS_PRIMARY=false
+BREW_USER=""
+BREW_AS_USER=false
 BREW_BIN=""
+# The directory casks install into; brew_user_writes_applications checks it.
+APPLICATIONS_DIR=/Applications
 
 # host_flake_ref — FLAKE_REF with a missing or empty fragment (`path` /
 # `path#`) resolved to this host, exactly as build_darwin_system resolves it.
@@ -286,16 +295,17 @@ eval_failed() {
   fi
 }
 
-# eval_primary_user — prints system.primaryUser of the configuration; on any
-# failure (or an empty value) prints the nix error and returns 1.
-eval_primary_user() {
+# eval_user <option> — prints the configuration's <option> (system.primaryUser,
+# homebrew.user); on any failure (or an empty value) prints the nix error and
+# returns 1.
+eval_user() {
   local ref dir host errf out rc=0
   ref=$(host_flake_ref); dir="${ref%#*}"; host="${ref##*#}"
   errf=$(mktemp)
-  out=$(nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.system.primaryUser" 2>"$errf") || rc=$?
+  out=$(nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.$1" 2>"$errf") || rc=$?
   if [[ $rc -ne 0 || -z "$out" ]]; then
     [[ $rc -ne 0 ]] || echo "(evaluated to an empty string)" >>"$errf"
-    eval_failed system.primaryUser "$errf"
+    eval_failed "$1" "$errf"
     rm -f "$errf"; return 1
   fi
   rm -f "$errf"
@@ -469,7 +479,7 @@ brew_prefix() {
 }
 
 # brew_owned_dirs <prefix> — the trees Homebrew writes to, i.e. what must be
-# PRIMARY_USER's. The whole prefix on Apple Silicon; on Intel /usr/local itself
+# BREW_USER's. The whole prefix on Apple Silicon; on Intel /usr/local itself
 # (and its bin/, shared with other installers) is root's, so only Homebrew's
 # own trees count there.
 brew_owned_dirs() {
@@ -481,9 +491,9 @@ brew_owned_dirs() {
 }
 
 # brew_prefix_foreign <prefix> — paths ANYWHERE in those trees not owned by
-# PRIMARY_USER; nothing when all are hers. First line "<count><TAB><owners>"
-# (owners comma-separated), then "<path> (owner)" for the first 5 and
-# "… and N more". Nested paths count: one foreign tap, keg or
+# BREW_USER; nothing when all are the brew user's. First line
+# "<count><TAB><owners>" (owners comma-separated), then "<path> (owner)" for
+# the first 5 and "… and N more". Nested paths count: one foreign tap, keg or
 # Library/Homebrew is enough for `brew update` or an install to fail later,
 # after the authentication — so the whole tree is walked, once, up front.
 brew_prefix_foreign() {
@@ -493,7 +503,7 @@ brew_prefix_foreign() {
   # `|| true`: an unreadable subtree must not abort the run under `set -e`;
   # what find could read is still reported.
   { find "${dirs[@]}" -xdev -exec stat -f '%Su %N' {} + 2>/dev/null || true; } \
-    | awk -v u="$PRIMARY_USER" '
+    | awk -v u="$BREW_USER" '
         { owner = $1; path = substr($0, length($1) + 2) }
         owner != u {
           n++; if (n <= 5) shown[n] = path " (" owner ")"
@@ -507,92 +517,193 @@ brew_prefix_foreign() {
         }'
 }
 
-# brew_as_primary <args...> — Homebrew as PRIMARY_USER. `sudo -n`: it runs
-# only inside the run's authentication (authenticate_once), so it can fail but
+# cask_app_bundles <prefix> — the app bundles Homebrew installed for the casks
+# in this prefix, one per line: for every app artifact it moves into place,
+# Homebrew leaves a symlink <prefix>/Caskroom/<cask>/<version>/<Name>.app
+# pointing at the bundle (adopted ones included). Read from the filesystem,
+# NOT `brew info --installed`: this runs before the prefix is the brew user's,
+# when Homebrew's Ruby run as the wrong account cannot be trusted. Only
+# bundles directly in APPLICATIONS_DIR count, so an app Homebrew did not
+# install is never listed (and never chowned).
+cask_app_bundles() {
+  local link target
+  [[ -d "$1/Caskroom" ]] || return 0
+  { find "$1/Caskroom" -mindepth 3 -maxdepth 3 -type l -name '*.app' 2>/dev/null || true; } \
+    | while IFS= read -r link; do
+        target=$(readlink "$link") || continue
+        [[ "$target" == "$APPLICATIONS_DIR"/*.app && "$target" != "$APPLICATIONS_DIR"/*/* \
+           && -d "$target" && ! -L "$target" ]] || continue
+        printf '%s\n' "$target"
+      done | sort -u
+}
+
+# cask_bundles_foreign <prefix> — "<bundle> (<owners>)" for each of those
+# bundles holding any path not owned by BREW_USER. Homebrew upgrades a cask
+# INTO the existing bundle only when it can write it; otherwise its own
+# `sudo` asks for the brew user's password (and fails unattended).
+cask_bundles_foreign() {
+  local app owners
+  while IFS= read -r app; do
+    [[ -n "$app" ]] || continue
+    owners=$({ find "$app" -xdev -exec stat -f '%Su' {} + 2>/dev/null || true; } \
+      | awk -v u="$BREW_USER" '$0 != u && !s[$0]++ { o = o (o == "" ? "" : ", ") $0 } END { print o }')
+    if [[ -n "$owners" ]]; then printf '%s (%s)\n' "$app" "$owners"; fi
+  done < <(cask_app_bundles "$1")
+}
+
+# brew_as_user <args...> — Homebrew as BREW_USER. `sudo -n`: it runs only
+# inside the run's authentication (authenticate_once), so it can fail but
 # never prompt. From / because the invoker's cwd (~/dotfiles in HIS home) may
-# not be readable by her. sudo resets the environment, so the HOMEBREW_*
-# switches this script sets are passed through explicitly.
-brew_as_primary() {
+# not be readable by the brew user. sudo resets the environment, so the
+# HOMEBREW_* switches this script sets are passed through explicitly.
+brew_as_user() {
   local envs=() v
   for v in HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ENV_HINTS; do
     if [[ -n "${!v:-}" ]]; then envs+=("$v=${!v}"); fi
   done
-  ( cd / && exec sudo -n -u "$PRIMARY_USER" -H env ${envs[@]+"${envs[@]}"} "$BREW_BIN" "$@" )
+  ( cd / && exec sudo -n -u "$BREW_USER" -H env ${envs[@]+"${envs[@]}"} "$BREW_BIN" "$@" )
 }
 
-# setup_brew_user — decides who runs Homebrew. Cross-user, a prefix the
-# primary user does not own is offered a chown (one question); declined, the
-# run stops before anything is built.
+# setup_brew_user — decides who runs Homebrew: homebrew.user, directly when
+# that is the invoker, else via brew_as_user. Unless Homebrew is simply the
+# invoker's own (homebrew.user = primaryUser = you), a prefix or an installed
+# cask's app bundle the brew user does not own is offered a chown (one
+# question); declined, the run stops before anything is built.
 setup_brew_user() {
   [[ "$OS" == Darwin ]] || return 0
-  local invoker prefix foreign count owners dirs managed_rc=0
+  local invoker prefix foreign bundles b count owners dirs managed_rc=0
   invoker=$(id -un)
-  if ! PRIMARY_USER=$(eval_primary_user); then
+  if ! PRIMARY_USER=$(eval_user system.primaryUser); then
     exit 1
   fi
-  [[ "$PRIMARY_USER" != "$invoker" ]] || return 0
+  if ! BREW_USER=$(eval_user homebrew.user); then
+    exit 1
+  fi
+  if [[ "$BREW_USER" == "$invoker" && "$BREW_USER" == "$PRIMARY_USER" ]]; then
+    return 0   # Homebrew is simply yours: nothing to check, brew stays plain
+  fi
   ensure_declared_lib
   homebrew_managed "$(host_flake_ref)" || managed_rc=$?
-  # homebrew.enable = false (1): nothing runs brew for her. Unknown (2) is
-  # fatal — running brew as the wrong account is what this guards against.
+  # homebrew.enable = false (1): nothing runs brew. Unknown (2) is fatal —
+  # running brew as the wrong account is what this guards against.
   [[ $managed_rc -ne 2 ]] || homebrew_enable_failed "$(host_flake_ref)"
   [[ $managed_rc -ne 1 ]] || return 0
   if ! prefix=$(brew_prefix) || [[ -z "$prefix" ]]; then
-    return 0   # no Homebrew yet: nothing to own or to run as her
+    return 0   # no Homebrew yet: nothing to own or to run as the brew user
   fi
   foreign=$(brew_prefix_foreign "$prefix")
-  if [[ -n "$foreign" ]]; then
-    IFS=$'\t' read -r count owners <<<"$(head -1 <<<"$foreign")"
+  bundles=$(cask_bundles_foreign "$prefix")
+  if [[ -n "$foreign$bundles" ]]; then
     dirs=$(brew_owned_dirs "$prefix" | xargs)
-    warn "This configuration's system.primaryUser is '$PRIMARY_USER' (you are '$invoker')."
-    warn "nix-darwin runs Homebrew as $PRIMARY_USER, but $count path(s) under $prefix belong to $owners:"
-    tail -n +2 <<<"$foreign" | sed 's/^/          /'
-    warn "Left like this, Homebrew fails partway through activation."
-    echo "    Fix (as root): chown -R $PRIMARY_USER:admin $dirs"
-    echo "    Afterwards Homebrew belongs to $PRIMARY_USER: every other account (you included) runs"
-    echo "    it as 'sudo -u $PRIMARY_USER brew …' — a plain 'brew' from another account fails."
+    warn "This configuration's homebrew.user is '$BREW_USER' (system.primaryUser '$PRIMARY_USER', you are '$invoker')."
+    if [[ -n "$foreign" ]]; then
+      IFS=$'\t' read -r count owners <<<"$(head -1 <<<"$foreign")"
+      warn "nix-darwin runs Homebrew as $BREW_USER, but $count path(s) under $prefix belong to $owners:"
+      tail -n +2 <<<"$foreign" | sed 's/^/          /'
+      warn "Left like this, Homebrew fails partway through activation."
+      echo "    Fix (as root): chown -R $BREW_USER:admin $dirs"
+    fi
+    if [[ -n "$bundles" ]]; then
+      warn "$(wc -l <<<"$bundles" | tr -d ' ') app bundle(s) Homebrew installed are not (wholly) $BREW_USER's — upgrading"
+      warn "one would make Homebrew ask for $BREW_USER's password:"
+      sed 's/^/          /' <<<"$bundles"
+      echo "    Fix (as root): chown -R $BREW_USER <each bundle above> (only these; no other app is touched)"
+    fi
+    echo "    Afterwards Homebrew belongs to $BREW_USER: every other account runs it as"
+    echo "    'sudo -u $BREW_USER brew …' — a plain 'brew' from another account fails."
     if $PLAN_ONLY || $BUILD_ONLY; then
       info "  will fix: rebuild.sh offers this chown before the plan of a full run."
       echo ""
-    elif ask_fix "Hand Homebrew to $PRIMARY_USER now (chown -R $PRIMARY_USER:admin $dirs)?"; then
+    elif ask_fix "Hand Homebrew to $BREW_USER now (${foreign:+chown -R $BREW_USER:admin $dirs}${foreign:+${bundles:+, plus }}${bundles:+the $(wc -l <<<"$bundles" | tr -d ' ') app bundle(s) above})?"; then
       authenticate_once "Nothing was built or changed."
       # shellcheck disable=SC2086  # $dirs: one or more prefix trees, no spaces
-      if ! sudo -n chown -R "$PRIMARY_USER:admin" $dirs; then
+      if [[ -n "$foreign" ]] && ! sudo -n chown -R "$BREW_USER:admin" $dirs; then
         err "chown failed. Nothing was built or changed."
         exit 1
       fi
+      while IFS= read -r b; do
+        [[ -n "$b" ]] || continue
+        if ! sudo -n chown -R "$BREW_USER" "${b% (*}"; then
+          err "chown of ${b% (*} failed. Nothing was built or changed."
+          exit 1
+        fi
+      done <<<"$bundles"
       foreign=$(brew_prefix_foreign "$prefix")
-      if [[ -n "$foreign" ]]; then
-        err "Still not owned by $PRIMARY_USER after the chown:"
-        tail -n +2 <<<"$foreign" | sed 's/^/          /' >&2
+      bundles=$(cask_bundles_foreign "$prefix")
+      if [[ -n "$foreign$bundles" ]]; then
+        err "Still not owned by $BREW_USER after the chown:"
+        { tail -n +2 <<<"$foreign"; printf '%s\n' "$bundles"; } | sed '/^$/d; s/^/          /' >&2
         err "Nothing was built or changed."
         exit 1
       fi
-      ok "Homebrew under $prefix now belongs to $PRIMARY_USER"
+      ok "Homebrew under $prefix and the app bundles it installed now belong to $BREW_USER"
       echo ""
     else
       err "Nothing was built or changed. Fix, then re-run:"
-      err "    sudo chown -R $PRIMARY_USER:admin $dirs"
-      err "Afterwards other accounts run Homebrew as $PRIMARY_USER:"
-      err "    sudo -u $PRIMARY_USER brew …"
+      if [[ -n "$foreign" ]]; then err "    sudo chown -R $BREW_USER:admin $dirs"; fi
+      while IFS= read -r b; do
+        if [[ -n "$b" ]]; then err "    sudo chown -R $BREW_USER '${b% (*}'"; fi
+      done <<<"$bundles"
+      err "Afterwards other accounts run Homebrew as $BREW_USER:"
+      err "    sudo -u $BREW_USER brew …"
       exit 1
     fi
   fi
   BREW_BIN="$prefix/bin/brew"
-  BREW_AS_PRIMARY=true
+  if [[ "$BREW_USER" == "$invoker" ]]; then
+    info "homebrew.user is you ('$invoker'; system.primaryUser is '$PRIMARY_USER'): Homebrew runs as you."
+    echo ""
+    return 0
+  fi
+  BREW_AS_USER=true
   # Every `brew` below — plan, adoption, upgrades, retirement — goes through
-  # this. Defined only on this path, so the same-user run keeps the command.
-  brew() { brew_as_primary "$@"; }
-  info "system.primaryUser is '$PRIMARY_USER', you are '$invoker': every Homebrew command"
-  info "  in this run runs as $PRIMARY_USER (sudo -u $PRIMARY_USER -H), inside its one authentication."
+  # this. Defined only on this path, so a run as the brew user keeps the command.
+  brew() { brew_as_user "$@"; }
+  info "homebrew.user is '$BREW_USER', you are '$invoker': every Homebrew command"
+  info "  in this run runs as $BREW_USER (sudo -u $BREW_USER -H), inside its one authentication."
   echo ""
+}
+
+# brew_user_writes_applications — 0 when the brew user can create a bundle in
+# APPLICATIONS_DIR. Homebrew MOVES a new cask's app there as that user; when
+# it cannot write the directory (a standard, non-admin account) it falls back
+# to its own `sudo cp` — a password prompt for THAT user, which nobody running
+# rebuild.sh should need, and a hard failure unattended.
+brew_user_writes_applications() {
+  if $BREW_AS_USER; then
+    ( cd / && sudo -n -u "$BREW_USER" test -w "$APPLICATIONS_DIR" ) 2>/dev/null
+  else
+    [[ -w "$APPLICATIONS_DIR" ]]
+  fi
+}
+
+# require_applications_writable — after the cask plan: when it installs
+# (NEW_CASKS) or replaces (ADOPT_CASKS) a bundle in APPLICATIONS_DIR and the
+# brew user cannot write there, stop BEFORE the confirmation and activation.
+# --plan-only reports it.
+require_applications_writable() {
+  [[ -n "$NEW_CASKS$ADOPT_CASKS" ]] || return 0
+  if brew_user_writes_applications; then return 0; fi
+  local who="${BREW_USER:-$(id -un)}"
+  err "Homebrew runs as '$who', who cannot write $APPLICATIONS_DIR (not an admin)."
+  err "Installing $(xargs <<<"$NEW_CASKS $ADOPT_CASKS") would make Homebrew fall back to its own sudo —"
+  err "a password prompt for $who — and activation would fail halfway."
+  err "Fix: set homebrew.user in this host's configuration to an admin account"
+  err "     (the one you rebuild from), or make $who an admin."
+  if $PLAN_ONLY; then
+    warn "A full run stops here, before activation."
+    echo ""
+    return 0
+  fi
+  err "Nothing was activated."
+  exit 1
 }
 
 # ── One authentication for the whole run ──
 # Without this, the prompts arrive one-per-root-requiring-cask from inside
 # `brew bundle` (nix-darwin drops root back to the user to run brew), each
 # giving no clue what it is for. Authenticating once — after the plan, or
-# before it when Homebrew must run as the primary user — means the single
+# before it when Homebrew must run as another user — means the single
 # prompt you get is one you can actually attribute.
 #
 # Requires `Defaults:<user> timestamp_type=global` to cover brew's children;
@@ -1224,12 +1335,12 @@ homebrew_plan() {
   fi
   echo -e "${BOLD}━━━ Homebrew ━━━${NC}"
   echo ""
-  # Cross-user: the plan's brew commands already run as the primary user,
-  # which needs root — so the run's one authentication happens here (unless
-  # the drift audit already took it), in the parent shell (it starts the
+  # Cross-user: the plan's brew commands already run as homebrew.user, which
+  # needs root — so the run's one authentication happens here (unless the
+  # drift audit already took it), in the parent shell (it starts the
   # keep-alive the EXIT trap must see).
-  if $BREW_AS_PRIMARY && ! $SUDO_AUTHENTICATED; then
-    info "Homebrew belongs to $PRIMARY_USER — authenticating now to run it as $PRIMARY_USER"
+  if $BREW_AS_USER && ! $SUDO_AUTHENTICATED; then
+    info "Homebrew belongs to $BREW_USER — authenticating now to run it as $BREW_USER"
     info "  (this one authentication also covers the activation later)."
     authenticate_once ""
   fi
@@ -1371,6 +1482,8 @@ homebrew_plan() {
 
   echo ""
   cask_lifecycle_plan "$declared_casks_known"
+  # A new or replaced bundle needs the brew user to write /Applications.
+  require_applications_writable
 
   # Mac App Store, shown in the same breath as Homebrew so the plan covers
   # everything this run will change before you authenticate.
@@ -1490,7 +1603,7 @@ require_nix_features
 if [[ "$OS" == "Darwin" ]]; then
   ensure_jq || true
 fi
-# Who runs Homebrew — and, cross-user, whether the primary user owns it.
+# Who runs Homebrew (homebrew.user) — and whether that account owns it.
 setup_brew_user
 # /etc files nix-darwin's activation would reject (moved, if confirmed, only
 # after the switch is confirmed — see etc_apply_renames).
@@ -1500,7 +1613,7 @@ etc_preflight
 # Placed after the nix-in-PATH setup (the plan evaluates the flake) but before
 # the drift audit and build, so it stays fast. Nothing below this point runs:
 # no build, no activation, no sudo — except that from another account than
-# system.primaryUser the plan's brew commands run as that user, which takes
+# homebrew.user the plan's brew commands run as that user, which takes
 # the one authentication. (The plan itself does refresh Homebrew metadata —
 # see homebrew_plan.)
 if $PLAN_ONLY; then
@@ -1523,7 +1636,7 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
   AUDIT_HOST="${FLAKE_REF##*#}"
   audit_log=$(mktemp -t audit-log.XXXXXX)
   audit_rc=0
-  # Cross-user, the audit's Homebrew calls must run as $PRIMARY_USER too: it
+  # Cross-user, the audit's Homebrew calls must run as $BREW_USER too: it
   # is a child process, so the brew() wrapper above does not reach it, and
   # `brew info` as the invoker failed — every declared app read as unmanaged.
   # Its sudo -n needs the run's one authentication, so that moves up to here
@@ -1532,16 +1645,16 @@ if [[ "$OS" == "Darwin" && -x "$DOTFILES_DIR/scripts/audit-config-drift.sh" ]]; 
   # `brew list` still works from any account, and the casks whose apps
   # `brew info` cannot resolve are reported as such.
   audit_brew_cmd=""
-  if ${BREW_AS_PRIMARY:-false}; then
+  if ${BREW_AS_USER:-false}; then
     if ! ${BUILD_ONLY:-false}; then
-      info "Homebrew belongs to $PRIMARY_USER — authenticating now so the drift audit can run it as $PRIMARY_USER"
+      info "Homebrew belongs to $BREW_USER — authenticating now so the drift audit can run it as $BREW_USER"
       info "  (this one authentication also covers the plan and the activation later)."
       authenticate_once ""
     fi
     if ${SUDO_AUTHENTICATED:-false} || sudo -n true 2>/dev/null; then
-      audit_brew_cmd="sudo -n -u $PRIMARY_USER -H $BREW_BIN"
+      audit_brew_cmd="sudo -n -u $BREW_USER -H $BREW_BIN"
     else
-      info "--build-only takes no authentication: the drift audit runs Homebrew as you, not $PRIMARY_USER."
+      info "--build-only takes no authentication: the drift audit runs Homebrew as you, not $BREW_USER."
     fi
   fi
   BREW_CMD="$audit_brew_cmd" "$DOTFILES_DIR/scripts/audit-config-drift.sh" "$AUDIT_HOST" 2>&1 \
@@ -1725,14 +1838,14 @@ fi
 
 # ── Step 5b: Authenticate ONCE for the whole run ──
 # See authenticate_once. A cross-user run already authenticated before its
-# plan (Homebrew runs as the primary user from the first `brew update`); the
+# plan (Homebrew runs as homebrew.user from the first `brew update`); the
 # summary still lists what that one authentication covers.
 #
 # Say what the one prompt is for, so it can be attributed — and so a SECOND
 # prompt during the run stands out as something to report, not to tap through.
 info "One authentication covers this entire run:"
 echo "    • activation: system settings, launchd services, /etc links"
-if $BREW_AS_PRIMARY; then echo "    • every Homebrew command, run as $PRIMARY_USER"; fi
+if $BREW_AS_USER; then echo "    • every Homebrew command, run as $BREW_USER"; fi
 if [[ -n "$NEW_CASKS" ]]; then echo "    • install: $NEW_CASKS"; fi
 if [[ -n "$ETC_RENAMES" ]]; then
   echo "    • move aside (→ *.before-nix-darwin): $(cut -f1 <<<"$ETC_RENAMES" | xargs)"
@@ -1832,24 +1945,26 @@ run_darwin_rebuild() {
 # already confirmed App Management allows it. A failure here is left for
 # activation to report rather than aborting the run.
 #
-# Cross-user: brew runs as the primary user, and a bundle she does not own
+# Whenever Homebrew is not simply the invoker's own (setup_brew_user checked
+# the prefix): brew runs as homebrew.user, and a bundle that user does not own
 # (installed by hand from another account, or root's) makes Homebrew fall back
-# to its OWN `sudo` to remove it — as her, i.e. a prompt for HER password,
-# outside this run's authentication. The bundle is replaced by hers anyway, so
-# it is handed to her first, as root, inside the authentication.
+# to its OWN `sudo` to remove it — as the brew user, i.e. a prompt for THAT
+# user's password, outside this run's authentication. The bundle is replaced
+# by the brew user's copy anyway, so it is handed over first, as root, inside
+# the authentication.
 replace_hand_installed() {
   local cask app owner
   echo -e "${BOLD}━━━ Replacing hand-installed apps ━━━${NC}"
   echo ""
-  if $BREW_AS_PRIMARY; then
+  if [[ -n "$BREW_USER" ]] && ! [[ "$BREW_USER" == "$(id -un)" && "$BREW_USER" == "$PRIMARY_USER" ]]; then
     while IFS= read -r app; do
       [[ -n "$app" && -e "$app" ]] || continue
       owner=$(stat -f %Su "$app" 2>/dev/null) || owner=""
-      if [[ "$owner" != "$PRIMARY_USER" ]]; then
-        if sudo -n chown -R "$PRIMARY_USER" "$app"; then
-          info "$app: owner ${owner:-unknown} → $PRIMARY_USER (it is being replaced by her Homebrew copy)"
+      if [[ "$owner" != "$BREW_USER" ]]; then
+        if sudo -n chown -R "$BREW_USER" "$app"; then
+          info "$app: owner ${owner:-unknown} → $BREW_USER (it is being replaced by the Homebrew copy)"
         else
-          warn "$app: could not hand it to $PRIMARY_USER — Homebrew may prompt for her password"
+          warn "$app: could not hand it to $BREW_USER — Homebrew may prompt for $BREW_USER's password"
         fi
       fi
     done <<<"$ADOPT_APPS"

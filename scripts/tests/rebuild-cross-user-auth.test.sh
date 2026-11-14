@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end coverage for the ONE authentication of a cross-user rebuild:
-# rebuild.sh run by an admin (rouven) on a Mac whose system.primaryUser — and
-# Homebrew prefix — is someone else (kassie), on the kassie-mbp-m1 path: a
+# rebuild.sh run by an admin (rouven) on a Mac whose homebrew.user — and
+# Homebrew prefix — is someone else (kassie; here also the primaryUser), on a
+# kassie-mbp-m1-like path: a
 # full (non --plan-only) run, darwin-rebuild not on PATH (nix build fallback).
 #
 # WHY THIS EXISTS: kassie-mbp-m1's drift audit printed "brew info failed for:
@@ -87,6 +88,7 @@ a="$*"
 case "$a" in
   "config show experimental-features") echo "nix-command flakes" ;;
   *"config.system.primaryUser"*) printf kassie ;;
+  *"config.homebrew.user"*) printf kassie ;;
   *"config.homebrew.enable"*) echo true ;;
   *"config.homebrew.masApps"*) echo '{}' ;;
   *"config.homebrew."*|*criticalUpgrades*|*retiredCasks*) echo '[]' ;;

@@ -44,11 +44,11 @@ jobs:
 
       - name: Household brew shim (eval-level)
         # /etc/zshrc|bashrc on household hosts route other accounts' `brew` to
-        # system.primaryUser; no other host may carry it.
+        # homebrew.user; no other host may carry it.
         run: bash scripts/ci/check-household-brew-shim.sh
 
       - name: Household compinit / sshd (eval-level)
         # Household /etc/zshrc runs `compinit -i` (other accounts are not asked
-        # about the primary user's Homebrew dirs); no SSH host keys or sshd
+        # about the brew user's Homebrew dirs); no SSH host keys or sshd
         # drop-ins on household hosts; every other host unchanged.
         run: bash scripts/ci/check-household-compinit-sshd.sh

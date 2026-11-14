@@ -151,19 +151,19 @@ case "$out" in
 esac
 
 echo ""
-echo "drift audit — Homebrew owned by system.primaryUser"
+echo "drift audit — Homebrew owned by homebrew.user, not by you"
 
 # kassie-mbp-m1: the audit is a child process, so rebuild.sh's brew() wrapper
 # never reached it and its `brew info` ran as the invoker — 25 declared apps
 # read as unmanaged. The block hands the owner's invocation over as BREW_CMD,
 # inside the run's one authentication.
-XUSER='BREW_AS_PRIMARY=true; PRIMARY_USER=kassie; BREW_BIN=/opt/homebrew/bin/brew
+XUSER='BREW_AS_USER=true; BREW_USER=kassie; BREW_BIN=/opt/homebrew/bin/brew
   SUDO_AUTHENTICATED=false
   authenticate_once() { echo "AUTH_ONCE"; SUDO_AUTHENTICATED=true; }'
 NO_CRED='sudo() { echo "SUDO $*"; return 1; }'
 CRED='sudo() { echo "SUDO $*"; return 0; }'
 out=$(BLOCK_PRE="$XUSER; $NO_CRED; BUILD_ONLY=false" run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
-check "cross-user: audit runs Homebrew as the primary user" "$(cat "$TEST_ROOT/brew_cmd")" \
+check "cross-user: audit runs Homebrew as the brew user" "$(cat "$TEST_ROOT/brew_cmd")" \
   "sudo -n -u kassie -H /opt/homebrew/bin/brew"
 check_contains "cross-user: the run's one authentication comes first" "$out" "AUTH_ONCE"
 check "cross-user: proceeds" "$(rc_of "$out")" "0"
@@ -179,7 +179,7 @@ case "$out" in
   *) echo "  ok   — --build-only does not authenticate for the audit"; pass=$((pass+1)) ;;
 esac
 out=$(BLOCK_PRE="$XUSER; $CRED; BUILD_ONLY=true" run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")
-check "cross-user --build-only, cached credential: as the primary user" "$(cat "$TEST_ROOT/brew_cmd")" \
+check "cross-user --build-only, cached credential: as the brew user" "$(cat "$TEST_ROOT/brew_cmd")" \
   "sudo -n -u kassie -H /opt/homebrew/bin/brew"
 
 out=$(BLOCK_PRE='export BREW_CMD="stale from env"' run_block Darwin 0 "DRIFT_RESULT: risky=0 benign=0 informational=0")

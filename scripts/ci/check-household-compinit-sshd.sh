@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Eval-level check for two household-mac choices (modules/roles/household-mac.nix):
 #
-#   compinit -i — /opt/homebrew belongs to system.primaryUser, so for every
+#   compinit -i — /opt/homebrew belongs to homebrew.user, so for every
 #     other account compaudit finds directories owned by neither root nor the
 #     account, and nix-darwin's bare `compinit` asked "Ignore insecure
 #     directories and files and continue [y] or abort compinit [n]?" in every

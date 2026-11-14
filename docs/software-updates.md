@@ -65,13 +65,13 @@ A plain `darwin-rebuild switch` therefore upgrades nothing.
 
 `rebuild.sh` used to trigger a Touch ID prompt for every root-requiring cask,
 each with no indication of what it was for. Those prompts came from *inside*
-`darwin-rebuild switch`: nix-darwin drops root back to the primary user to run
+`darwin-rebuild switch`: nix-darwin drops root back to `homebrew.user` (default: the primary user) to run
 `brew bundle` (brew refuses to run as root), so every cask needing root
 re-invoked `sudo` as the user, and macOS's default tty-scoped sudo timestamps
 meant each one authenticated separately.
 
-`modules/darwin/sudo-rebuild.nix` sets `timestamp_type=global` scoped to the
-primary user, so one authentication covers brew's children too. `rebuild.sh`
+`modules/darwin/sudo-rebuild.nix` sets `timestamp_type=global` scoped to
+`homebrew.user`, so one authentication covers brew's children too. `rebuild.sh`
 authenticates once **after** printing the plan, refreshes the timestamp for the
 duration of the run, and revokes it with `sudo -k` on exit.
 
@@ -80,7 +80,7 @@ as you can call `sudo` without a prompt — including third-party formula and ca
 install scripts the rebuild downloads and executes. Weighed against the previous
 behaviour, those scripts already received root via prompts too unattributable to
 evaluate, so they were approved reflexively. This trades many unattributable taps
-for one tap shown after an explicit plan. It is scoped to the primary user and to
+for one tap shown after an explicit plan. It is scoped to `homebrew.user` and to
 the `workstation-mac` role; `personal-mac` hosts are unaffected.
 
 `Defaults` and `timestamp_timeout` are left at macOS's 5-minute default — the

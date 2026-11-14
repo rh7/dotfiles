@@ -19,7 +19,7 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `rouvens-mac-mini` → `rouvens-mac-mini-m4` | Mac mini M4 (office) | workstation | `mac-mini-office.nix`, smart-home |
 | `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS defaults + `workstation-defaults.nix` + `remote-access.nix`, Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix`, `fleet-audit.nix` |
 | `Kassie-M5-Air13` | MacBook Air M5 (user `kassie`) | personal | `macbook.nix`; `needsSecrets = false` |
-| `kassie-mbp-m1` | MacBook Pro M1 Pro, shared (primary user `kassie`, minimal home-manager; `rouven` untouched) | household (adopted in place: firewall + update policy, no user defaults, no Dock, no Remote Login/Screen Sharing management, adopts hand-installed casks) | `kassie-mbp-m1.nix`; `homeProfile = "household"`; `needsSecrets = false` |
+| `kassie-mbp-m1` | MacBook Pro M1 Pro, shared (primary user `kassie`, minimal home-manager; Homebrew owned by the admin `rouven` via `homebrew.user`; `rouven` otherwise untouched) | household (adopted in place: firewall + update policy, no user defaults, no Dock, no Remote Login/Screen Sharing management, adopts hand-installed casks) | `kassie-mbp-m1.nix`; `homeProfile = "household"`; `needsSecrets = false` |
 | `nixos-vm` | UTM VM (aarch64) | workstation-linux (NixOS) | `vm.nix` |
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
 | `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
@@ -160,8 +160,8 @@ re-prompting once per cask — see `modules/darwin/sudo-rebuild.nix`.
 checks the three things a freshly-Nix-installed Mac gets wrong and offers to fix
 each after one `[y/N]` question (default No; never answered by `--yes`), inside
 the run's single authentication: flakes off (append to `/etc/nix/nix.conf`,
-restart `nix-daemon`), a Homebrew prefix not owned by `system.primaryUser`
-(`chown -R`), and `/etc/bashrc`/`/etc/zshrc` that are stock macOS plus only the
+restart `nix-daemon`), a Homebrew prefix (or an installed cask's app bundle) not
+owned by `homebrew.user` (`chown -R`), and `/etc/bashrc`/`/etc/zshrc` that are stock macOS plus only the
 Nix installer block (moved to `*.before-nix-darwin` before any app is replaced,
 so nix-darwin's "Unexpected files in /etc" cannot fail activation halfway).
 Anything it does not recognise stops the run with the exact manual step;

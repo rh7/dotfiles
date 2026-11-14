@@ -2,6 +2,12 @@
 
 let
   primary = config.system.primaryUser;
+  # Who owns and runs Homebrew (nix-darwin's homebrew.user, default
+  # primaryUser). On a household Mac whose daily user is a STANDARD account it
+  # must be an admin (the host sets it): Homebrew moves a new cask's app into
+  # /Applications as this user, and a standard user cannot write there —
+  # Homebrew then falls back to its own `sudo cp`, asking for HER password.
+  brewUser = config.homebrew.user;
   hm = config.home-manager.users.${primary} or null;
   # Files home-manager links into the primary user's home. The household home
   # profile (configurations/macos/home-household.nix) leaves only the two
@@ -12,23 +18,24 @@ let
   postActivation = config.system.activationScripts.postActivation.text;
   sshdDropIns = lib.filter (n: lib.hasPrefix "ssh/sshd_config.d/" n
     && config.environment.etc.${n}.enable) (lib.attrNames config.environment.etc);
-  # Homebrew belongs to the primary user (nix-darwin runs `brew bundle` as
-  # her, so /opt/homebrew must be hers). For every OTHER account a plain
-  # `brew` would fail on her prefix — or, worse, write files into it she can
-  # no longer update. This shell function makes `brew` from another ADMIN
-  # account run as her (the same `sudo -u <primary> -H` form nix-darwin and
-  # rebuild.sh use; from / because her account cannot read his home), and
-  # tells a non-admin account who manages it. The primary user is unaffected.
+  # Homebrew belongs to homebrew.user (nix-darwin runs `brew bundle` as that
+  # account, so /opt/homebrew must be its). For every OTHER account a plain
+  # `brew` would fail on that prefix — or, worse, write files into it the
+  # owner can no longer update. This shell function makes `brew` from another
+  # ADMIN account run as the brew user (the same `sudo -u <user> -H` form
+  # nix-darwin and rebuild.sh use; from / because that account may not read
+  # the caller's home), and tells a non-admin account who manages it. The
+  # brew user itself gets the plain command.
   # System-wide (/etc/zshrc, /etc/bashrc via interactiveShellInit), NOT
   # home-manager: nobody's own dotfiles are touched.
   brewShimMarker = "# household-mac: Homebrew on this Mac belongs to";
   brewShim = lib.optionalString config.homebrew.enable ''
-    ${brewShimMarker} ${primary}
-    if [ "$(id -un)" != ${lib.escapeShellArg primary} ]; then
+    ${brewShimMarker} ${brewUser}
+    if [ "$(id -un)" != ${lib.escapeShellArg brewUser} ]; then
       if id -Gn | grep -qw admin; then
-        brew() { (cd / && exec sudo -u ${lib.escapeShellArg primary} -H ${lib.escapeShellArg "${config.homebrew.prefix}/bin/brew"} "$@"); }
+        brew() { (cd / && exec sudo -u ${lib.escapeShellArg brewUser} -H ${lib.escapeShellArg "${config.homebrew.prefix}/bin/brew"} "$@"); }
       else
-        brew() { echo ${lib.escapeShellArg "Homebrew on this Mac is managed by ${primary}; ask an admin."} >&2; return 1; }
+        brew() { echo ${lib.escapeShellArg "Homebrew on this Mac is managed by ${brewUser}; ask an admin."} >&2; return 1; }
       fi
     fi
   '';
@@ -68,6 +75,12 @@ in
   # the agent and launchd loads it at her next login. Other accounts (e.g. the
   # maintainer's) get nothing per-user from nix.
   #
+  # homebrew.user — who owns and runs Homebrew — is separate from her: it
+  # defaults to primaryUser, but when the daily user is a STANDARD account the
+  # host must set it to an admin (kassie-mbp-m1: rouven). A standard user
+  # cannot write /Applications, so Homebrew installing a new cask as her falls
+  # back to its own `sudo cp` and asks for HER password — attended or not.
+  #
   # ── What FIRST activation changes ────────────────────────────────────────
   # Derived from what mkMac (flake.nix) imports for EVERY Mac: modules/darwin/
   # {defaults,homebrew,mas,xcode-license,fleet-update,restic-backup,
@@ -95,17 +108,20 @@ in
   #   - root LaunchDaemon org.rh7.fleet-update (nightly unattended switch from
   #     the host's channel), /usr/local/libexec/rh7-fleet-launcher, and the
   #     nix system profile in /run/current-system;
-  #   - Homebrew `brew bundle` (run as the primary user) installs the host's
-  #     declared casks into /Applications. /opt/homebrew must therefore be
-  #     owned by the primary user (rebuild.sh offers the chown). In every
-  #     OTHER account's interactive zsh/bash, `brew` is a function from
-  #     /etc/zshrc|bashrc: admins run it as `sudo -u <primary> -H brew …`
-  #     (from /; Touch ID), non-admins get "managed by <primary>; ask an
-  #     admin". Only MISSING casks are installed, never
+  #   - Homebrew `brew bundle` (run as homebrew.user) installs the host's
+  #     declared casks into /Applications — so that account must be able to
+  #     write /Applications (an admin), and /opt/homebrew plus the app
+  #     bundles of installed casks must be owned by it (rebuild.sh offers the
+  #     chown, and stops before activation when the brew user cannot write
+  #     /Applications). In every OTHER account's interactive zsh/bash, `brew`
+  #     is a function from /etc/zshrc|bashrc: admins run it as
+  #     `sudo -u <brew user> -H brew …` (from /; Touch ID), non-admins get
+  #     "managed by <brew user>; ask an admin". Only MISSING casks are
+  #     installed, never
   #     upgraded (homebrew.nix: upgrade = false) and NOTHING is ever removed
   #     (cleanup = "none", asserted below). Hand-installed apps stay as they
   #     are unless the host declares their cask — then rebuild.sh replaces
-  #     the bundle with the Homebrew copy, owned by the primary user
+  #     the bundle with the Homebrew copy, owned by the brew user
   #     (rh7/dotfiles#116). Per-user app data in ~/Library is not touched.
   #   - NOT changed: Remote Login, Screen Sharing, SSH host keys and sshd
   #     config (asserted below); no Finder / Dock relaunch.
@@ -120,10 +136,12 @@ in
   #     the empty ~/.cache/.keep and ~/.local/state/.keep, and its own state
   #     under ~/.local/state/{home-manager,nix} and
   #     /etc/profiles/per-user/<user> (no tools on PATH);
-  #   - declared casks replaced by rebuild.sh become owned by her.
+  #   - declared casks' bundles are owned by homebrew.user, which is her only
+  #     when the host leaves homebrew.user at its default.
   #
   # (c) OTHER ACCOUNTS (e.g. the maintainer): no per-user change. They see the
-  #   system-wide effects above only (including the `brew` function).
+  #   system-wide effects above only (including the `brew` function, unless
+  #   the account IS homebrew.user — then `brew` is the plain command).
   imports = [
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
     ../darwin/software-update.nix   # macOS update policy (client Macs only)
@@ -150,14 +168,14 @@ in
   programs.bash.interactiveShellInit = brewShim;
 
   # compinit with -i instead of nix-darwin's bare `compinit`. /opt/homebrew
-  # belongs to the primary user, and `brew shellenv` (in an account's own
+  # belongs to homebrew.user, and `brew shellenv` (in an account's own
   # ~/.zprofile) puts $prefix/share/zsh/site-functions on fpath — so for every
   # OTHER account compaudit finds directories owned by neither root nor the
   # account, and a bare compinit asks "Ignore insecure directories and files
   # and continue [y] or abort compinit [n]?" in EVERY new shell (kassie-mbp-m1,
   # rouven's account). -i silently skips the insecure directories (it does not
-  # trust them, unlike -u); for the primary user they are hers, i.e. secure,
-  # so her Homebrew completions still load. A compinit in an account's own
+  # trust them, unlike -u); for the brew user they are its own, i.e. secure,
+  # so its Homebrew completions still load. A compinit in an account's own
   # ~/.zshrc is that account's business.
   programs.zsh.enableGlobalCompInit = false;
 
@@ -230,17 +248,17 @@ in
     }
     # The brew shim must reach both system-wide shell files (a disabled
     # programs.zsh/bash or an override would silently drop it, and other
-    # accounts' `brew` would write into the primary user's prefix).
+    # accounts' `brew` would write into the brew user's prefix).
     {
       assertion = !config.homebrew.enable
         || (lib.hasInfix brewShimMarker zshrc
           && lib.hasInfix brewShimMarker config.environment.etc."bashrc".text);
-      message = "household-mac: the Homebrew shell function for non-${primary} "
+      message = "household-mac: the Homebrew shell function for non-${brewUser} "
         + "accounts is missing from /etc/zshrc or /etc/bashrc — are programs.zsh "
         + "and programs.bash enabled?";
     }
     # /etc/zshrc runs compinit as `compinit -i` and not ALSO as nix-darwin's
-    # bare one (see above): that one prompts other accounts about the primary
+    # bare one (see above): that one prompts other accounts about the brew
     # user's Homebrew directories in every new shell.
     {
       assertion = !config.programs.zsh.enableCompletion

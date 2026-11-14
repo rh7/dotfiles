@@ -47,14 +47,23 @@
 #     only installs MISSING formulae/casks. Upgrades remain
 #     `rebuild.sh --upgrade=critical|all`.
 #   - No pkg-installer casks. Casks that need root (pkg installers) call sudo as
-#     the primary user; the daemon first invalidates that user's sudo timestamp
-#     (sudo-rebuild.nix makes it user-global) and there is no tty, so that sudo
+#     homebrew.user (who `brew bundle` runs as); the daemon first invalidates
+#     that user's and the primary user's sudo timestamps (sudo-rebuild.nix
+#     makes the brew user's user-global) and there is no tty, so that sudo
 #     fails fast instead of prompting or silently escalating. `brew bundle`
 #     fails, nix-darwin's activation stops at the Homebrew step (`set -e`), and
 #     the run records failed/brew-failed. The system profile already points at
 #     the new generation (recorded as `generation`), but postActivation —
 #     mas_install, home-manager — and the /run/current-system flip did not run.
 #     It retries nightly; a human `rebuild.sh` clears it.
+#   - No new cask as a homebrew.user that cannot write /Applications (a
+#     standard account). Even a plain app cask then needs Homebrew's own
+#     `sudo cp` as that user. Nor any Homebrew run while Homebrew's own prefix
+#     directories are not homebrew.user's (the option changed; only a human `rebuild.sh`
+#     migrates the prefix, with one chown question). The daemon evaluates
+#     the commit's homebrew.user and casks BEFORE building; either case
+#     records failed/brew-failed (the log names the cause and the fix) and
+#     nothing is built or switched.
 #   - No Mac App Store installs or upgrades. `mas_install` of a newly declared
 #     app fails (mas needs sudo internally) and only warns; `mas upgrade` is
 #     never run.

@@ -4,8 +4,8 @@
 # after ONE question each (default No), inside the run's one authentication:
 #
 #   1. nix-command/flakes off      → append to nix.conf, restart nix-daemon
-#   2. Homebrew prefix not the
-#      primary user's (cross-user) → chown -R <primary>:admin <prefix>
+#   2. Homebrew prefix (or a Homebrew-installed app bundle) not homebrew.user's
+#                                  → chown -R <brew user>[:admin] <prefix/bundles>
 #   3. /etc shell files nix-darwin's activation check would reject
 #                                  → stock + Nix installer block: move to
 #                                    *.before-nix-darwin (after the switch is
@@ -39,8 +39,9 @@ W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
 FNS="cleanup ask_fix nix_missing_features restart_nix_daemon nix_conf_append require_nix_features
-     authenticate_once host_flake_ref eval_failed eval_primary_user homebrew_enable_failed
-     ensure_declared_lib brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary setup_brew_user
+     authenticate_once host_flake_ref eval_failed eval_user homebrew_enable_failed
+     ensure_declared_lib brew_prefix brew_owned_dirs brew_prefix_foreign cask_app_bundles
+     cask_bundles_foreign brew_as_user setup_brew_user
      etc_managed_targets sha256_of nix_block_stripped etc_stock_with_nix_block etc_body
      etc_unexpected_lines etc_restore_hint etc_config_service_pin etc_preflight etc_apply_renames"
 for f in $FNS; do
@@ -101,6 +102,7 @@ case "$*" in
     echo "error: experimental Nix feature 'nix-command' is disabled; add '--extra-experimental-features nix-command' to enable it" >&2
     exit 1 ;;
   *config.system.primaryUser*) printf '%s' "$STUB_PRIMARY" ;;
+  *config.homebrew.user*) printf '%s' "${STUB_BREW_USER:-$STUB_PRIMARY}" ;;
   *config.homebrew.enable*) echo true ;;
   *config.environment.etc*)
     if [[ -n "${STUB_ETC_FAIL:-}" ]]; then echo "error: etc eval exploded" >&2; exit 1; fi
@@ -166,13 +168,14 @@ NIX_CONF="$ETC/nix/nix.conf"
 ETC_DIR="$ETC"
 $(grep -E '^FLAKES_LINE=' "$SCRIPT")
 SUDO_TOUCHED=false; SUDO_KEEPALIVE_PID=""; SUDO_AUTHENTICATED=false
-PRIMARY_USER=""; BREW_AS_PRIMARY=false; BREW_BIN=""; DECLARED_LIB_SOURCED=false
+PRIMARY_USER=""; BREW_USER=""; BREW_AS_USER=false; BREW_BIN=""; DECLARED_LIB_SOURCED=false
+APPLICATIONS_DIR="$W/Applications"
 ETC_RENAMES=""; ETC_RENAMED=""; ETC_MATCH_EB=0; ETC_MATCH_EA=0
 source "$W/fns.sh"
 $1
 EOF
   ( cd "$W" && env PATH="$STUBS:$PFX/bin:/usr/bin:/bin" STUB_LOG="$W/log" \
-      STUB_NIX_CONF="$ETC/nix/nix.conf" STUB_PRIMARY="${PRIMARY-kassie}" \
+      STUB_NIX_CONF="$ETC/nix/nix.conf" STUB_PRIMARY="${PRIMARY-kassie}" STUB_BREW_USER="${BREW_USER_NAME:-}" \
       STUB_DEFAULT_OWNER="${OWNER:-kassie}" STUB_CHOWNED="$W/chowned" \
       STUB_CHOWN_NOOP="${CHOWN_NOOP:-}" STUB_MV_FAIL="${MV_FAIL:-}" \
       STUB_ETC_TARGETS="$W/targets" STUB_ETC_FAIL="${ETC_FAIL:-}" \
@@ -244,9 +247,9 @@ has "extra- key already set: says why" "already sets extra-experimental-features
 
 # ═════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "2. Homebrew prefix not owned by the primary user (cross-user)"
+echo "2. Homebrew prefix not owned by the brew user (cross-user)"
 fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; features_on; answer y
-OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY AUTH=$SUDO_AUTHENTICATED"'
+OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_USER AUTH=$SUDO_AUTHENTICATED"'
 check "accept: continues (rc 0)" "$(cat "$W/rc")" 0
 has "accept: shows the owner and the offending-path count" "path(s) under $PFX belong to $ME"
 has "accept: explains the consequence for other accounts" "sudo -u kassie brew …"
@@ -267,6 +270,27 @@ fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; features_on; answer y
 OWNER="$ME" CHOWN_NOOP=1 run_case 'setup_brew_user; echo REACHED'
 check "chown did not take: stops (rc 1)" "$(cat "$W/rc")" 1
 has "chown did not take: re-checked, says so" "Still not owned by kassie"
+
+# kassie-mbp-m1: homebrew.user is you (rouven), primaryUser kassie; the prefix
+# and the bundles of the casks adopted earlier are still kassie's. ONE question
+# hands both to you; brew then runs directly, no sudo -u.
+mkdir -p "$W/Applications/Zen.app" "$W/Applications/Firefox.app" "$PFX/Caskroom/zen/1.0" "$PFX/Caskroom/firefox/2.0"
+ln -s "$W/Applications/Zen.app" "$PFX/Caskroom/zen/1.0/Zen.app"
+ln -s "$W/Applications/Firefox.app" "$PFX/Caskroom/firefox/2.0/Firefox.app"
+fixture "$STOCK_BASHRC" "$STOCK_ZSHRC"; features_on; answer y
+BREW_USER_NAME="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_USER AUTH=$SUDO_AUTHENTICATED"'
+check "brew user = you, prefix + bundles kassie's: accept continues (rc 0)" "$(cat "$W/rc")" 0
+check "brew user = you: exactly one question" "$(grep -o '\[y/N\]' "$W/out" | wc -l | tr -d ' ')" 1
+has "brew user = you: lists the adopted bundles" "$W/Applications/Firefox.app (kassie)"
+has "brew user = you: the question names prefix and bundles" "chown -R $ME:admin $PFX, plus the 2 app bundle(s) above"
+logged "brew user = you: prefix chowned to you" "sudo -n chown -R $ME:admin $PFX"
+logged "brew user = you: Zen.app chowned to you" "sudo -n chown -R $ME $W/Applications/Zen.app"
+logged "brew user = you: Firefox.app chowned to you" "sudo -n chown -R $ME $W/Applications/Firefox.app"
+has "brew user = you: then brew runs directly, inside the one authentication" "AS=false AUTH=true"
+first_sudo=$(grep -n '^sudo' "$W/log" | head -1)
+[[ "$first_sudo" == *"sudo -n true"* || "$first_sudo" == *"sudo -v"* ]] \
+  && good "brew user = you: authenticates before the chown" || bad "brew user = you: authenticates before the chown" "$(cat "$W/log")"
+rm -rf "$W/Applications" "$PFX/Caskroom"
 
 # ═════════════════════════════════════════════════════════════════════════════
 echo ""

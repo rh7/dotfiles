@@ -439,8 +439,17 @@ apps, their own Dock — brought under nix-darwin in place. Example:
 - **`username` = the daily user** (as on `Kassie-M5-Air13`). The daily audit
   is a `gui`-domain LaunchAgent, so it runs only while she is logged in — and
   the daily user is. Activation itself does **not** need her logged in (see
-  [What Kassie experiences](#what-kassie-experiences)). Adopted casks end up
-  owned by her.
+  [What Kassie experiences](#what-kassie-experiences)).
+- **`homebrew.user` = an admin account** when the daily user is a standard
+  one. nix-darwin runs `brew bundle` as `homebrew.user` (default:
+  `system.primaryUser`), and Homebrew moves a new cask's app into
+  `/Applications` as that user. A standard account cannot write there, so
+  Homebrew falls back to its own `sudo cp` — a password prompt for **her**
+  (that is how zen and ghostty failed on `kassie-mbp-m1`), and an unattended
+  nightly run can only fail. `kassie-mbp-m1` therefore sets
+  `homebrew.user = "rouven"`: Homebrew, and the app bundles of the casks it
+  installed, belong to the maintainer; Kassie stays `primaryUser`
+  (home-manager, audit agent). Hosts that leave it unset are unchanged.
 - **`homeProfile = "household"`** (mkMac switch,
   `configurations/macos/home-household.nix`). Her home-manager is the audit
   agent (`com.rh7.collector-runner`) and nothing else: no zsh/starship/git/
@@ -455,17 +464,19 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   (`%n@%m %1~ %#`) and the Terminal.app integration; zsh history becomes
   2000/2000 and shared across sessions unless `~/.zshrc` sets its own.
   Completion runs as `compinit -i`, not nix-darwin's bare `compinit`: for
-  every account but the primary user, Homebrew's `share/zsh/site-functions`
+  every account but `homebrew.user`, Homebrew's `share/zsh/site-functions`
   (on `fpath` via `brew shellenv`) belongs to someone else, and a bare
   `compinit` asked "Ignore insecure directories … [y]/[n]?" in every new
-  shell. `-i` skips those directories (it does not trust them); the primary
+  shell. `-i` skips those directories (it does not trust them); the brew
   user's own completions still load.
-- **`brew` from another account.** Homebrew belongs to the primary user, so
+- **`brew` from another account.** Homebrew belongs to `homebrew.user`, so
   `/etc/zshrc` and `/etc/bashrc` define `brew` for every other account: an
-  **admin** runs it as her (`sudo -u kassie -H /opt/homebrew/bin/brew …`,
-  from `/`, one Touch ID); a non-admin gets "Homebrew on this Mac is managed
-  by kassie; ask an admin". Kassie's own `brew` is untouched. Built from the
-  evaluated `system.primaryUser` and `homebrew.prefix`; household role only
+  **admin** runs it as the brew user (`sudo -u <brew user> -H
+  /opt/homebrew/bin/brew …`, from `/`, one Touch ID); a non-admin gets
+  "Homebrew on this Mac is managed by <brew user>; ask an admin". The brew
+  user's own `brew` is the plain command. On `kassie-mbp-m1`: `rouven` runs
+  `brew` directly, Kassie (standard) is told to ask an admin. Built from the
+  evaluated `homebrew.user` and `homebrew.prefix`; household role only
   (`scripts/ci/check-household-brew-shim.sh` pins both).
 - **Other accounts** (the maintainer's) get **nothing per-user**. Everybody
   sees the system-wide effects: declared apps in `/Applications`, the
@@ -493,13 +504,16 @@ apps, their own Dock — brought under nix-darwin in place. Example:
 
 Done from the **owner's admin account** (`rouven`), in a **GUI session** at
 the Mac — Kassie does not need to be there. `rebuild.sh` evaluates
-`system.primaryUser` (`kassie`); because it differs from you, it runs **every
-Homebrew command** — plan, drift audit, replacing hand-installed apps,
-upgrades, retired casks — as her (`sudo -u kassie -H`), inside the run's
-**one** Touch ID (taken at the drift audit; `--build-only` takes none, and its
-audit then lists the casks it could not resolve). The same-user path (you
-rebuilding your own Mac) is unchanged. Running `audit-config-drift.sh` by hand
-from your account: `BREW_CMD="sudo -u kassie -H brew" ./scripts/audit-config-drift.sh`.
+`homebrew.user` (`rouven`) and `system.primaryUser` (`kassie`). Run from
+`rouven`, Homebrew runs **as you, directly** — no `sudo -u`. Run from any
+other account than `homebrew.user`, it runs **every Homebrew command** —
+plan, drift audit, replacing hand-installed apps, upgrades, retired casks —
+as the brew user (`sudo -u <brew user> -H`), inside the run's **one** Touch
+ID (taken at the drift audit; `--build-only` takes none, and its audit then
+lists the casks it could not resolve). A host whose `homebrew.user` is its
+`primaryUser` and you (your own Mac) is unchanged. Running
+`audit-config-drift.sh` by hand from another account than the brew user:
+`BREW_CMD="sudo -u rouven -H brew" ./scripts/audit-config-drift.sh`.
 
 **What `rebuild.sh` will ask you** on a fresh Mac — each a single `[y/N]`
 question (default No; `--yes` never answers them), each fixed inside the
@@ -513,10 +527,25 @@ replacement. Say No and it stops with the exact manual command instead;
   (adds to any existing feature list, never replaces it) and restarts
   `nix-daemon` — only if that file does not already set that key (then it
   stops: edit that line by hand).
-- **Hand Homebrew to kassie?** — when anything under `/opt/homebrew` is not
-  hers it shows the owner and how many paths, then runs
-  `chown -R kassie:admin /opt/homebrew`. From then on other accounts run
-  Homebrew as her (the `brew` function above does it for admins).
+- **Hand Homebrew to rouven?** (`homebrew.user`) — when anything under
+  `/opt/homebrew` is not the brew user's, it shows the owner and how many
+  paths; when an app bundle Homebrew installed (every
+  `/opt/homebrew/Caskroom/<cask>/<version>/<App>.app` link into
+  `/Applications` — never any other app) is not wholly the brew user's, it
+  lists those bundles. One question covers both: `chown -R rouven:admin
+  /opt/homebrew` plus `chown -R rouven` on each listed bundle (otherwise the
+  next upgrade of that cask would ask for the old owner's password). From
+  then on other accounts run Homebrew as `rouven` (the `brew` function above
+  does it for admins).
+- **Not a question — a stop:** if the plan installs or replaces a cask and
+  `homebrew.user` cannot write `/Applications` (not an admin), `rebuild.sh`
+  stops before the confirmation and activation, naming the user and the fix
+  (set `homebrew.user` to an admin account, or make that user an admin).
+  The nightly fleet-update refuses the same run before building
+  (`failed` / `brew-failed`, the casks and the fix in its log) — and also
+  any run while Homebrew's own prefix directories (the prefix, `Caskroom`,
+  `Cellar`, `var/homebrew`) are not yet `homebrew.user`'s (it never
+  chowns; run `rebuild.sh` once from an admin account to migrate it).
 - **Move the /etc shell files aside?** — nix-darwin aborts activation with
   "Unexpected files in /etc" on a file whose checksum it does not know. If
   `/etc/bashrc`/`/etc/zshrc` are the stock macOS file plus only the Nix
@@ -528,10 +557,12 @@ replacement. Say No and it stops with the exact manual command instead;
 
 1. **Ask Kassie to log out** (best) or at least quit her apps. The declared
    apps are replaced while they may be open in her session.
-2. **Prerequisite:** she must be an admin (casks write `/Applications`):
+2. **Prerequisite:** `homebrew.user` must be an admin (casks are moved into
+   `/Applications` as that user). Kassie need not be — on `kassie-mbp-m1`
+   she is not, which is why the host sets `homebrew.user = "rouven"`:
 
    ```bash
-   dseditgroup -o checkmember -m kassie admin
+   dseditgroup -o checkmember -m rouven admin
    ```
 
 3. **Adopt** — from your GUI session (not SSH: the Nix installer needs it;
@@ -543,8 +574,8 @@ replacement. Say No and it stops with the exact manual command instead;
    ```
 
    It installs Nix with the official installer (asks first), clones
-   `~/dotfiles` into **your** home, and runs `rebuild.sh --plan-only` — one
-   Touch ID (Homebrew runs as kassie), then the plan: the apps it will
+   `~/dotfiles` into **your** home, and runs `rebuild.sh --plan-only` — the
+   plan (Homebrew runs as you, the brew user): the apps it will
    REPLACE (with a "Quit these first" list if any is running in her session),
    what it would install, upgrade or uninstall, and the questions above as
    "will fix". No `jq` on the Mac is fine (`nix shell nixpkgs#jq`). If App
@@ -559,9 +590,9 @@ replacement. Say No and it stops with the exact manual command instead;
 
    ```bash
    darwin-version --configuration-revision            # = git rev-parse origin/main
-   sudo -u kassie brew list --cask                    # the host file's casks
-   type brew                                          # (new terminal, your account) brew is a function → sudo -u kassie
-   stat -f '%Su %N' /Applications/Firefox.app         # kassie (a replaced app)
+   brew list --cask                                   # the host file's casks (you are homebrew.user)
+   type brew                                          # (new terminal, your account) the real brew, not a function
+   stat -f '%Su %N' /Applications/Firefox.app         # rouven (a Homebrew-installed app)
    /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate   # enabled
    /usr/libexec/ApplicationFirewall/socketfilterfw --getallowsigned   # built-in + downloaded signed: ENABLED
    /usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode   # on
@@ -593,12 +624,15 @@ channel reaches that commit; then it applies normally.
   plist and skipped the load instead of failing — `rebuild.sh` says so, and a
   nightly run records `applied` with a note in its log.
 - **No prompts from the adoption itself:** no password or Touch ID (Homebrew
-  ran inside your authentication; hand-installed bundles were handed to her
-  first so Homebrew never asks for her password), no "accept incoming network
+  runs as the admin `homebrew.user`, inside your authentication; bundles it
+  replaces or installed are handed to that account first, so Homebrew never
+  asks for anybody's password), no "accept incoming network
   connections?" dialog for signed apps, no Dock/Finder/keyboard change, no
   dotfile touched. One macOS behaviour remains: Homebrew marks downloaded
   apps as quarantined, so the **first** open of each replaced app shows
   Gatekeeper's one-time "downloaded from the Internet — Open?" confirmation.
+- **Her `brew`:** Homebrew is not hers — in her shells `brew` answers
+  "Homebrew on this Mac is managed by rouven; ask an admin".
 
 ---
 

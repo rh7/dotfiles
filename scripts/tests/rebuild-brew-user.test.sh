@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 # Coverage for the "who runs Homebrew" logic in scripts/rebuild.sh:
-# setup_brew_user, brew_as_primary, homebrew_plan and replace_hand_installed
-# when the configuration's system.primaryUser is NOT the invoking user (the
-# owner adopting a household Mac from his own account), plus ensure_jq.
+# setup_brew_user, brew_as_user, homebrew_plan and replace_hand_installed
+# when the configuration's homebrew.user is NOT simply the invoking user's
+# own default — the owner adopting a household Mac from his own account,
+# with homebrew.user = primaryUser (kassie) or = him (kassie-mbp-m1:
+# homebrew.user rouven, primaryUser kassie) — plus ensure_jq.
 #
 # Run: ./scripts/tests/rebuild-brew-user.test.sh
 #
 # Properties pinned:
-#   - cross-user: EVERY brew command of the plan and the adoption runs as the
-#     primary user (sudo -n -u <primary> -H), only after the run's one
-#     authentication, and a hand-installed bundle she does not own is handed
-#     to her first (otherwise Homebrew's own sudo would ask for HER password);
-#   - cross-user with a prefix she does not own: stop before anything else,
-#     printing the exact chown fix;
-#   - same-user: `brew` stays the plain command — no sudo, no wrapper;
+#   - brew user ≠ invoker: EVERY brew command of the plan and the adoption
+#     runs as homebrew.user (sudo -n -u <user> -H), only after the run's one
+#     authentication, and a hand-installed bundle that user does not own is
+#     handed over first (otherwise Homebrew's own sudo would ask for THAT
+#     user's password);
+#   - brew user = invoker ≠ primaryUser: brew runs directly (no sudo -u), and
+#     the prefix and the installed casks' app bundles are still checked;
+#   - a prefix or a Homebrew-installed bundle the brew user does not own:
+#     stop before anything else, printing the exact chown fix — apps not
+#     installed by Homebrew are never listed;
+#   - a plan that installs a cask while the brew user cannot write
+#     /Applications stops before activation (--plan-only reports it);
+#   - same-user (homebrew.user = primaryUser = you): `brew` stays the plain
+#     command — no sudo, no wrapper;
 #   - jq missing: taken from nixpkgs instead of skipping the checks.
 #
 # Extracted rather than sourced: rebuild.sh executes top-to-bottom. brew, sudo,
@@ -32,9 +41,10 @@ check() { if [[ "$2" == "$3" ]]; then good "$1"; else bad "$1" "expected [$3] go
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-FNS="setup_brew_user host_flake_ref eval_failed eval_primary_user homebrew_enable_failed require_nix_features
+FNS="setup_brew_user host_flake_ref eval_failed eval_user homebrew_enable_failed require_nix_features
      ask_fix nix_missing_features restart_nix_daemon nix_conf_append
-     brew_prefix brew_owned_dirs brew_prefix_foreign brew_as_primary
+     brew_prefix brew_owned_dirs brew_prefix_foreign cask_app_bundles cask_bundles_foreign brew_as_user
+     brew_user_writes_applications require_applications_writable
      authenticate_once ensure_jq ensure_declared_lib homebrew_plan cask_lifecycle_plan
      cask_app_targets app_bundle_modifiable declared_outdated_mas select_by_mode
      load_critical_names replace_hand_installed"
@@ -109,6 +119,7 @@ case "$*" in
       exit 1
     fi
     printf '%s' "$STUB_PRIMARY" ;;
+  *config.homebrew.user*) printf '%s' "${STUB_BREW_USER:-$STUB_PRIMARY}" ;;
   *config.homebrew.enable*)
     if [[ "${STUB_HB_ENABLE:-true}" == fail ]]; then echo "error: homebrew eval exploded" >&2; exit 1; fi
     echo "${STUB_HB_ENABLE:-true}" ;;
@@ -144,7 +155,8 @@ NIX_CONF="$W/nix.conf"
 $(grep -E '^FLAKES_LINE=' "$SCRIPT")
 REBUILD_MAS_BIN=/nonexistent/mas
 PLAN_TMP=""; MAS_TMP=""; SUDO_TOUCHED=false; SUDO_KEEPALIVE_PID=""
-PRIMARY_USER=""; BREW_AS_PRIMARY=false; BREW_BIN=""; SUDO_AUTHENTICATED=false
+PRIMARY_USER=""; BREW_USER=""; BREW_AS_USER=false; BREW_BIN=""; SUDO_AUTHENTICATED=false
+APPLICATIONS_DIR="${APPS_DIR:-$APPS}"
 DECLARED_LIB_SOURCED=false; CRITICAL_LOADED=false; CRITICAL_KNOWN=false; CRITICAL_NAMES=""
 ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
 BREW_UPGRADE_FORMULAE=""; BREW_UPGRADE_CASKS=""
@@ -153,7 +165,7 @@ $1
 EOF
   ( cd "$W" && env PATH="$STUBS:$PFX/bin:/usr/bin:/bin" STUB_LOG="$W/log" STUB_PFX="$PFX" \
       STUB_APPS="$APPS" STUB_OWNERS="$W/owners" STUB_DEFAULT_OWNER="${OWNER:-kassie}" \
-      STUB_PRIMARY="${PRIMARY-kassie}" STUB_PRIMARY_FAIL="${PRIMARY_FAIL:-}" \
+      STUB_PRIMARY="${PRIMARY-kassie}" STUB_PRIMARY_FAIL="${PRIMARY_FAIL:-}" STUB_BREW_USER="${BREW_USER_NAME:-}" \
       STUB_HB_ENABLE="${HB_ENABLE:-true}" STUB_JQ_DIR="${JQ_DIR:-}" \
       STUB_NOCMD="${NOCMD:-}" STUB_FEATURES="${FEATURES:-}" \
       bash "$W/case.sh" >"$W/out" 2>&1 )
@@ -165,7 +177,7 @@ as_kassie()   { grep -c '^brew\[kassie\]' "$W/log" || true; }
 
 echo ""
 echo "setup_brew_user — same user"
-PRIMARY="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY TYPE=$(type -t brew)"'
+PRIMARY="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_USER TYPE=$(type -t brew)"'
 check "same user: rc 0" "$(cat "$W/rc")" 0
 grep -q "AS=false TYPE=file" "$W/out" && good "same user: brew stays the plain command" \
   || bad "same user: brew stays the plain command" "$(cat "$W/out")"
@@ -185,10 +197,10 @@ check "empty primaryUser: fatal (rc 1)" "$(cat "$W/rc")" 1
 
 echo ""
 echo "setup_brew_user — cross-user (primaryUser kassie, invoker $ME)"
-run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY BIN=$BREW_BIN TYPE=$(type -t brew)"'
+run_case 'setup_brew_user; echo "AS=$BREW_AS_USER BIN=$BREW_BIN TYPE=$(type -t brew)"'
 check "prefix owned by kassie: rc 0" "$(cat "$W/rc")" 0
-grep -q "AS=true BIN=$PFX/bin/brew TYPE=function" "$W/out" && good "brew routed through brew_as_primary" \
-  || bad "brew routed through brew_as_primary" "$(cat "$W/out")"
+grep -q "AS=true BIN=$PFX/bin/brew TYPE=function" "$W/out" && good "brew routed through brew_as_user" \
+  || bad "brew routed through brew_as_user" "$(cat "$W/out")"
 
 
 OWNER="$ME" run_case 'setup_brew_user; echo "REACHED"'
@@ -216,7 +228,7 @@ grep -q "… and [0-9]* more" "$W/out" && good "wholly foreign prefix: first 5 p
   || bad "wholly foreign prefix: first 5 paths, then a count" "$(cat "$W/out")"
 : >"$W/owners"
 
-HB_ENABLE=false OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_PRIMARY"'
+HB_ENABLE=false OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_USER"'
 grep -q "AS=false" "$W/out" && good "homebrew.enable = false: hands off, no ownership stop" \
   || bad "homebrew.enable = false: hands off, no ownership stop" "$(cat "$W/out")"
 for hb in null fail; do
@@ -249,7 +261,7 @@ FEATURES="nix-command" run_case 'OS=Linux; require_nix_features'
 grep -q "systemctl restart nix-daemon" "$W/out" && good "Linux: prints the systemd fix" \
   || bad "Linux: prints the systemd fix" "$(cat "$W/out")"
 for ref in /flake '/flake#'; do
-  run_case "FLAKE_REF='$ref'; setup_brew_user; echo \"AS=\$BREW_AS_PRIMARY\""
+  run_case "FLAKE_REF='$ref'; setup_brew_user; echo \"AS=\$BREW_AS_USER\""
   grep -qF 'nix eval --raw /flake#darwinConfigurations."thishost".config.system.primaryUser' "$W/log" \
     && grep -q "AS=true" "$W/out" \
     && good "--flake $ref: resolves to this host, like the build" \
@@ -257,7 +269,7 @@ for ref in /flake '/flake#'; do
 done
 
 echo ""
-echo "brew_as_primary"
+echo "brew_as_user"
 run_case 'setup_brew_user >/dev/null; HOMEBREW_NO_AUTO_UPDATE=1 brew list --cask -1'
 grep -qE '^sudo -n -u kassie -H env HOMEBREW_NO_AUTO_UPDATE=1 .*/bin/brew list --cask -1$' "$W/log" \
   && good "runs: sudo -n -u kassie -H env HOMEBREW_NO_AUTO_UPDATE=1 <prefix>/bin/brew …" \
@@ -277,6 +289,9 @@ check "plan: no brew command runs as the invoker" "$(direct_brew)" 0
   || bad "plan: brew commands run as kassie" "$(cat "$W/log")"
 grep -q "ADOPT=zen AUTH=true" "$W/out" && good "plan: hand-installed Zen.app is adopted" \
   || bad "plan: hand-installed Zen.app is adopted" "$(cat "$W/out")"
+grep -qF "sudo -n -u kassie test -w $APPS" "$W/log" \
+  && good "plan: checks that kassie (the brew user) can write /Applications" \
+  || bad "plan: checks the brew user can write /Applications" "$(cat "$W/log")"
 
 echo ""
 echo "homebrew_plan — same user (unchanged)"
@@ -315,12 +330,108 @@ grep -q '^brew\[invoker\] .*install --cask --force zen' "$W/log" \
   && good "same user: plain brew install" || bad "same user: plain brew install" "$(cat "$W/log")"
 : >"$W/owners"
 
+has()   { if grep -qF -- "$2" "$W/out"; then good "$1"; else bad "$1" "missing [$2] in: $(cat "$W/out")"; fi; }
+hasnt() { if grep -qF -- "$2" "$W/out"; then bad "$1" "unexpected [$2] in: $(cat "$W/out")"; else good "$1"; fi; }
+
+echo ""
+echo "homebrew.user ≠ primaryUser (kassie-mbp-m1: homebrew.user = you, primaryUser kassie)"
+BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo "AS=$BREW_AS_USER TYPE=$(type -t brew) BU=$BREW_USER PU=$PRIMARY_USER"'
+check "brew user = invoker: rc 0" "$(cat "$W/rc")" 0
+has "brew user = invoker: brew runs directly (no wrapper)" "AS=false TYPE=file BU=$ME PU=kassie"
+has "brew user = invoker: says so" "Homebrew runs as you"
+grep -q '^sudo' "$W/log" && bad "brew user = invoker: no sudo" "$(cat "$W/log")" || good "brew user = invoker: no sudo"
+
+BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user >/dev/null; homebrew_plan; echo "ADOPT=$ADOPT_CASKS AUTH=$SUDO_AUTHENTICATED"'
+check "brew user = invoker, plan: rc 0" "$(cat "$W/rc")" 0
+grep -q '^sudo' "$W/log" && bad "brew user = invoker, plan: no sudo, no authentication" "$(cat "$W/log")" \
+  || good "brew user = invoker, plan: no sudo, no authentication"
+check "brew user = invoker, plan: nothing runs as kassie" "$(as_kassie)" 0
+[[ "$(direct_brew)" -ge 4 ]] && good "brew user = invoker, plan: plain brew ($(direct_brew) calls)" \
+  || bad "brew user = invoker, plan: plain brew" "$(cat "$W/log")"
+
+# The prefix is still the primary user's (before the one-time chown): checked
+# although you ARE the brew user — the same-user shortcut would have skipped it.
+BREW_USER_NAME="$ME" run_case 'setup_brew_user; echo REACHED'
+check "prefix still kassie's: stops (rc 1)" "$(cat "$W/rc")" 1
+hasnt "prefix still kassie's: nothing after the check runs" "REACHED"
+has "prefix still kassie's: the chown targets the brew user" "sudo chown -R $ME:admin $PFX"
+has "prefix still kassie's: other accounts run brew as the brew user" "sudo -u $ME brew"
+
+# Homebrew-installed bundles (Caskroom links into /Applications) owned by the
+# old owner are offered too; an app Homebrew did not install, or a link out
+# of /Applications, never is.
+mkdir -p "$PFX/Caskroom/zen/1.0" "$PFX/Caskroom/else/2.0" "$APPS/Other.app" "$W/elsewhere/Else.app"
+ln -s "$APPS/Zen.app" "$PFX/Caskroom/zen/1.0/Zen.app"
+ln -s "$W/elsewhere/Else.app" "$PFX/Caskroom/else/2.0/Else.app"
+printf '%s kassie\n' "$APPS/Zen.app" "$APPS/Other.app" "$W/elsewhere/Else.app" >"$W/owners"
+BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo REACHED'
+check "installed cask bundle not the brew user's: stops (rc 1)" "$(cat "$W/rc")" 1
+has "installed cask bundle: listed with its owner" "$APPS/Zen.app (kassie)"
+has "installed cask bundle: exact chown printed" "sudo chown -R $ME '$APPS/Zen.app'"
+hasnt "installed cask bundle: a prefix that is already the brew user's is not offered" "$ME:admin"
+hasnt "an app Homebrew did not install is never listed" "Other.app"
+hasnt "a Caskroom link outside /Applications is never listed" "Else.app"
+grep -q chown "$W/log" && bad "declined (no answer): nothing chowned" "$(cat "$W/log")" \
+  || good "declined (no answer): nothing chowned"
+mkdir -p "$APPS/Zen.app/Contents"
+printf '%s root\n' "$APPS/Zen.app/Contents" >"$W/owners"
+BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo REACHED'
+has "a foreign path INSIDE an installed bundle counts" "$APPS/Zen.app (root)"
+PLAN_SETUP='PLAN_ONLY=true; setup_brew_user; echo "REACHED AS=$BREW_AS_USER"'
+BREW_USER_NAME="$ME" OWNER="$ME" run_case "$PLAN_SETUP"
+has "--plan-only: reports it as will fix and goes on" "will fix: rebuild.sh offers this chown"
+has "--plan-only: continues" "REACHED AS=false"
+rm -rf "$PFX/Caskroom/zen" "$PFX/Caskroom/else" "$APPS/Other.app" "$APPS/Zen.app/Contents" "$W/elsewhere"
+: >"$W/owners"
+
+echo ""
+echo "homebrew.user ≠ primaryUser ≠ invoker"
+BREW_USER_NAME=maint OWNER=maint run_case 'setup_brew_user >/dev/null; HOMEBREW_NO_AUTO_UPDATE=1 brew list --cask -1; echo "AS=$BREW_AS_USER"'
+has "brew routed through brew_as_user" "AS=true"
+grep -qE '^sudo -n -u maint -H env HOMEBREW_NO_AUTO_UPDATE=1 .*/bin/brew list --cask -1$' "$W/log" \
+  && good "runs as the brew user, not as the primary user" || bad "runs as the brew user" "$(cat "$W/log")"
+check "nothing runs as the primary user" "$(as_kassie)" 0
+echo "$APPS/Zen.app kassie" >"$W/owners"
+BREW_USER_NAME=maint OWNER=maint run_case "setup_brew_user >/dev/null; ADOPT_CASKS=zen; ADOPT_APPS='$APPS/Zen.app'; replace_hand_installed"
+grep -qF "sudo -n chown -R maint $APPS/Zen.app" "$W/log" \
+  && good "a hand-installed bundle is handed to the brew user, not the primary user" \
+  || bad "a hand-installed bundle is handed to the brew user" "$(cat "$W/log")"
+echo "$APPS/Zen.app kassie" >"$W/owners"
+BREW_USER_NAME="$ME" OWNER="$ME" run_case "setup_brew_user >/dev/null; SUDO_AUTHENTICATED=true; ADOPT_CASKS=zen; ADOPT_APPS='$APPS/Zen.app'; replace_hand_installed"
+grep -qF "sudo -n chown -R $ME $APPS/Zen.app" "$W/log" \
+  && good "brew user = invoker: her hand-installed bundle is handed to you first" \
+  || bad "brew user = invoker: her bundle is handed to you first" "$(cat "$W/log")"
+grep -q '^brew\[invoker\] .*install --cask --force zen' "$W/log" \
+  && good "brew user = invoker: replaced with plain brew" || bad "brew user = invoker: plain brew install" "$(cat "$W/log")"
+: >"$W/owners"
+
+echo ""
+echo "require_applications_writable — a non-admin brew user stops before activation"
+mv "$APPS/Zen.app" "$W/Zen.app.away"   # zen becomes a NEW install, not an adoption
+APPS_DIR="$W/ro-apps" run_case 'setup_brew_user >/dev/null; homebrew_plan; echo REACHED'
+check "cross-user, kassie cannot write /Applications: stops (rc 1)" "$(cat "$W/rc")" 1
+hasnt "cross-user: nothing after the plan runs (no confirmation, no activation)" "REACHED"
+has "names who and why" "Homebrew runs as 'kassie', who cannot write $W/ro-apps (not an admin)"
+has "names the casks" "Installing zen would make Homebrew fall back to its own sudo"
+has "names the fix" "set homebrew.user in this host's configuration to an admin account"
+grep -qF "sudo -n -u kassie test -w $W/ro-apps" "$W/log" && good "asked as the brew user (sudo -n -u kassie test -w)" \
+  || bad "asked as the brew user" "$(cat "$W/log")"
+APPS_DIR="$W/ro-apps" PRIMARY="$ME" run_case 'setup_brew_user >/dev/null; homebrew_plan; echo REACHED'
+check "same user, cannot write /Applications: stops (rc 1)" "$(cat "$W/rc")" 1
+has "same user: names who" "Homebrew runs as '$ME', who cannot write"
+APPS_DIR="$W/ro-apps" run_case 'PLAN_ONLY=true; setup_brew_user >/dev/null; homebrew_plan; echo REACHED'
+check "--plan-only: reports it, rc 0" "$(cat "$W/rc")" 0
+has "--plan-only: says a full run stops" "A full run stops here, before activation."
+run_case 'setup_brew_user >/dev/null; homebrew_plan; echo "REACHED NEW=$NEW_CASKS"'
+has "writable /Applications: the install goes ahead" "REACHED NEW=zen"
+mv "$W/Zen.app.away" "$APPS/Zen.app"
+
 echo ""
 echo "every Homebrew call site goes through \`brew\`"
 # The wrapper only covers calls spelled `brew …`. A `command brew` or a direct
 # $BREW_BIN would bypass it on the cross-user path.
 bypass=$(grep -nE 'command brew|"\$BREW_BIN"|/opt/homebrew/bin/brew' "$SCRIPT" \
-  | grep -vE '^[0-9]+:\s*#|exec sudo -n -u "\$PRIMARY_USER"' || true)
+  | grep -vE '^[0-9]+:\s*#|exec sudo -n -u "\$BREW_USER"' || true)
 check "no call site bypasses the wrapper" "$bypass" ""
 
 echo ""
