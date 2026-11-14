@@ -44,12 +44,15 @@
 #                     asks, may remove Dock items. The Dock is compared again
 #                     after the build, right before activation (step 7).
 #                     evaluation fails             -> failed / build-failed
-#   5b. brew user     T would install a cask not yet in the Caskroom while
-#                     its homebrew.user cannot write /Applications (a
-#                     standard account): Homebrew would fall back to its own
-#                     sudo as that user, which can only fail unattended,
-#                     AFTER the profile switched     -> failed / brew-failed
-#                     (logged with the casks and the fix; nothing built —
+#   5b. brew user     T runs `brew bundle` as its homebrew.user. Refused when
+#                     a cask not yet in the Caskroom would be installed while
+#                     that user cannot write /Applications (a standard
+#                     account: Homebrew falls back to its own sudo, which can
+#                     only fail unattended), or when the prefix is not wholly
+#                     that user's (homebrew.user changed; only rebuild.sh
+#                     migrates it) — either fails AFTER the profile switched
+#                                                    -> failed / brew-failed
+#                     (logged with the cause and the fix; nothing built —
 #                     the same reason as a `brew bundle` failure in step 7)
 #   6. build          darwinConfigurations.<attr>.system, <attr> baked in by
 #                     the module, never derived from the runtime hostname
@@ -570,18 +573,31 @@ brew_user_writes_applications() {
   sudo -n -u "$1" test -w "$ROOT/Applications" </dev/null >/dev/null 2>&1
 }
 
-# check_brew_target — 0: activation's `brew bundle` installs nothing the
-# target's homebrew.user cannot put in place without a password (no cask new
-# to this Mac's Caskroom, or that user can write /Applications). 1: it would —
-# Homebrew moves a new cask's app into /Applications as homebrew.user and,
-# when that account cannot write there, falls back to its own `sudo cp` as
-# that user: a password prompt no unattended run can answer, failing
-# activation after the system profile already switched. 2: unknown. Sets
-# BREW_USER (close_user_sudo_window) from the target, which decides who
-# `brew bundle` runs as.
+# brew_prefix_foreign <user> <prefix> — the first path under <prefix> not
+# owned by <user> (or the reason it cannot tell); nothing when all is theirs.
+# `-quit`: stops at the first one, so a migrated prefix is walked once.
+brew_prefix_foreign() {
+  local uid found
+  uid=$(id -u "$1" 2>/dev/null) || { echo "(no such user: $1)"; return 0; }
+  found=$(find "$2" -xdev ! -uid "$uid" -print -quit 2>/dev/null) || { echo "(unreadable: $2)"; return 0; }
+  printf '%s' "$found"
+}
+
+# check_brew_target — 0: activation's `brew bundle` can run as the target's
+# homebrew.user without a password. 1: it cannot, either because
+#   - a cask new to this Mac's Caskroom would be installed and that user
+#     cannot write /Applications: Homebrew moves a new cask's app there as
+#     homebrew.user and otherwise falls back to its own `sudo cp` as that
+#     user — a password prompt no unattended run can answer; or
+#   - the prefix is not (wholly) that user's: a commit that changes
+#     homebrew.user reaches the Mac before anybody migrated the prefix (only
+#     rebuild.sh offers that chown), and brew run as the new user fails on it.
+# Both would fail activation after the system profile already switched.
+# 2: unknown. Sets BREW_USER (close_user_sudo_window) from the target, which
+# decides who `brew bundle` runs as.
 BREW_USER=""
 check_brew_target() {
-  local user prefix new="" cask
+  local user prefix new="" cask foreign
   load_target_declaration || return 2
   jq -e '.brew | type == "object" and (.enable | type == "boolean")
          and (.user | type == "string") and (.prefix | type == "string")
@@ -603,16 +619,23 @@ check_brew_target() {
     [[ -d "$ROOT$prefix/Caskroom/${cask##*/}" ]] || new+=" ${cask##*/}"
   done < <(jq -r '.brew.casks[]' <<<"$TARGET_DECL")
   new="${new# }"
+  if [[ -n "$new" ]] && ! brew_user_writes_applications "$user"; then
+    log "brew-user: $TARGET would install $new as homebrew.user '$user', who cannot write /Applications (not an admin) — Homebrew would fall back to its own sudo as $user, which an unattended run cannot answer. Not building. Fix: set homebrew.user to an admin account (or make $user an admin); or install them with rebuild.sh."
+    return 1
+  fi
+  if [[ -d "$ROOT$prefix" ]]; then
+    foreign=$(brew_prefix_foreign "$user" "$ROOT$prefix")
+    if [[ -n "$foreign" ]]; then
+      log "brew-user: $TARGET runs Homebrew as homebrew.user '$user', but $ROOT$prefix is not wholly $user's (first: $foreign) — brew would fail on it mid-activation. Not building. Fix: run rebuild.sh from an admin account; it offers the chown to $user."
+      return 1
+    fi
+  fi
   if [[ -z "$new" ]]; then
-    log "brew: $TARGET installs no new cask"
-    return 0
-  fi
-  if brew_user_writes_applications "$user"; then
+    log "brew: $TARGET installs no new cask (homebrew.user $user)"
+  else
     log "brew: $TARGET installs $new as homebrew.user $user (can write /Applications)"
-    return 0
   fi
-  log "brew-user: $TARGET would install $new as homebrew.user '$user', who cannot write /Applications (not an admin) — Homebrew would fall back to its own sudo as $user, which an unattended run cannot answer. Not building. Fix: set homebrew.user to an admin account (or make $user an admin); or install them with rebuild.sh."
-  return 1
+  return 0
 }
 
 # ── Build + activate ─────────────────────────────────────────────────────────

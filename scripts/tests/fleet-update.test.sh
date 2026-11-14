@@ -503,9 +503,27 @@ check "dry-run: reports the same refusal (exit 1)" "$RC" "1"
 grep -q 'dry-run result: failed (brew-failed)' <<<"$OUT" && good "dry-run: failed (brew-failed), state not written" \
   || bad "dry-run: failed (brew-failed)" "$OUT"
 
+# The sandbox prefix belongs to whoever runs this suite: use that account as
+# the brew user wherever a prefix exists and must count as migrated.
+ME=$(id -un)
 fresh; refs "$C2" "$C2"; caskroom firefox; caskroom zen
-STUB_APPS_RO=1 STUB_BREW_DECL=$(brew_decl kassie firefox acme/tap/zen) run_fu
+STUB_APPS_RO=1 STUB_BREW_DECL=$(brew_decl "$ME" firefox acme/tap/zen) run_fu
 expect "no new cask (tap-qualified name resolved to its token): a non-admin brew user is fine" 0 applied null
+
+# homebrew.user changed (kassie → rouven) but nobody migrated the prefix yet:
+# brew as the new user would fail on it mid-activation. Refused before building.
+fresh; refs "$C2" "$C2"; caskroom firefox
+STUB_BREW_DECL=$(brew_decl nobody firefox) run_fu
+expect "prefix not the brew user's" 1 failed brew-failed
+check "prefix not the brew user's: nothing built" "$(builds)" "0"
+grep -q "brew-user: .* runs Homebrew as homebrew.user 'nobody', but $ROOT/opt/homebrew is not wholly nobody's" <<<"$OUT" \
+  && good "prefix not the brew user's: the log names user and prefix" || bad "prefix log" "$OUT"
+grep -q "Fix: run rebuild.sh from an admin account; it offers the chown to nobody" <<<"$OUT" \
+  && good "prefix not the brew user's: the log names the fix" || bad "prefix fix logged" "$OUT"
+fresh; refs "$C2" "$C2"; caskroom firefox
+STUB_BREW_DECL=$(brew_decl no-such-user-x firefox) run_fu
+expect "brew user that does not exist on this Mac" 1 failed brew-failed
+grep -q '(no such user: no-such-user-x)' <<<"$OUT" && good "missing brew user: says so" || bad "missing brew user: says so" "$OUT"
 
 fresh; refs "$C2" "$C2"
 STUB_BREW_DECL=$(brew_decl maint zen ghostty) run_fu

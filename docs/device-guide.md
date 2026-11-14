@@ -542,7 +542,9 @@ replacement. Say No and it stops with the exact manual command instead;
   stops before the confirmation and activation, naming the user and the fix
   (set `homebrew.user` to an admin account, or make that user an admin).
   The nightly fleet-update refuses the same run before building
-  (`failed` / `brew-failed`, the casks and the fix in its log).
+  (`failed` / `brew-failed`, the casks and the fix in its log) — and also
+  any run while the prefix is not yet wholly `homebrew.user`'s (it never
+  chowns; run `rebuild.sh` once from an admin account to migrate it).
 - **Move the /etc shell files aside?** — nix-darwin aborts activation with
   "Unexpected files in /etc" on a file whose checksum it does not know. If
   `/etc/bashrc`/`/etc/zshrc` are the stock macOS file plus only the Nix

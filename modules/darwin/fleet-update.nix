@@ -58,10 +58,12 @@
 #     It retries nightly; a human `rebuild.sh` clears it.
 #   - No new cask as a homebrew.user that cannot write /Applications (a
 #     standard account). Even a plain app cask then needs Homebrew's own
-#     `sudo cp` as that user. The daemon evaluates the commit's homebrew.user
-#     and casks BEFORE building; a cask missing from the Caskroom with such a
-#     user records failed/brew-failed (the log names the casks and the fix:
-#     an admin homebrew.user) and nothing is built or switched.
+#     `sudo cp` as that user. Nor any Homebrew run on a prefix that is not
+#     wholly homebrew.user's (the option changed; only a human `rebuild.sh`
+#     migrates the prefix, with one chown question). The daemon evaluates
+#     the commit's homebrew.user and casks BEFORE building; either case
+#     records failed/brew-failed (the log names the cause and the fix) and
+#     nothing is built or switched.
 #   - No Mac App Store installs or upgrades. `mas_install` of a newly declared
 #     app fails (mas needs sudo internally) and only warns; `mas upgrade` is
 #     never run.
