@@ -7,13 +7,14 @@
   # nix touches nothing per-user there). See modules/roles/household-mac.nix
   # for exactly what activation changes.
   #
-  # Casks below ADOPT apps that were already installed by hand in
+  # Casks below mostly ADOPT apps that were already installed by hand in
   # /Applications and have an exact Homebrew cask (owner's pre-adoption audit).
-  # Nothing new is added. rebuild.sh replaces each hand-installed bundle with
-  # the Homebrew copy inside its single authentication (rh7/dotfiles#116);
-  # without that, `brew bundle` stops at "It seems there is already an App at
-  # '/Applications/X.app'". Every cask here is a plain `app` artifact — no pkg
-  # installer — so the unattended nightly fleet-update never needs sudo for them.
+  # rebuild.sh replaces each hand-installed bundle with the Homebrew copy
+  # inside its single authentication (rh7/dotfiles#116); without that,
+  # `brew bundle` stops at "It seems there is already an App at
+  # '/Applications/X.app'". Entries marked NEW are the only software added.
+  # Every cask here is a plain `app` artifact — no pkg installer — so
+  # the unattended nightly fleet-update never needs sudo for them.
   homebrew.casks = [
     # ── Browsers ──
     "arc"              # DEPRECATED upstream (discontinued; not disabled yet).
@@ -23,6 +24,7 @@
     "brave-browser"
     "firefox"
     "google-chrome"
+    "zen"              # NEW — maintainer's browser (rouven's account)
 
     # ── Passwords / encryption ──
     "1password"
@@ -55,6 +57,11 @@
     "pocket-casts"
     "sonos"
     "spotify"
+
+    # ── Maintainer's tools (NEW, for the rouven account) ──
+    # /Applications is shared, so Kassie sees them too. No per-user config:
+    # the household role links nothing into rouven's home.
+    "ghostty"
   ];
 
   # ── Deliberately NOT declared (manual, by design) ──────────────────────────
