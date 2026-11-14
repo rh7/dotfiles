@@ -58,8 +58,8 @@
 #     It retries nightly; a human `rebuild.sh` clears it.
 #   - No new cask as a homebrew.user that cannot write /Applications (a
 #     standard account). Even a plain app cask then needs Homebrew's own
-#     `sudo cp` as that user. Nor any Homebrew run on a prefix that is not
-#     wholly homebrew.user's (the option changed; only a human `rebuild.sh`
+#     `sudo cp` as that user. Nor any Homebrew run while Homebrew's own prefix
+#     directories are not homebrew.user's (the option changed; only a human `rebuild.sh`
 #     migrates the prefix, with one chown question). The daemon evaluates
 #     the commit's homebrew.user and casks BEFORE building; either case
 #     records failed/brew-failed (the log names the cause and the fix) and

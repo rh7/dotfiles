@@ -48,8 +48,8 @@
 #                     a cask not yet in the Caskroom would be installed while
 #                     that user cannot write /Applications (a standard
 #                     account: Homebrew falls back to its own sudo, which can
-#                     only fail unattended), or when the prefix is not wholly
-#                     that user's (homebrew.user changed; only rebuild.sh
+#                     only fail unattended), or when Homebrew's own prefix
+#                     directories are not that user's (homebrew.user changed; only rebuild.sh
 #                     migrates it) — either fails AFTER the profile switched
 #                                                    -> failed / brew-failed
 #                     (logged with the cause and the fix; nothing built —
@@ -573,14 +573,25 @@ brew_user_writes_applications() {
   sudo -n -u "$1" test -w "$ROOT/Applications" </dev/null >/dev/null 2>&1
 }
 
-# brew_prefix_foreign <user> <prefix> — the first path under <prefix> not
-# owned by <user> (or the reason it cannot tell); nothing when all is theirs.
-# `-quit`: stops at the first one, so a migrated prefix is walked once.
+# brew_prefix_foreign <user> <prefix> — the first of Homebrew's own top-level
+# directories (the prefix itself on Apple Silicon — it is the Homebrew
+# repository — or <prefix>/Homebrew on Intel, plus Caskroom, Cellar and
+# var/homebrew) not owned by <user>, or the reason it cannot tell; nothing
+# when they are theirs. Only those directories themselves, not the tree: a
+# prefix still owned by the PREVIOUS homebrew.user shows there, while
+# root-owned files deeper down (e.g. a `sudo brew services` formula's logs)
+# are legitimate and must not hold every update.
 brew_prefix_foreign() {
-  local uid found
+  local uid d dirs=()
   uid=$(id -u "$1" 2>/dev/null) || { echo "(no such user: $1)"; return 0; }
-  found=$(find "$2" -xdev ! -uid "$uid" -print -quit 2>/dev/null) || { echo "(unreadable: $2)"; return 0; }
-  printf '%s' "$found"
+  if [[ "$2" == */usr/local ]]; then dirs+=("$2/Homebrew"); else dirs+=("$2"); fi
+  dirs+=("$2/Caskroom" "$2/Cellar" "$2/var/homebrew")
+  for d in "${dirs[@]}"; do
+    [[ -e "$d" ]] || continue
+    if [[ -z "$(find "$d" -maxdepth 0 -uid "$uid" 2>/dev/null)" ]]; then
+      printf '%s' "$d"; return 0
+    fi
+  done
 }
 
 # check_brew_target — 0: activation's `brew bundle` can run as the target's
@@ -626,7 +637,7 @@ check_brew_target() {
   if [[ -d "$ROOT$prefix" ]]; then
     foreign=$(brew_prefix_foreign "$user" "$ROOT$prefix")
     if [[ -n "$foreign" ]]; then
-      log "brew-user: $TARGET runs Homebrew as homebrew.user '$user', but $ROOT$prefix is not wholly $user's (first: $foreign) — brew would fail on it mid-activation. Not building. Fix: run rebuild.sh from an admin account; it offers the chown to $user."
+      log "brew-user: $TARGET runs Homebrew as homebrew.user '$user', but $foreign is not $user's (the prefix was not migrated) — brew would fail on it mid-activation. Not building. Fix: run rebuild.sh from an admin account; it offers the chown to $user."
       return 1
     fi
   fi

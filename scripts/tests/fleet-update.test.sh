@@ -516,7 +516,7 @@ fresh; refs "$C2" "$C2"; caskroom firefox
 STUB_BREW_DECL=$(brew_decl nobody firefox) run_fu
 expect "prefix not the brew user's" 1 failed brew-failed
 check "prefix not the brew user's: nothing built" "$(builds)" "0"
-grep -q "brew-user: .* runs Homebrew as homebrew.user 'nobody', but $ROOT/opt/homebrew is not wholly nobody's" <<<"$OUT" \
+grep -q "brew-user: .* runs Homebrew as homebrew.user 'nobody', but $ROOT/opt/homebrew is not nobody's" <<<"$OUT" \
   && good "prefix not the brew user's: the log names user and prefix" || bad "prefix log" "$OUT"
 grep -q "Fix: run rebuild.sh from an admin account; it offers the chown to nobody" <<<"$OUT" \
   && good "prefix not the brew user's: the log names the fix" || bad "prefix fix logged" "$OUT"
