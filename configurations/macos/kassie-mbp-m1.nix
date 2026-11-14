@@ -3,9 +3,10 @@
 {
   # ── kassie-mbp-m1: shared household MacBook Pro (M1 Pro), ADOPTED in place ──
   # Not wiped. Two accounts: `kassie` (main day-to-day user, nix primaryUser —
-  # minimal home-manager, no user defaults) and `rouven` (admin, maintainer —
-  # nix touches nothing per-user there). See modules/roles/household-mac.nix
-  # for exactly what activation changes.
+  # minimal home-manager, no user defaults; a STANDARD account) and `rouven`
+  # (admin, maintainer — nix touches nothing per-user there, but he owns
+  # Homebrew, below). See modules/roles/household-mac.nix for exactly what
+  # activation changes.
   #
   # Casks below mostly ADOPT apps that were already installed by hand in
   # /Applications and have an exact Homebrew cask (owner's pre-adoption audit).
@@ -14,7 +15,22 @@
   # `brew bundle` stops at "It seems there is already an App at
   # '/Applications/X.app'". Entries marked NEW are the only software added.
   # Every cask here is a plain `app` artifact — no pkg installer — so
-  # the unattended nightly fleet-update never needs sudo for them.
+  # installing or upgrading one needs no sudo PROVIDED homebrew.user can write
+  # /Applications (an admin) and owns the existing bundle. Otherwise Homebrew
+  # falls back to its own `sudo cp` and asks for the brew user's password —
+  # which an unattended nightly fleet-update cannot answer at all.
+
+  # Homebrew belongs to the ADMIN maintainer account, not to the daily user.
+  # kassie is a standard user: she cannot write /Applications, so installing
+  # a NEW cask as her (zen, ghostty) made Homebrew ask for HER password
+  # (`sudo cp … /Applications/Zen.app`), from rebuild.sh run by rouven and
+  # from the nightly fleet-update alike. With homebrew.user = rouven, nix-darwin
+  # runs `brew bundle` as rouven, rebuild.sh from his account runs brew
+  # directly, and its one-time chown hands /opt/homebrew and the installed
+  # casks' app bundles to him. Kassie stays primaryUser (home-manager, daily
+  # audit agent); her `brew` says "managed by rouven; ask an admin".
+  homebrew.user = "rouven";
+
   homebrew.casks = [
     # ── Browsers ──
     "arc"              # DEPRECATED upstream (discontinued; not disabled yet).
@@ -90,8 +106,9 @@
 
   # ── Mac App Store apps present (NOT declared) ──────────────────────────────
   # Installed under an Apple ID; declaring them would make activation run
-  # `mas install` as the primary user (kassie), i.e. against whichever Apple ID
-  # is signed in to her App Store — and an unattended run cannot install
+  # `mas install` as homebrew.user (rouven, homebrew.masApps) or the primary
+  # user (kassie, mas_install), i.e. against whichever Apple ID is signed in
+  # to that account's App Store — and an unattended run cannot install
   # anyway (fleet-update.nix). Owner decides later. Present at adoption
   # (id  name):
   #   961632517  Be Focused Pro

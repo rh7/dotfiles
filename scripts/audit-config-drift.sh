@@ -14,8 +14,8 @@
 # (e.g. mouse speed, custom keyboard shortcuts, hidden defaults).
 #
 # BREW_CMD (env): the command that runs Homebrew, word-split, e.g.
-# "sudo -n -u kassie -H /opt/homebrew/bin/brew". rebuild.sh sets it when the
-# Homebrew prefix belongs to system.primaryUser, not to you. Default: brew.
+# "sudo -n -u rouven -H /opt/homebrew/bin/brew". rebuild.sh sets it when the
+# Homebrew prefix belongs to homebrew.user and that is not you. Default: brew.
 #
 # Exit codes: 0 = no drift, 1 = drift detected, 2 = error.
 
@@ -53,7 +53,7 @@ JSON_ITEMS='[]'
 APPS_DIR="${DRIFT_APPS_DIR:-/Applications}"
 
 # Every Homebrew call goes through here. rebuild.sh runs Homebrew as the
-# prefix owner (system.primaryUser) through a shell function, which a child
+# prefix owner (homebrew.user) through a shell function, which a child
 # process like this audit does not inherit: here it ran as the invoker. From
 # another account `brew list` still works (a bash fast path that only lists
 # the Caskroom), but `brew info` runs Homebrew's Ruby — and its failure was
@@ -435,9 +435,9 @@ done
 if [[ -n "$unresolved_casks" ]]; then
   note "brew info failed for:$unresolved_casks — their apps cannot be matched, so"
   note "  they may be listed below as unmanaged. Check: ${BREW_CMD:-brew} info --cask <name>"
-  # The usual cause: Homebrew belongs to another account (household Macs:
-  # system.primaryUser) and nothing ran it as that account — this audit run
-  # by hand, or by a rebuild.sh older than #125.
+  # The usual cause: Homebrew belongs to another account (homebrew.user) and
+  # nothing ran it as that account — this audit run by hand, or by a
+  # rebuild.sh older than #125.
   # type -P: the binary, not the brew() function above (`command -v` → "brew").
   brew_bin=$(type -P brew 2>/dev/null || true)
   brew_owner=""

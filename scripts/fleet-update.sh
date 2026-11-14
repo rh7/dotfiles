@@ -44,6 +44,13 @@
 #                     asks, may remove Dock items. The Dock is compared again
 #                     after the build, right before activation (step 7).
 #                     evaluation fails             -> failed / build-failed
+#   5b. brew user     T would install a cask not yet in the Caskroom while
+#                     its homebrew.user cannot write /Applications (a
+#                     standard account): Homebrew would fall back to its own
+#                     sudo as that user, which can only fail unattended,
+#                     AFTER the profile switched     -> failed / brew-failed
+#                     (logged with the casks and the fix; nothing built —
+#                     the same reason as a `brew bundle` failure in step 7)
 #   6. build          darwinConfigurations.<attr>.system, <attr> baked in by
 #                     the module, never derived from the runtime hostname
 #                                                    -> failed / build-failed
@@ -451,15 +458,24 @@ dock_path() {
   printf '%s\n' "$s"
 }
 
-# dock_declaration — the checked-out commit's primary user and Dock
-# declaration as {"user", "apps": [...] | null, "others": [...] | null}.
-# Evaluated, not built.
-dock_declaration() {
+# target_declaration — what the checked-out commit declares that this run
+# checks before building, as {"user", "apps": [...] | null, "others": [...] |
+# null, "brew": {"enable", "user", "prefix", "casks": [names]}}: the primary
+# user and Dock (check_dock), and who runs Homebrew and which casks
+# (check_brew_target). Evaluated once per run, not built.
+target_declaration() {
   run_timeout "$EVAL_TIMEOUT" nix --extra-experimental-features 'nix-command flakes' \
     --option accept-flake-config false \
     eval --json --no-update-lock-file \
     "$CHECKOUT#darwinConfigurations.\"$FLAKE_ATTR\".config" \
-    --apply 'c: { user = c.system.primaryUser; apps = c.system.defaults.dock.persistent-apps; others = c.system.defaults.dock.persistent-others; }' </dev/null
+    --apply 'c: { user = c.system.primaryUser; apps = c.system.defaults.dock.persistent-apps; others = c.system.defaults.dock.persistent-others; brew = { enable = c.homebrew.enable; user = c.homebrew.user; prefix = c.homebrew.prefix; casks = map (k: k.name) c.homebrew.casks; }; }' </dev/null
+}
+
+# load_target_declaration — TARGET_DECL, evaluated on first use.
+TARGET_DECL=""
+load_target_declaration() {
+  [[ -z "$TARGET_DECL" ]] || return 0
+  TARGET_DECL=$(target_declaration) || { TARGET_DECL=""; log "could not evaluate the declaration of $TARGET"; return 1; }
 }
 
 # current_dock <user> <persistent-apps|persistent-others> — that side of the
@@ -501,7 +517,7 @@ current_dock() {
 declared_dock() {
   local raw
   raw=$(jq -r --arg k "$1" '.[$k][] | if type == "string" then .
-    else (.["tile-data"]?["file-data"]?["_CFURLString"]? // empty) end' <<<"$DOCK_DECL") || return 1
+    else (.["tile-data"]?["file-data"]?["_CFURLString"]? // empty) end' <<<"$TARGET_DECL") || return 1
   while IFS= read -r p; do [[ -z "$p" ]] || dock_path "$p"; done <<<"$raw"
 }
 
@@ -510,19 +526,16 @@ declared_dock() {
 # 2: the declaration could not be evaluated. Run twice: before the build and
 # again right before activation (she may add an item during an hours-long
 # build); the declaration is evaluated once, the Dock re-read each time.
-DOCK_DECL=""
 check_dock() {
   local user side key declared current removals="" managed=0
-  if [[ -z "$DOCK_DECL" ]]; then
-    DOCK_DECL=$(dock_declaration) || { DOCK_DECL=""; log "could not evaluate the Dock declaration of $TARGET"; return 2; }
-  fi
+  load_target_declaration || return 2
   jq -e 'type == "object" and has("apps") and has("others")
          and all(.apps, .others; . == null or type == "array")' \
-    <<<"$DOCK_DECL" >/dev/null 2>&1 || { log "unexpected Dock declaration: $DOCK_DECL"; DOCK_DECL=""; return 2; }
-  user=$(jq -r '.user // ""' <<<"$DOCK_DECL")
+    <<<"$TARGET_DECL" >/dev/null 2>&1 || { log "unexpected Dock declaration: $TARGET_DECL"; TARGET_DECL=""; return 2; }
+  user=$(jq -r '.user // ""' <<<"$TARGET_DECL")
   for side in apps others; do
     # null = that side of the Dock is unmanaged: activation leaves it alone.
-    jq -e --arg k "$side" '.[$k] == null' <<<"$DOCK_DECL" >/dev/null && continue
+    jq -e --arg k "$side" '.[$k] == null' <<<"$TARGET_DECL" >/dev/null && continue
     managed=1
     key="persistent-$side"
     declared=$(declared_dock "$side") || return 2
@@ -551,6 +564,57 @@ check_dock() {
   return 1
 }
 
+# brew_user_writes_applications <user> — root asks: can <user> create a bundle
+# in /Applications? (A standard account cannot; an admin can.)
+brew_user_writes_applications() {
+  sudo -n -u "$1" test -w "$ROOT/Applications" </dev/null >/dev/null 2>&1
+}
+
+# check_brew_target — 0: activation's `brew bundle` installs nothing the
+# target's homebrew.user cannot put in place without a password (no cask new
+# to this Mac's Caskroom, or that user can write /Applications). 1: it would —
+# Homebrew moves a new cask's app into /Applications as homebrew.user and,
+# when that account cannot write there, falls back to its own `sudo cp` as
+# that user: a password prompt no unattended run can answer, failing
+# activation after the system profile already switched. 2: unknown. Sets
+# BREW_USER (close_user_sudo_window) from the target, which decides who
+# `brew bundle` runs as.
+BREW_USER=""
+check_brew_target() {
+  local user prefix new="" cask
+  load_target_declaration || return 2
+  jq -e '.brew | type == "object" and (.enable | type == "boolean")
+         and (.user | type == "string") and (.prefix | type == "string")
+         and (.casks | type == "array" and all(.[]; type == "string"))' \
+    <<<"$TARGET_DECL" >/dev/null 2>&1 || { log "unexpected Homebrew declaration: $TARGET_DECL"; TARGET_DECL=""; return 2; }
+  if [[ "$(jq -r '.brew.enable' <<<"$TARGET_DECL")" != true ]]; then
+    log "brew: homebrew.enable = false in $TARGET — no casks installed"
+    return 0
+  fi
+  user=$(jq -r '.brew.user' <<<"$TARGET_DECL")
+  prefix=$(jq -r '.brew.prefix' <<<"$TARGET_DECL")
+  [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ && "$prefix" == /* ]] \
+    || { log "unexpected homebrew.user / homebrew.prefix in $TARGET: '$user' / '$prefix'"; return 2; }
+  BREW_USER="$user"
+  # A cask is installed when its token (the last part of a tap-qualified
+  # name) has a Caskroom directory. Read as root; no Homebrew command runs.
+  while IFS= read -r cask; do
+    [[ -n "$cask" ]] || continue
+    [[ -d "$ROOT$prefix/Caskroom/${cask##*/}" ]] || new+=" ${cask##*/}"
+  done < <(jq -r '.brew.casks[]' <<<"$TARGET_DECL")
+  new="${new# }"
+  if [[ -z "$new" ]]; then
+    log "brew: $TARGET installs no new cask"
+    return 0
+  fi
+  if brew_user_writes_applications "$user"; then
+    log "brew: $TARGET installs $new as homebrew.user $user (can write /Applications)"
+    return 0
+  fi
+  log "brew-user: $TARGET would install $new as homebrew.user '$user', who cannot write /Applications (not an admin) — Homebrew would fall back to its own sudo as $user, which an unattended run cannot answer. Not building. Fix: set homebrew.user to an admin account (or make $user an admin); or install them with rebuild.sh."
+  return 1
+}
+
 # ── Build + activate ─────────────────────────────────────────────────────────
 build_system() {
   local out
@@ -565,15 +629,21 @@ build_system() {
   printf '%s' "$out"
 }
 
-# Close the primary user's sudo window before activation. nix-darwin runs
-# `brew bundle` as that user, and modules/darwin/sudo-rebuild.nix makes their
-# sudo timestamp user-global: a cask installer could otherwise silently reuse a
-# window a human opened minutes earlier. With it closed (and no tty), every
-# sudo that brew or mas attempts fails fast instead of escalating or prompting.
+# Close the brew user's (and the primary user's) sudo window before
+# activation. nix-darwin runs `brew bundle` as homebrew.user and mas_install
+# as the primary user, and modules/darwin/sudo-rebuild.nix makes the brew
+# user's sudo timestamp user-global: a cask installer could otherwise silently
+# reuse a window a human opened minutes earlier. With them closed (and no
+# tty), every sudo that brew or mas attempts fails fast instead of escalating
+# or prompting.
 close_user_sudo_window() {
-  [[ -n "$PRIMARY_USER" ]] || return 0
-  sudo -n -u "$PRIMARY_USER" -- sudo -K </dev/null >/dev/null 2>&1 \
-    || log "warning: could not invalidate $PRIMARY_USER's sudo timestamp"
+  local u seen=" "
+  for u in "$BREW_USER" "$PRIMARY_USER"; do
+    [[ -n "$u" && "$seen" != *" $u "* ]] || continue
+    seen+="$u "
+    sudo -n -u "$u" -- sudo -K </dev/null >/dev/null 2>&1 \
+      || log "warning: could not invalidate $u's sudo timestamp"
+  done
 }
 
 # activate <out> — sets the profile, runs activation; reason on stdout on failure.
@@ -742,6 +812,17 @@ main() {
   case $drc in
     0) ;;
     1) finish skipped dock-protect ;;
+    *) finish failed build-failed ;;
+  esac
+  # Who runs `brew bundle`, and can it install the new casks without a
+  # password? Checked before building: the answer only depends on the
+  # declaration and this Mac, and a run that can only fail at the Homebrew
+  # step must not switch the system profile first.
+  drc=0
+  check_brew_target || drc=$?
+  case $drc in
+    0) ;;
+    1) finish failed brew-failed ;;
     *) finish failed build-failed ;;
   esac
 

@@ -5,7 +5,7 @@
   #
   # THE PROBLEM: `rebuild.sh` calls sudo exactly once (`sudo darwin-rebuild
   # switch`). The repeated Touch ID prompts come from INSIDE that switch:
-  # nix-darwin drops root back to the primary user to run `brew bundle`
+  # nix-darwin drops root back to homebrew.user to run `brew bundle`
   # (brew refuses to run as root), so every cask that needs root — pkg-based
   # installers invoking `installer`/`pkgutil`/`cp` — calls sudo again as the
   # user. macOS sudo defaults to tty-scoped timestamps, and those brew
@@ -27,7 +27,8 @@
   # trades N unattributable taps for one tap shown after an explicit plan.
   #
   # Scoped deliberately:
-  #   - to the primary user only (not `Defaults` globally, not %admin);
+  #   - to the user `brew bundle` runs as (homebrew.user, default the primary
+  #     user) only — not `Defaults` globally, not %admin;
   #   - to the workstation-mac role, so interactive dev machines get it and
   #     personal-mac hosts (e.g. Kassie's Air) do not.
   #
@@ -44,6 +45,6 @@
     # Let one authentication cover the whole rebuild, including the sudo calls
     # `brew bundle` makes as this user from within `darwin-rebuild switch`.
     # See modules/darwin/sudo-rebuild.nix for the full rationale + tradeoff.
-    Defaults:${config.system.primaryUser} timestamp_type=global
+    Defaults:${config.homebrew.user} timestamp_type=global
   '';
 }

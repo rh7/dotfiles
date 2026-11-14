@@ -234,10 +234,12 @@
       # ── Shared household MacBook Pro M1 (adopted in place, NOT wiped) ──
       # primaryUser is the day-to-day user (kassie), like Kassie-M5-Air13: the
       # nightly fleet-update's home-manager step and the daily audit agent need
-      # the primary user's LOGIN SESSION (launchctl gui domain), and adopted
-      # casks end up owned by her. homeProfile "household": her own ~/.zshrc,
-      # git config etc. are never replaced. The maintainer's account (rouven)
-      # gets nothing per-user from nix. See modules/roles/household-mac.nix.
+      # the primary user's LOGIN SESSION (launchctl gui domain). Homebrew is
+      # NOT hers: she is a standard user who cannot write /Applications, so the
+      # host file sets homebrew.user = "rouven" (the admin maintainer). Home
+      # profile "household": her own ~/.zshrc, git config etc. are never
+      # replaced. The maintainer's account gets nothing per-user from nix.
+      # See modules/roles/household-mac.nix.
       "kassie-mbp-m1" = mkMac {
         hostname = "kassie-mbp-m1";
         username = "kassie";

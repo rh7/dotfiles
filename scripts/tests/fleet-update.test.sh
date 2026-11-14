@@ -137,6 +137,9 @@ EOF
 cat >"$STUBS/sudo" <<'EOF'
 #!/usr/bin/env bash
 echo "sudo $*" >>"$STUB_LOG"
+# STUB_APPS_RO=1: the brew user cannot write /Applications (a standard account).
+case " $* " in *" test -w "*) [[ -z "${STUB_APPS_RO:-}" ]] || exit 1 ;; esac
+exit 0
 EOF
 cat >"$STUBS/nix-env" <<'EOF'
 #!/usr/bin/env bash
@@ -151,10 +154,12 @@ cat >"$STUBS/nix" <<'EOF'
 #!/usr/bin/env bash
 echo "nix $*" >>"$STUB_LOG"
 if [[ " $* " == *" eval "* ]]; then
-  # The Dock declaration of the checked-out commit: STUB_DOCK_APPS / _OTHERS
-  # are the evaluated persistent-apps / -others (unset = null = unmanaged).
+  # The checked-out commit's declaration: STUB_DOCK_APPS / _OTHERS are the
+  # evaluated persistent-apps / -others (unset = null = unmanaged),
+  # STUB_BREW_DECL its Homebrew part (default: tester, no casks).
   [[ -z "${STUB_EVAL_FAIL:-}" ]] || { echo "error: evaluation aborted" >&2; exit 1; }
-  echo "{\"user\":\"tester\",\"apps\":${STUB_DOCK_APPS:-null},\"others\":${STUB_DOCK_OTHERS:-null}}"
+  brew=${STUB_BREW_DECL:-'{"enable":true,"user":"tester","prefix":"/opt/homebrew","casks":[]}'}
+  echo "{\"user\":\"tester\",\"apps\":${STUB_DOCK_APPS:-null},\"others\":${STUB_DOCK_OTHERS:-null},\"brew\":$brew}"
   exit 0
 fi
 [[ " $* " == *" build "* ]] || exit 0
@@ -467,6 +472,58 @@ fresh; refs "$C2" "$C2"
 STUB_RACE=1 run_fu
 expect "manual rebuild replaced the system mid-activation" 1 failed activation-failed
 check "race: applied_commit not claimed" "$(field applied_commit)" "null"
+
+echo ""
+echo "fleet-update — new casks need a homebrew.user that can write /Applications"
+# kassie-mbp-m1 before homebrew.user = rouven: a standard brew user makes
+# Homebrew fall back to its own `sudo cp` for every new cask — unattended
+# that can only fail, after the profile switched. Refused before building.
+brew_decl() { # brew_decl <user> <cask>... — the commit's Homebrew declaration
+  local u="$1"; shift
+  jq -cn --arg u "$u" '{enable: true, user: $u, prefix: "/opt/homebrew", casks: $ARGS.positional}' --args "$@"
+}
+caskroom() { mkdir -p "$ROOT/opt/homebrew/Caskroom/$1"; }
+
+fresh; refs "$C2" "$C2"; caskroom firefox
+STUB_APPS_RO=1 STUB_BREW_DECL=$(brew_decl kassie firefox zen) run_fu
+expect "new cask, brew user cannot write /Applications" 1 failed brew-failed
+check "non-admin brew user: nothing built" "$(builds)" "0"
+[[ ! -e "$ROOT/nix/var/nix/profiles/system" ]] && good "non-admin brew user: profile untouched" \
+  || bad "non-admin brew user: profile untouched" "$(readlink "$ROOT/nix/var/nix/profiles/system")"
+grep -q "brew-user: .* would install zen as homebrew.user 'kassie', who cannot write /Applications" <<<"$OUT" \
+  && good "non-admin brew user: the log names the cask and the user (installed firefox not counted)" \
+  || bad "non-admin brew user: log names cask and user" "$OUT"
+grep -q "Fix: set homebrew.user to an admin account" <<<"$OUT" \
+  && good "non-admin brew user: the log names the fix" || bad "non-admin brew user: the log names the fix" "$OUT"
+grep -q 'sudo -n -u kassie test -w ' "$ROOT/stub.log" \
+  && good "asked as the brew user (sudo -n -u kassie test -w)" || bad "asked as the brew user" "$(cat "$ROOT/stub.log")"
+
+STUB_APPS_RO=1 STUB_BREW_DECL=$(brew_decl kassie firefox zen) run_fu --dry-run
+check "dry-run: reports the same refusal (exit 1)" "$RC" "1"
+grep -q 'dry-run result: failed (brew-failed)' <<<"$OUT" && good "dry-run: failed (brew-failed), state not written" \
+  || bad "dry-run: failed (brew-failed)" "$OUT"
+
+fresh; refs "$C2" "$C2"; caskroom firefox; caskroom zen
+STUB_APPS_RO=1 STUB_BREW_DECL=$(brew_decl kassie firefox acme/tap/zen) run_fu
+expect "no new cask (tap-qualified name resolved to its token): a non-admin brew user is fine" 0 applied null
+
+fresh; refs "$C2" "$C2"
+STUB_BREW_DECL=$(brew_decl maint zen ghostty) run_fu
+expect "new casks, brew user can write /Applications" 0 applied null
+grep -q 'brew: .* installs zen ghostty as homebrew.user maint' <<<"$OUT" \
+  && good "admin brew user: logged" || bad "admin brew user: logged" "$OUT"
+grep -q 'sudo -n -u maint -- sudo -K' "$ROOT/stub.log" && grep -q 'sudo -n -u tester -- sudo -K' "$ROOT/stub.log" \
+  && good "closes the brew user's AND the primary user's sudo window" \
+  || bad "closes both sudo windows" "$(cat "$ROOT/stub.log")"
+
+fresh; refs "$C2" "$C2"
+STUB_APPS_RO=1 STUB_BREW_DECL='{"enable":false,"user":"kassie","prefix":"/opt/homebrew","casks":["zen"]}' run_fu
+expect "homebrew.enable = false: no cask is installed, nothing to check" 0 applied null
+
+fresh; refs "$C2" "$C2"
+STUB_BREW_DECL='{"enable":true,"user":"kassie"}' run_fu
+expect "malformed Homebrew declaration" 1 failed build-failed
+check "malformed Homebrew declaration: nothing built" "$(builds)" "0"
 
 echo ""
 echo "fleet-update — Dock protection (never silently removes a Dock item)"
