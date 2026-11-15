@@ -270,26 +270,35 @@ resolve_self() {
 SHORTLINK_CRON_RE='rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
 LEGACY_AUDIT_LABEL="com.rh7.audit"
 
+# read_crontab — sets CRONTAB_TEXT. Returns 0 when the crontab was read (an
+# absent crontab reads as empty) and 1 when it could NOT be read, with the error
+# in CRONTAB_ERR. The distinction matters twice over: rewriting an unreadable
+# crontab would clobber every existing line, and on macOS 15+ crontab is blocked
+# by TCC unless the caller has Full Disk Access (why audit-device.sh schedules a
+# LaunchAgent there) — "unreadable" must never read as "no short-link line".
+CRONTAB_TEXT=""; CRONTAB_ERR=""
+read_crontab() {
+  local errf rc=0
+  errf="$(mktemp)"
+  CRONTAB_TEXT="$(crontab -l 2>"$errf")" || rc=$?
+  CRONTAB_ERR="$(head -c 300 "$errf")"; rm -f "$errf"
+  [ "$rc" -eq 0 ] && return 0
+  case "$CRONTAB_ERR" in *"no crontab"*) CRONTAB_TEXT=""; return 0 ;; esac
+  return 1
+}
+crontab_hint() {
+  [ "$OS" = "Darwin" ] || return 0
+  printf '%s' " — macOS blocks crontab without Full Disk Access: grant it to this terminal (System Settings → Privacy & Security → Full Disk Access) and re-run, or delete the '# fleet-audit' line by hand with \`crontab -e\`"
+}
+
 # Remove the superseded unverified schedules once the verified runner schedule is
-# in place: the short-link cron line (any OS) and, on macOS, the legacy direct-audit
-# LaunchAgent com.rh7.audit (#38, #83). Leaving either beside the runner means two
-# daily audits, one of them ungated. Only called AFTER a successful install, so a
-# failed install never leaves the device with no schedule at all.
+# in place: on macOS the legacy direct-audit LaunchAgent com.rh7.audit (#38, #83),
+# and the short-link cron line (any OS). Leaving either beside the runner means
+# two daily audits, one of them ungated. Only called AFTER a successful install,
+# so a failed install never leaves the device with no schedule at all. Returns 1
+# (loud) when the short-link line could not be ruled out or removed.
 retire_legacy_schedules() {
-  local current filtered removed
-  if command -v crontab >/dev/null 2>&1; then
-    current="$(crontab -l 2>/dev/null || true)"
-    removed="$(printf '%s\n' "$current" | grep -cE "$SHORTLINK_CRON_RE" || true)"
-    if [ "${removed:-0}" -gt 0 ]; then
-      filtered="$(printf '%s\n' "$current" | grep -vE "$SHORTLINK_CRON_RE" || true)"
-      if printf '%s\n' "$filtered" | crontab -; then
-        log "removed $removed unverified short-link '# fleet-audit' cron line(s) (superseded by $LABEL)"
-      else
-        log "WARNING: could not rewrite crontab to remove the short-link '# fleet-audit' line"
-        return 1
-      fi
-    fi
-  fi
+  local filtered removed rc=0
   if [ "$OS" = "Darwin" ]; then
     local legacy_plist="$HOME/Library/LaunchAgents/${LEGACY_AUDIT_LABEL}.plist" legacy_target
     legacy_target="gui/$(id -u)/${LEGACY_AUDIT_LABEL}"
@@ -302,7 +311,22 @@ retire_legacy_schedules() {
       log "retired legacy ${LEGACY_AUDIT_LABEL} LaunchAgent (superseded by $LABEL)"
     fi
   fi
-  return 0
+  command -v crontab >/dev/null 2>&1 || return 0
+  if ! read_crontab; then
+    log "WARNING: cannot read the crontab (${CRONTAB_ERR:-unknown error}), so an unverified short-link '# fleet-audit' line cannot be ruled out$(crontab_hint)"
+    return 1
+  fi
+  removed="$(printf '%s\n' "$CRONTAB_TEXT" | grep -cE "$SHORTLINK_CRON_RE" || true)"
+  if [ "${removed:-0}" -gt 0 ]; then
+    filtered="$(printf '%s\n' "$CRONTAB_TEXT" | grep -vE "$SHORTLINK_CRON_RE" || true)"
+    if printf '%s\n' "$filtered" | crontab -; then
+      log "removed $removed unverified short-link '# fleet-audit' cron line(s) (superseded by $LABEL)"
+    else
+      log "WARNING: could not rewrite the crontab — the unverified short-link '# fleet-audit' line is STILL scheduled$(crontab_hint)"
+      rc=1
+    fi
+  fi
+  return "$rc"
 }
 
 install_schedule() {
@@ -395,11 +419,16 @@ PLIST
     fi
     local min=$(( RANDOM % 30 )) current kept line
     line="${min} 8 * * * bash ${self} # fleet-collector-runner"
+    # Never rewrite a crontab we could not read: that would drop every line in it.
+    if ! read_crontab; then
+      log "REFUSING to rewrite an unreadable crontab (${CRONTAB_ERR:-unknown error}) — daily audit NOT scheduled"
+      return 1
+    fi
+    current="$CRONTAB_TEXT"
     # One atomic rewrite: drop any prior runner line (idempotent re-install, no
     # duplicates) and the unverified short-link line this replaces; keep every
-    # other entry verbatim. `|| true`: an empty/absent crontab makes grep exit 1,
-    # which under `set -euo pipefail` would abort before anything is written.
-    current="$(crontab -l 2>/dev/null || true)"
+    # other entry verbatim. `|| true`: grep finding nothing exits 1, which under
+    # `set -euo pipefail` would abort before anything is written.
     kept="$(printf '%s\n' "$current" | grep -v 'fleet-collector-runner' | grep -vE "$SHORTLINK_CRON_RE" || true)"
     if [ "$(printf '%s\n' "$current" | grep -cE "$SHORTLINK_CRON_RE" || true)" -gt 0 ]; then
       log "replacing the unverified short-link '# fleet-audit' cron line with $LABEL"

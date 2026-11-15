@@ -168,8 +168,18 @@ runner_scheduled() {
   fi
 }
 legacy_schedule() {  # prints what unverified schedule is present; false if none
-  if crontab -l 2>/dev/null | grep -qE "$SHORTLINK_CRON_RE"; then
-    echo "unverified short-link cron (# fleet-audit → config.rh7labs.com/audit)"; return 0
+  if command -v crontab >/dev/null 2>&1; then
+    local ct rc=0
+    ct="$(crontab -l 2>&1)" || rc=$?
+    # An UNREADABLE crontab (macOS 15+ TCC without Full Disk Access, or any other
+    # error — not "no crontab") cannot rule out the short-link line, so it never
+    # reads as healthy.
+    if [[ $rc -ne 0 && "$ct" != *"no crontab"* ]]; then
+      echo "unreadable crontab (${ct:0:120}) — cannot rule out the short-link cron"; return 0
+    fi
+    if [[ $rc -eq 0 ]] && grep -qE "$SHORTLINK_CRON_RE" <<<"$ct"; then
+      echo "unverified short-link cron (# fleet-audit → config.rh7labs.com/audit)"; return 0
+    fi
   fi
   if [[ "$OS" == "Darwin" ]] && { [[ -f "$HOME/Library/LaunchAgents/${LEGACY_AUDIT_LABEL}.plist" ]] \
       || launchctl list 2>/dev/null | grep -qE '(^|[[:space:]])com\.rh7\.audit$'; }; then
@@ -380,8 +390,14 @@ else
   # don't claim "the daily audit keeps it current", or the host silently goes stale.
   err "${BOLD}Enrolled, but the verified daily audit schedule did NOT install.${NC} ${HOST} is in the registry,"
   err "but without the collector-runner schedule it will go stale (or keep running unverified bytes)."
+  legacy_left="$(legacy_schedule || true)"
+  [[ -n "$legacy_left" ]] && err "Still present: ${legacy_left}"
   err "See the collector-runner messages above / ~/.cache/fleet-collector/runner.log for the cause."
-  [[ "$OS" != "Darwin" ]] && err "Check cron:  command -v crontab || echo 'cron not installed'; systemctl status cron 2>/dev/null || true"
+  if [[ "$OS" == "Darwin" ]]; then
+    [[ "$legacy_left" == *cron* ]] && err "macOS blocks crontab without Full Disk Access: grant it to this terminal (System Settings → Privacy & Security → Full Disk Access), or remove the '# fleet-audit' line with: crontab -e"
+  else
+    err "Check cron:  command -v crontab || echo 'cron not installed'; systemctl status cron 2>/dev/null || true"
+  fi
   err "Then retry:  curl -fsSL config.rh7labs.com/enroll | bash"
   exit 1
 fi

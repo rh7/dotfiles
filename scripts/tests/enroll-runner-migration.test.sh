@@ -54,12 +54,16 @@ cat > "$BIN/tailscale" <<'EOF'
 #!/usr/bin/env bash
 echo '{"BackendState":"Running"}'
 EOF
-# crontab: a file. Every write is counted in $CRONTAB_FILE.writes.
+# crontab: a file. Every write is counted in $CRONTAB_FILE.writes. A
+# $CRONTAB_FILE.deny-read / .deny-write marker models macOS TCC refusing crontab
+# to a caller without Full Disk Access.
 cat > "$BIN/crontab" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  -l) [ -f "$CRONTAB_FILE" ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; cat "$CRONTAB_FILE" ;;
-  -)  cat > "$CRONTAB_FILE"; echo write >> "$CRONTAB_FILE.writes" ;;
+  -l) [ -f "$CRONTAB_FILE.deny-read" ] && { echo "crontab: Operation not permitted" >&2; exit 1; }
+      [ -f "$CRONTAB_FILE" ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; cat "$CRONTAB_FILE" ;;
+  -)  [ -f "$CRONTAB_FILE.deny-write" ] && { cat >/dev/null; echo "crontab: Operation not permitted" >&2; exit 1; }
+      cat > "$CRONTAB_FILE"; echo write >> "$CRONTAB_FILE.writes" ;;
   *)  exit 2 ;;
 esac
 EOF
@@ -195,6 +199,25 @@ printf '%s\n' "$UNRELATED_1" > "$H/crontab"
 runner_install "$H" Darwin
 check "no legacy schedule: crontab is never rewritten" "writes: $(writes "$H")" test "$(writes "$H")" -eq 0
 
+H="$(new_home mac-tcc-write)"
+printf '%s\n' "$SHORTLINK" > "$H/crontab"; touch "$H/crontab.deny-write"
+runner_install "$H" Darwin
+check "TCC blocks the crontab rewrite: --install fails loud" "rc=$RC out: $OUT" test "$RC" -ne 0
+check "…and says the short-link line is still scheduled + Full Disk Access" "out: $OUT" \
+  bash -c 'grep -q "STILL scheduled" <<<"$1" && grep -q "Full Disk Access" <<<"$1"' _ "$OUT"
+
+H="$(new_home mac-tcc-read)"
+touch "$H/crontab.deny-read"
+runner_install "$H" Darwin
+check "TCC blocks crontab -l: --install fails loud (cannot rule the line out)" "rc=$RC out: $OUT" test "$RC" -ne 0
+check "…and names Full Disk Access" "out: $OUT" grep -q "Full Disk Access" <<<"$OUT"
+
+H="$(new_home linux-unreadable)"
+printf '%s\n' "$UNRELATED_1" "$SHORTLINK" > "$H/crontab"; touch "$H/crontab.deny-read"
+runner_install "$H" Linux
+check "Linux: unreadable crontab is never rewritten (would clobber it)" "rc=$RC writes=$(writes "$H") out: $OUT" \
+  test "$RC" -ne 0 -a "$(writes "$H")" -eq 0
+
 H="$(new_home mac-declared)"
 HM="$H/.local/state/home-manager/gcroots/current-home/LaunchAgents"; mkdir -p "$HM"
 echo declared-by-home-manager > "$HM/com.rh7.collector-runner.plist"
@@ -281,6 +304,16 @@ check "LaunchAgent runs the persistent runner" "plist: $(cat "$H/Library/LaunchA
 check "legacy agent unloaded + removed" "ls: $(ls "$H/Library/LaunchAgents")" \
   test ! -f "$H/lc/com.rh7.audit" -a ! -f "$H/Library/LaunchAgents/com.rh7.audit.plist"
 check "reports Done" "out: $OUT" grep -q "Done." <<<"$OUT"
+
+echo ""
+echo "enroll (macOS): short-link cron that TCC will not let us remove fails loud"
+H="$(new_home enroll-mac-tcc)"
+printf '%s\n' "$SHORTLINK" > "$H/crontab"; touch "$H/crontab.deny-write"
+enroll "$H" Darwin
+check "exits non-zero (never a false 'enrolled')" "rc=$RC out: $OUT" test "$RC" -ne 0
+check "names what is still present + the Full Disk Access fix" "out: $OUT" \
+  bash -c 'grep -q "Still present: unverified short-link cron" <<<"$1" && grep -q "Full Disk Access" <<<"$1"' _ "$OUT"
+check "the verified runner is installed regardless" "lc: $(ls "$H/lc")" test -f "$H/lc/com.rh7.collector-runner"
 
 echo ""
 echo "enroll (macOS): legacy agent present beside the runner is NOT healthy"
