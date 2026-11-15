@@ -138,7 +138,8 @@ sandbox_env() {
     "RUNNER_SRC=$RUNNER_SRC" "FAKE_AUDIT=$FAKE_AUDIT" \
     "CONFIG_SERVICE_URL=http://stub-config:3456" \
     "CONFIG_SERVICE_PIN_SYSTEM=$1/no-pin" "XDG_CONFIG_HOME=$1/.config" \
-    "COLLECTOR_SYSTEM_DAEMON_PLIST=$1/sysd/com.rh7.collector-runner.plist"
+    "COLLECTOR_SYSTEM_DAEMON_PLIST=$1/sysd/com.rh7.collector-runner.plist" \
+    "COLLECTOR_LAUNCHD_DAEMON_PLIST=$1/libd/com.rh7.collector-runner.plist"
 }
 # runner_install <home> <os>  — the runner from its on-disk path (clone-style)
 runner_install() {
@@ -271,6 +272,23 @@ check "daemon declared but not loaded: --install fails loud" "rc=$RC out: $OUT" 
 check "…and installs no LaunchAgent beside it" "calls: $(cat "$H/lc/calls.log")" \
   test ! -f "$H/Library/LaunchAgents/com.rh7.collector-runner.plist" -a ! -f "$H/lc/com.rh7.collector-runner"
 check "…and names the fix" "out: $OUT" grep -q "sudo launchctl bootstrap system" <<<"$OUT"
+
+# Activation loaded the daemon, then failed before /run/current-system
+# switched: only the loaded job tells. Still no agent beside it.
+H="$(new_home mac-household-partial)"
+mkdir -p "$H/lc/system"; touch "$H/lc/system/com.rh7.collector-runner"
+runner_install "$H" Darwin
+check "daemon loaded, current-system not switched: install succeeds" "rc=$RC out: $OUT" test "$RC" -eq 0
+check "…without a LaunchAgent" "calls: $(cat "$H/lc/calls.log")" \
+  bash -c '! grep -q "^bootstrap " "$1" && [ ! -f "$2" ]' _ "$H/lc/calls.log" "$H/Library/LaunchAgents/com.rh7.collector-runner.plist"
+# The plist is in /Library/LaunchDaemons but neither declared by the active
+# system nor loaded: fail loud, no agent.
+H="$(new_home mac-household-installed-only)"
+mkdir -p "$H/libd"; echo daemon > "$H/libd/com.rh7.collector-runner.plist"
+runner_install "$H" Darwin
+check "daemon plist installed but not loaded: --install fails loud" "rc=$RC out: $OUT" test "$RC" -ne 0
+check "…and installs no LaunchAgent beside it" "calls: $(cat "$H/lc/calls.log")" \
+  test ! -f "$H/Library/LaunchAgents/com.rh7.collector-runner.plist" -a ! -f "$H/lc/com.rh7.collector-runner"
 
 echo ""
 echo "enroll (macOS, household): the system LaunchDaemon counts as the verified runner"

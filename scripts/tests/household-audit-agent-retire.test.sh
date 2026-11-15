@@ -79,6 +79,7 @@ case "$1" in
     echo "Could not find service" >&2; exit 113 ;;
   bootout)
     [[ "$STUB_GUI" == 1 ]] || nogui "Boot-out failed"
+    if [[ -n "${STUB_BOOTOUT_FAIL:-}" ]]; then echo "Boot-out failed: 5: Input/output error" >&2; exit 5; fi
     [[ -n "${STUB_LOADED:-}" ]] && exit 0
     echo "Boot-out failed: 3: No such process" >&2; exit 3 ;;
   bootstrap)
@@ -116,6 +117,7 @@ run_activation() {
   : >"$case_dir/launchctl.log"
   env -i PATH="$TOOLPATH/usr/bin:/bin:/usr/sbin:/sbin" HOME="$case_dir/home" \
       STUB_LOG="$case_dir/launchctl.log" STUB_GUI="${STUB_GUI:-0}" STUB_LOADED="${STUB_LOADED:-}" \
+      STUB_BOOTOUT_FAIL="${STUB_BOOTOUT_FAIL:-}" \
       bash "$case_dir/activate.sh" >"$W/out" 2>&1
   echo $? >"$W/rc"
 }
@@ -143,6 +145,11 @@ check "agent plist removed" "$(present)" no
 grep -q "bootout gui/[0-9]*/$LABEL" "$CASE/launchctl.log" && good "loaded agent booted out of gui/<uid>" \
   || bad "loaded agent booted out of gui/<uid>" "$(cat "$CASE/launchctl.log")"
 check "nothing bootstrapped" "$(calls bootstrap)" 0
+
+STUB_GUI=1 STUB_LOADED=1 STUB_BOOTOUT_FAIL=1 run_activation 1 same
+check "loaded agent refuses bootout: activation fails" "$(cat "$W/rc")" 1
+check "…and keeps the plist (no silent second audit)" "$(present)" yes
+grep -q "cannot boot out" "$W/out" && good "…and says why" || bad "…and says why" "$(cat "$W/out")"
 
 echo ""
 echo "control — home-manager alone"

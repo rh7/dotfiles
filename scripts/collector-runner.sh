@@ -36,8 +36,11 @@ LABEL="${COLLECTOR_LABEL:-com.rh7.collector-runner}"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 # Household Macs run this label as a nix-darwin SYSTEM LaunchDaemon (as the
 # primary user, modules/darwin/fleet-audit.nix); --install must not add a
-# per-account LaunchAgent beside it (two audits a day).
+# per-account LaunchAgent beside it (two audits a day). Declared by the active
+# system, installed in /Library/LaunchDaemons, or loaded — any one counts (a
+# partly failed activation can load the daemon before /run/current-system flips).
 SYSTEM_DAEMON_PLIST="${COLLECTOR_SYSTEM_DAEMON_PLIST:-/run/current-system/Library/LaunchDaemons/${LABEL}.plist}"
+LAUNCHD_DAEMON_PLIST="${COLLECTOR_LAUNCHD_DAEMON_PLIST:-/Library/LaunchDaemons/${LABEL}.plist}"
 # Source(s) to self-install THIS runner from when invoked clone-free via
 # `curl … | bash`, so a no-clone device gets the gated pull path instead of the
 # un-gated audit fallback (rh-device-management#119). PRIMARY is the
@@ -342,9 +345,10 @@ install_schedule() {
   # Any account's LaunchAgent beside it is a second daily audit: never install
   # one, and remove this account's (an earlier generation's or imperative
   # copy). Never touch the daemon itself — it is root's and nix-darwin's.
-  if [ "$OS" = "Darwin" ] && [ -f "$SYSTEM_DAEMON_PLIST" ]; then
+  if [ "$OS" = "Darwin" ] && { [ -f "$SYSTEM_DAEMON_PLIST" ] || [ -f "$LAUNCHD_DAEMON_PLIST" ] \
+      || launchctl print "system/$LABEL" >/dev/null 2>&1; }; then
     if ! launchctl print "system/$LABEL" >/dev/null 2>&1; then
-      log "$LABEL is declared as a system LaunchDaemon ($SYSTEM_DAEMON_PLIST) but launchd has not loaded it — NOT installing a LaunchAgent beside it; re-run the rebuild, or: sudo launchctl bootstrap system /Library/LaunchDaemons/${LABEL}.plist"
+      log "$LABEL is a system LaunchDaemon on this Mac but launchd has not loaded it — NOT installing a LaunchAgent beside it; re-run the rebuild, or: sudo launchctl bootstrap system $LAUNCHD_DAEMON_PLIST"
       return 1
     fi
     if [ -e "$PLIST" ] || [ -L "$PLIST" ] || launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then

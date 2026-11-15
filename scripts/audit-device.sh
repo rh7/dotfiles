@@ -766,10 +766,14 @@ collect_mas() {
   # Bounded: mas asks Spotlight/App Store services, and the household Mac's
   # audit runs as a system LaunchDaemon with nobody logged in — no wedged
   # query may hold the daily job (an unfinished job blocks the next day's).
-  # Captured first: under pipefail a timed-out `mas list` would fail the
-  # pipeline AFTER python printed `[]`, and `|| echo '[]'` would add a second.
-  local raw apps
-  raw=$(run_timeout 30 mas list 2>/dev/null) || raw=""
+  # A failed or timed-out query is UNKNOWN (apps null + error), never an empty
+  # list — "no App Store apps" must not be read off a query that did not run.
+  local raw apps rc=0
+  raw=$(run_timeout 30 mas list 2>/dev/null) || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "{\"installed\": true, \"apps\": null, \"error\": \"mas list failed (exit $rc; 124 = timed out)\"}"
+    return
+  fi
   apps=$(printf '%s\n' "$raw" | python3 -c "
 import sys, json
 apps = []

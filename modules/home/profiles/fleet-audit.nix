@@ -107,14 +107,21 @@ in
   # label BEFORE setupLaunchAgents. home-manager would drop a previous
   # generation's agent itself, but it skips a plist whose content diverged (an
   # imperative --install copy) and it bootouts through gui/<uid>; doing it here
-  # covers both, and leaves home-manager nothing to boot out. Works without a
-  # GUI session (the bootout's failure is ignored, the file is removed either
-  # way). launchctl + ~/Library/LaunchAgents only, so TCC-safe.
+  # covers both, and leaves home-manager nothing to boot out. Without a GUI
+  # session nothing is loaded and the plist is simply removed. A LOADED agent
+  # that refuses to boot out fails activation with its plist kept, instead of
+  # running beside the daemon until logout. launchctl + ~/Library/LaunchAgents
+  # only, so TCC-safe.
   home.activation.retireUserAuditAgent = lib.mkIf (isDarwin && scheduler == "system-daemon") (
     lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "writeBoundary" ] ''
       agent="$HOME/Library/LaunchAgents/${label}.plist"
-      if [[ -e "$agent" || -L "$agent" ]] || /bin/launchctl print "gui/$UID/${label}" >/dev/null 2>&1; then
-        run /bin/launchctl bootout "gui/$UID/${label}" 2>/dev/null || true
+      if /bin/launchctl print "gui/$UID/${label}" >/dev/null 2>&1 \
+        && ! run /bin/launchctl bootout "gui/$UID/${label}" \
+        && /bin/launchctl print "gui/$UID/${label}" >/dev/null 2>&1; then
+        errorEcho "rh7: cannot boot out gui/$UID/${label} — the old audit agent would run beside the system daemon; kept $agent, re-run the rebuild"
+        exit 1
+      fi
+      if [[ -e "$agent" || -L "$agent" ]]; then
         run rm -f "$agent"
         noteEcho "rh7: removed the ${label} LaunchAgent — the daily audit is the system daemon /Library/LaunchDaemons/${label}.plist"
       fi
