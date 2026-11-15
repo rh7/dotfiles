@@ -206,9 +206,13 @@ tm_prefs() {
     if [ $# -gt 0 ]; then printf '<key>SnapshotDates</key><array>'; printf '<date>%s</date>' "$@"; printf '</array>'; fi
     printf '</dict></array></dict>\n</plist>\n'; } >"$TMP_PLIST"
 }
-mkfix; restic_status "$(at 120 utc)" 100M
-tm_prefs "$(at -86400 utc)" "$(at 120 utc)"; inv TM_NONE=1
+# The prefs backup must postdate the fixture yet not lie in the future (a
+# future SnapshotDate is skew and ignored): wait out the creation second.
+mkfix; restic_status "$(at 120 utc)" 100M; sleep 1
+tm_prefs "$(at -86400 utc)" "$(at 0 utc)"; inv TM_NONE=1
 check "~/Proton: Time Machine covered from the newest SnapshotDates" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
+tm_prefs "$(at 600 utc)"; inv TM_NONE=1
+check "future SnapshotDate (clock skew): not covered" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
 tm_prefs "$(at -$((72 * 3600)) utc)"; inv TM_NONE=1
 check "prefs backup 72h old: not fresh" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
 tm_prefs; inv TM_NONE=1

@@ -2223,7 +2223,7 @@ if not isinstance(prefs, dict):
 
 def prefs_latest_snapshot(prefs):
     # Newest Destinations[].SnapshotDates entry (epoch). plistlib yields naive
-    # UTC datetimes; a date over an hour in the future (clock skew) is ignored.
+    # UTC datetimes; a date in the future (clock skew) is ignored.
     best = None
     for d in prefs.get('Destinations') if isinstance(prefs.get('Destinations'), list) else []:
         dates = d.get('SnapshotDates') if isinstance(d, dict) else None
@@ -2231,7 +2231,7 @@ def prefs_latest_snapshot(prefs):
             if not isinstance(s, datetime.datetime):
                 continue
             ts = s.timestamp() if s.tzinfo else calendar.timegm(s.timetuple())
-            if ts <= time.time() + 3600 and (best is None or ts > best):
+            if ts <= time.time() and (best is None or ts > best):
                 best = ts
     return best
 
@@ -2832,7 +2832,9 @@ def prefs_latest_snapshot():
             if not isinstance(s, datetime.datetime):
                 continue
             ts = s.timestamp() if s.tzinfo else calendar.timegm(s.timetuple())
-            if ts <= NOW + 3600 and (best is None or ts > best):
+            # A future date (clock skew) would let born_before() credit a
+            # folder created after the real backup: ignored.
+            if ts <= NOW and (best is None or ts > best):
                 best = ts
     return best
 
