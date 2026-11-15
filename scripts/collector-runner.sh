@@ -19,7 +19,10 @@
 #   collector-runner.sh             # fetch -> verify -> run --run (default)
 #   collector-runner.sh --check     # fetch + verify only (no execute)
 #   collector-runner.sh --local     # run cached last-good without fetching
-#   collector-runner.sh --install   # daily LaunchAgent (macOS) / cron (Linux)
+#   collector-runner.sh --install   # daily LaunchAgent (macOS) / cron (Linux); idempotent.
+#                                   # Also retires the unverified schedules it supersedes:
+#                                   # the short-link `# fleet-audit` cron line and the
+#                                   # legacy com.rh7.audit LaunchAgent.
 #   collector-runner.sh --uninstall
 set -euo pipefail
 
@@ -257,6 +260,51 @@ resolve_self() {
   return 1
 }
 
+# The legacy no-clone daily audit that `audit-device.sh --install` writes when
+# there is no ~/dotfiles clone: `t="$(mktemp)" && curl -fsSL
+# https://config.rh7labs.com/audit -o "$t" && bash "$t" --run; rm -f "$t" # fleet-audit`.
+# It runs whatever the public short link serves, daily, with no sha256 / scan /
+# ref gate — exactly what this runner exists to replace. Match ONLY lines that
+# carry BOTH the `# fleet-audit` marker and the short-link fetch, so no other
+# cron line (including a clone-based `# fleet-audit` line) is ever touched.
+SHORTLINK_CRON_RE='rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
+LEGACY_AUDIT_LABEL="com.rh7.audit"
+
+# Remove the superseded unverified schedules once the verified runner schedule is
+# in place: the short-link cron line (any OS) and, on macOS, the legacy direct-audit
+# LaunchAgent com.rh7.audit (#38, #83). Leaving either beside the runner means two
+# daily audits, one of them ungated. Only called AFTER a successful install, so a
+# failed install never leaves the device with no schedule at all.
+retire_legacy_schedules() {
+  local current filtered removed
+  if command -v crontab >/dev/null 2>&1; then
+    current="$(crontab -l 2>/dev/null || true)"
+    removed="$(printf '%s\n' "$current" | grep -cE "$SHORTLINK_CRON_RE" || true)"
+    if [ "${removed:-0}" -gt 0 ]; then
+      filtered="$(printf '%s\n' "$current" | grep -vE "$SHORTLINK_CRON_RE" || true)"
+      if printf '%s\n' "$filtered" | crontab -; then
+        log "removed $removed unverified short-link '# fleet-audit' cron line(s) (superseded by $LABEL)"
+      else
+        log "WARNING: could not rewrite crontab to remove the short-link '# fleet-audit' line"
+        return 1
+      fi
+    fi
+  fi
+  if [ "$OS" = "Darwin" ]; then
+    local legacy_plist="$HOME/Library/LaunchAgents/${LEGACY_AUDIT_LABEL}.plist" legacy_target
+    legacy_target="gui/$(id -u)/${LEGACY_AUDIT_LABEL}"
+    # The plist on disk, or a job still loaded after its plist was deleted.
+    if [ -f "$legacy_plist" ] || launchctl print "$legacy_target" >/dev/null 2>&1; then
+      launchctl bootout "$legacy_target" 2>/dev/null \
+        || launchctl unload "$legacy_plist" 2>/dev/null \
+        || true
+      rm -f "$legacy_plist"
+      log "retired legacy ${LEGACY_AUDIT_LABEL} LaunchAgent (superseded by $LABEL)"
+    fi
+  fi
+  return 0
+}
+
 install_schedule() {
   # Every nix-darwin Mac declares this agent through home-manager
   # (modules/home/profiles/fleet-audit.nix, imported by mkMac — rh-device-management
@@ -278,7 +326,8 @@ install_schedule() {
       if hm_out="$(launchctl bootstrap "$hm_domain" "$PLIST" 2>&1)" \
         && launchctl print "$hm_domain/$LABEL" >/dev/null 2>&1; then
         log "$LABEL is declared by the active home-manager generation — reloaded the nix-managed agent (no imperative install)"
-        return 0
+        retire_legacy_schedules
+        return
       fi
       log "declared $LABEL failed to load: ${hm_out:-launchctl print found no job}"
     fi
@@ -339,23 +388,29 @@ PLIST
       return 1
     fi
     log "installed LaunchAgent $LABEL (daily $(printf '%d:%02d' "$hour" "$minute"))"
-    # Supersede the legacy direct-audit job (#38, #83): collector-runner replaces
-    # it, so retire com.rh7.audit to avoid two daily audits firing.
-    if [ -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist" ]; then
-      launchctl bootout "$domain/com.rh7.audit" 2>/dev/null \
-        || launchctl unload "$HOME/Library/LaunchAgents/com.rh7.audit.plist" 2>/dev/null \
-        || true
-      rm -f "$HOME/Library/LaunchAgents/com.rh7.audit.plist"
-      log "retired legacy com.rh7.audit LaunchAgent (superseded by $LABEL)"
-    fi
   else
-    local min=$(( RANDOM % 30 ))
-    # `|| true`: under `set -euo pipefail`, a fresh user with no crontab makes
-    # `crontab -l | grep` exit non-zero and would abort before the echo, silently
-    # installing no schedule. Keep the existing entries (if any) + append ours.
-    (crontab -l 2>/dev/null | grep -v 'fleet-collector-runner' || true; echo "${min} 8 * * * bash ${self} # fleet-collector-runner") | crontab -
+    if ! command -v crontab >/dev/null 2>&1; then
+      log "cron is not installed — daily audit NOT scheduled (e.g. sudo apt-get install -y cron && sudo systemctl enable --now cron)"
+      return 1
+    fi
+    local min=$(( RANDOM % 30 )) current kept line
+    line="${min} 8 * * * bash ${self} # fleet-collector-runner"
+    # One atomic rewrite: drop any prior runner line (idempotent re-install, no
+    # duplicates) and the unverified short-link line this replaces; keep every
+    # other entry verbatim. `|| true`: an empty/absent crontab makes grep exit 1,
+    # which under `set -euo pipefail` would abort before anything is written.
+    current="$(crontab -l 2>/dev/null || true)"
+    kept="$(printf '%s\n' "$current" | grep -v 'fleet-collector-runner' | grep -vE "$SHORTLINK_CRON_RE" || true)"
+    if [ "$(printf '%s\n' "$current" | grep -cE "$SHORTLINK_CRON_RE" || true)" -gt 0 ]; then
+      log "replacing the unverified short-link '# fleet-audit' cron line with $LABEL"
+    fi
+    if ! { [ -n "$kept" ] && printf '%s\n' "$kept"; printf '%s\n' "$line"; } | crontab -; then
+      log "failed to write crontab — daily audit NOT scheduled"
+      return 1
+    fi
     log "installed cron (daily 8:$(printf '%02d' "$min"))"
   fi
+  retire_legacy_schedules
 }
 
 uninstall_schedule() {

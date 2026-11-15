@@ -352,9 +352,17 @@ Connectivity comes from the **daily audit**, not a heartbeat. Hosts that import
 the integrity-gated pull runner) — on `main` only the Studio; with
 `chore/326-315-flake-hygiene` every `mkMac` host. Everything else (other Macs
 until then, NixOS, standalone Home Manager) needs `collector-runner.sh
---install` once. The `enroll` short link runs a first audit and installs a
-direct daily audit (`com.rh7.audit` LaunchAgent / cron) for devices without a
-clone.
+--install` once. The `enroll` short link (`curl -fsSL
+https://config.rh7labs.com/enroll | bash`, same one-liner on a non-nix Mac and
+on Linux, clone or not) does exactly that: it runs a first gated audit through
+`collector-runner.sh` and installs the verified runner schedule
+(`com.rh7.collector-runner` LaunchAgent / `# fleet-collector-runner` cron) from
+the clone's copy, else a self-installed `~/.cache/fleet-collector/collector-runner.sh`.
+Only that runner counts as healthy: a legacy unverified schedule — the
+short-link `# fleet-audit` cron line (`curl … config.rh7labs.com/audit … bash`)
+or the `com.rh7.audit` LaunchAgent — is migrated by a plain re-run of `enroll`
+(no `--force`); `--install` removes that cron line (only it) and retires the
+legacy agent.
 
 One legacy heartbeat path survives: the `device sync --install` cron runs
 `heartbeat.sh` every 30 minutes, which posts role `workstation`. Remove it with

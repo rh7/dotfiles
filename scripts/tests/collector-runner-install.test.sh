@@ -51,7 +51,14 @@ if [ "$1" = "bootstrap" ]; then
 fi
 exit 0
 EOF
-chmod +x "$TMP/bin/uname" "$TMP/bin/launchctl"
+# crontab: empty, read-only. --install consults it for the legacy short-link
+# line; never let a test read (or rewrite) the real user's crontab.
+cat > "$TMP/bin/crontab" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "-l" ] && { echo "no crontab" >&2; exit 1; }
+echo "unexpected crontab write in test" >&2; exit 1
+EOF
+chmod +x "$TMP/bin/uname" "$TMP/bin/launchctl" "$TMP/bin/crontab"
 
 # make_home <dir> [deploy] -> HOME whose active home-manager generation declares
 # the agent; with "deploy" the same plist is also in ~/Library/LaunchAgents.

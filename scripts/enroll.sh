@@ -3,8 +3,9 @@
 # the fleet and keep it there. Safe to run repeatedly on every device:
 #
 #   1. verifies the device can reach the config service over Tailscale
-#   2. checks whether the daily audit is already scheduled AND reporting
-#   3. runs an audit now + installs the daily schedule only if needed
+#   2. checks whether the VERIFIED daily audit (collector-runner) is scheduled
+#      AND the host is reporting
+#   3. runs a gated audit now + installs/repairs the schedule only if needed
 #   4. reports role / age-key follow-ups (issues #208/#209)
 #
 # On any device (no clone required):
@@ -12,13 +13,20 @@
 #
 # Flags:
 #   --status   check only; make no changes (report tailscale + audit state)
-#   --force    (re)run the audit and reinstall the schedule even if healthy
+#   --force    (re)run the audit and reinstall the runner schedule even if healthy
 #   --role R   set this device's fleet role so security posture is graded right
 #              (personal|developer|server|ai-inference|smart-home|mobile);
 #              also honors ROLE=R in the environment. Omit to leave it unchanged.
 #
-# The heavy lifting (inventory + registration + scheduling) lives in
-# audit-device.sh; this is just the safe, idempotent front-door around it.
+# The heavy lifting lives in collector-runner.sh: it fetches the collector
+# (audit-device.sh) from the config service and runs it only after verifying
+# sha256 + the server read-only scan + the serving ref, and `--install` schedules
+# it daily (LaunchAgent / cron) from a stable on-disk copy — the clone's
+# scripts/collector-runner.sh, else a self-installed ~/.cache/fleet-collector/
+# collector-runner.sh. Installing it also retires the UNVERIFIED schedules it
+# supersedes (the short-link `# fleet-audit` cron line, which ran whatever
+# config.rh7labs.com/audit served, and the legacy com.rh7.audit LaunchAgent), so
+# a plain re-run of enroll migrates a host that still has either.
 
 set -uo pipefail
 
@@ -27,8 +35,15 @@ OS="$(uname -s)"
 # preserve case (the config service keys devices by hostname; lowercasing here
 # would create a duplicate row — #62).
 HOST="$(hostname | sed 's/\.local$//')"
-AUDIT_URL="https://config.rh7labs.com/audit"
-LOCAL_AUDIT="$HOME/dotfiles/scripts/audit-device.sh"
+RUNNER_URL="https://config.rh7labs.com/collector-runner"
+# Same fallback collector-runner.sh itself uses when the short link is
+# undeployed/lagging (the #39 alias trap). TLS either way; the AUDIT the runner
+# pulls is gated (sha256 + scan + ref) regardless of where the runner came from.
+RUNNER_RAW_FALLBACK="https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/collector-runner.sh"
+LOCAL_RUNNER="$HOME/dotfiles/scripts/collector-runner.sh"
+LEGACY_AUDIT_LABEL="com.rh7.audit"
+# Keep in sync with SHORTLINK_CRON_RE in collector-runner.sh (the line it removes).
+SHORTLINK_CRON_RE='rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
 
 # One positional mode (run|--status|--force) plus an optional role. Role may come
 # from the environment (ROLE=server curl…|bash) or a flag (--role server); it's
@@ -138,20 +153,41 @@ if [[ -z "$CONFIG_URL" ]]; then
 fi
 ok "Config service reachable: ${CONFIG_URL}"
 
-# ── 3. Is the daily audit already scheduled? ───────────────────────────────
-# A function so we can re-check AFTER the audit run (post-flight #6) and catch a
-# silently-failed schedule install instead of reporting a false "enrolled".
-schedule_installed() {
+# ── 3. Is the VERIFIED daily audit scheduled? ──────────────────────────────
+# Only the integrity-gated collector-runner counts as healthy. A legacy schedule
+# that runs unverified bytes — the short-link `# fleet-audit` cron line or the
+# direct-audit com.rh7.audit LaunchAgent — means "needs repair", so a plain
+# `enroll` (no --force) migrates the host; `collector-runner.sh --install`
+# retires both. Functions so we can re-check AFTER the run (post-flight) and
+# catch a silently-failed install instead of reporting a false "enrolled".
+runner_scheduled() {
   if [[ "$OS" == "Darwin" ]]; then
-    # collector-runner supersedes the direct audit agent; either counts as scheduled
-    launchctl list 2>/dev/null | grep -qE 'com\.rh7\.(collector-runner|audit)'
+    launchctl list 2>/dev/null | grep -qE '(^|[[:space:]])com\.rh7\.collector-runner$'
   else
-    crontab -l 2>/dev/null | grep -qE 'fleet-audit|collector-runner|audit-device\.sh'
+    crontab -l 2>/dev/null | grep -q '# fleet-collector-runner'
   fi
 }
+legacy_schedule() {  # prints what unverified schedule is present; false if none
+  if crontab -l 2>/dev/null | grep -qE "$SHORTLINK_CRON_RE"; then
+    echo "unverified short-link cron (# fleet-audit → config.rh7labs.com/audit)"; return 0
+  fi
+  if [[ "$OS" == "Darwin" ]] && { [[ -f "$HOME/Library/LaunchAgents/${LEGACY_AUDIT_LABEL}.plist" ]] \
+      || launchctl list 2>/dev/null | grep -qE '(^|[[:space:]])com\.rh7\.audit$'; }; then
+    echo "legacy unverified ${LEGACY_AUDIT_LABEL} LaunchAgent"; return 0
+  fi
+  return 1
+}
+schedule_installed() { runner_scheduled && ! legacy_schedule >/dev/null; }
 scheduled=false
 schedule_installed && scheduled=true
-$scheduled && ok "Daily audit schedule: installed" || warn "Daily audit schedule: not installed"
+legacy="$(legacy_schedule || true)"
+if $scheduled; then
+  ok "Daily audit schedule: verified collector-runner installed"
+elif [[ -n "$legacy" ]]; then
+  warn "Daily audit schedule: ${legacy} — needs migrating to the verified collector-runner"
+else
+  warn "Daily audit schedule: not installed"
+fi
 
 # ── 4. Is this host already reporting? ─────────────────────────────────────
 dev_json="$(curl -sf "${CONFIG_URL}/api/devices/${HOST}" --max-time 5 2>/dev/null || true)"
@@ -184,54 +220,95 @@ else
 fi
 
 # ── Decide ─────────────────────────────────────────────────────────────────
-run_audit() {  # run_audit MODE_FLAG
-  local flag="$1"
-  # `</dev/null` on the audit invocation is load-bearing. The audit's collectors
-  # read stdin; when *enroll itself* is run via `curl … | bash`, the child audit
-  # inherits enroll's pipe as its stdin, so a collector consumes the rest of the
-  # ENROLL script — truncating enroll's own post-flight (the role apply and the
-  # #38 fail-loud registry read-back). Detaching the child's stdin prevents it
-  # from reaching back into the parent's pipe.
-  if [[ -f "$LOCAL_AUDIT" ]]; then
-    info "Running: audit-device.sh ${flag} (local checkout)"
-    bash "$LOCAL_AUDIT" "$flag" </dev/null
-  else
-    # Download-then-exec, NOT `curl … | bash`: the audit script's collectors
-    # shell out to commands that read stdin, and under `curl | bash` stdin *is*
-    # the script pipe — so a collector consumes the rest of the script and
-    # truncates the run before it uploads/registers/schedules. That silently
-    # half-enrolls every no-clone host (audit built, never sent). Running from a
-    # file (with stdin detached) makes the collectors read nothing to eat.
-    info "Running: audit-device.sh ${flag} (fetched)"
-    local tmp rc
-    tmp="$(mktemp)" || { err "mktemp failed"; return 1; }
-    if curl -fsSL "$AUDIT_URL" -o "$tmp"; then
-      bash "$tmp" "$flag" </dev/null; rc=$?
-    else
-      err "Failed to download the audit script from ${AUDIT_URL}"; rc=1
+# The runner: the clone's copy when there is one, else fetched to a temp file
+# (download-then-exec, never `curl … | bash` — see run_runner).
+RUNNER=""; RUNNER_TMP=""
+cleanup() { [[ -n "$RUNNER_TMP" ]] && rm -f "$RUNNER_TMP"; return 0; }
+trap cleanup EXIT
+fetch_runner() {
+  [[ -n "$RUNNER" ]] && return 0
+  if [[ -f "$LOCAL_RUNNER" ]]; then RUNNER="$LOCAL_RUNNER"; return 0; fi
+  # Deliberately NOT named collector-runner.sh: the runner schedules its own $0
+  # only when that is an on-disk collector-runner.sh, so a temp copy can never
+  # end up as the daily schedule's target.
+  RUNNER_TMP="$(mktemp "${TMPDIR:-/tmp}/rh7-enroll-runner.XXXXXX")" || { err "mktemp failed"; return 1; }
+  local url
+  for url in "$RUNNER_URL" "$RUNNER_RAW_FALLBACK"; do
+    if curl -fsSL --max-time 30 "$url" -o "$RUNNER_TMP" 2>/dev/null && [[ -s "$RUNNER_TMP" ]]; then
+      RUNNER="$RUNNER_TMP"; return 0
     fi
-    rm -f "$tmp"
-    return $rc
+    warn "could not fetch collector-runner from ${url}"
+  done
+  err "Failed to download collector-runner.sh (${RUNNER_URL}, ${RUNNER_RAW_FALLBACK})"
+  return 1
+}
+
+# run_runner [--install] — one gated audit (default) or install/repair the schedule.
+# `</dev/null` on the run is load-bearing. The audit's collectors read stdin; when
+# *enroll itself* is run via `curl … | bash`, the child inherits enroll's pipe as
+# its stdin, so a collector would consume the rest of the ENROLL script —
+# truncating enroll's own post-flight (the role apply and the #38 fail-loud
+# registry read-back). Running from a file with stdin detached prevents it.
+run_runner() {
+  fetch_runner || return 1
+  if [[ "${1:-}" == "--install" ]]; then
+    if [[ "$RUNNER" == "$LOCAL_RUNNER" ]]; then
+      info "Installing the verified daily schedule: collector-runner.sh --install (local checkout)"
+      bash "$RUNNER" --install </dev/null
+    else
+      # Fed on stdin so the runner sees no on-disk $0 and self-installs a
+      # persistent copy (~/.cache/fleet-collector/collector-runner.sh) for the
+      # schedule to point at, instead of scheduling this temp file. --install
+      # runs no collector, so nothing in it reads the script off stdin.
+      info "Installing the verified daily schedule: collector-runner.sh --install (self-installs a persistent copy)"
+      bash -s -- --install <"$RUNNER"
+    fi
+  else
+    info "Running: collector-runner.sh (fetch → verify sha256 + scan → audit)"
+    bash "$RUNNER" </dev/null
   fi
 }
+
+audit_now() {
+  run_runner && return 0
+  warn "The gated audit run failed — see ~/.cache/fleet-collector/runner.log"
+  return 1
+}
+install_now() {
+  run_runner --install && return 0
+  err "collector-runner.sh --install failed — see the messages above / ~/.cache/fleet-collector/runner.log"
+  return 1
+}
+
+# The runner (unlike the raw audit script) needs python3 to read the collector
+# manifest; without it every run — enroll's and the daily one — refuses.
+if [[ "$MODE" != "status" ]] && ! command -v python3 >/dev/null 2>&1; then
+  err "python3 is required by the verified collector-runner (manifest check) and is not installed."
+  err "Install it (e.g. sudo apt-get install -y python3) and re-run."
+  exit 1
+fi
 
 if [[ "$MODE" == "status" ]]; then
   info "Status-only (no changes made)."
 elif [[ "$MODE" == "force" ]]; then
   echo; info "Forcing a fresh audit + schedule reinstall…"
-  run_audit --run-and-install
+  audit_now; install_now
 elif $scheduled && $reporting; then
   echo; ok "${BOLD}Already enrolled and healthy.${NC} Refreshing once to confirm…"
-  run_audit --run
+  audit_now
 elif $scheduled; then
   echo; info "Scheduled but not reporting — running an audit now to confirm the pipe…"
-  run_audit --run
+  audit_now
+elif [[ -n "$legacy" ]]; then
+  echo; info "Migrating the daily audit to the verified collector-runner (retires the ${legacy})…"
+  audit_now; install_now
 else
   echo; info "Not yet enrolled — running the first audit and installing the daily schedule…"
-  run_audit --run-and-install
+  audit_now; install_now
 fi
-# Re-check the schedule after the run: the audit script installs cron at the end,
-# and a failure there must NOT be reported as a healthy enrollment (see #6).
+# Re-check the schedule after the run: a failed or partial `--install` (or a
+# legacy schedule it could not retire) must NOT be reported as a healthy
+# enrollment (see #6).
 scheduled=false
 schedule_installed && scheduled=true
 
@@ -265,8 +342,8 @@ fi
 # preserves it), and the unknown-role hint below still fires.
 if [[ -n "$ROLE" && "$MODE" != "status" ]]; then
   role_want="$(printf '%s' "$ROLE" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  case " personal developer server ai-inference smart-home mobile " in
-    *" $role_want "*)
+  case "$role_want" in
+    personal|developer|server|ai-inference|smart-home|mobile)
       if curl -sf -X PATCH "${CONFIG_URL}/api/devices/${HOST}" \
            -H 'content-type: application/json' \
            -d "{\"role\":\"${role_want}\"}" --max-time 5 >/dev/null 2>&1; then
@@ -295,15 +372,16 @@ else
 fi
 echo
 if $scheduled; then
-  ok "${BOLD}Done.${NC} ${HOST} is enrolled and reporting; the daily audit keeps it current."
+  ok "${BOLD}Done.${NC} ${HOST} is enrolled and reporting; the verified daily audit (collector-runner) keeps it current."
 elif [[ "$MODE" == "status" ]]; then
-  warn "${BOLD}Enrolled, but no daily audit schedule is installed.${NC} Re-run without --status to install it."
+  warn "${BOLD}Enrolled, but no verified daily audit schedule is installed${legacy:+ (found: ${legacy})}.${NC} Re-run without --status to install/migrate it."
 else
-  # The audit uploaded, but the recurring schedule did NOT install — don't claim
-  # "the daily audit keeps it current", or the host silently goes stale.
-  err "${BOLD}Enrolled, but the daily audit schedule did NOT install.${NC} ${HOST} uploaded an audit,"
-  err "but without a schedule it will go stale. See the audit run's messages above for the cause."
+  # The schedule did NOT install (or a legacy unverified one is still there) —
+  # don't claim "the daily audit keeps it current", or the host silently goes stale.
+  err "${BOLD}Enrolled, but the verified daily audit schedule did NOT install.${NC} ${HOST} is in the registry,"
+  err "but without the collector-runner schedule it will go stale (or keep running unverified bytes)."
+  err "See the collector-runner messages above / ~/.cache/fleet-collector/runner.log for the cause."
   [[ "$OS" != "Darwin" ]] && err "Check cron:  command -v crontab || echo 'cron not installed'; systemctl status cron 2>/dev/null || true"
-  err "Then retry:  curl -fsSL config.rh7labs.com/enroll | bash -s -- --force"
+  err "Then retry:  curl -fsSL config.rh7labs.com/enroll | bash"
   exit 1
 fi

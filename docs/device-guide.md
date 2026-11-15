@@ -404,10 +404,15 @@ curl -s -X PATCH -H 'content-type: application/json' \
 **Daily audit.** Every `mkMac` host declares it via
 `modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
 daily 08:17, started through `/usr/local/libexec/rh7-fleet-launcher audit`). A
-host without that agent: `./scripts/collector-runner.sh --install` once. A
-legacy `auto-sync.sh` heartbeat cron goes with `./scripts/device sync
---uninstall`. Non-nix devices without a clone enrol with
-`curl -fsSL https://config.rh7labs.com/enroll | bash`.
+host without that agent: `./scripts/collector-runner.sh --install` once
+(idempotent; it also removes the legacy unverified short-link `# fleet-audit`
+cron line — no other cron line — and retires a legacy `com.rh7.audit`
+LaunchAgent). A legacy `auto-sync.sh` heartbeat cron goes with `./scripts/device
+sync --uninstall`. Non-nix devices (Mac or Linux, clone or not) enrol — or
+migrate off a legacy schedule — with the same
+`curl -fsSL https://config.rh7labs.com/enroll | bash`: it runs one gated audit
+through `collector-runner.sh` and, unless the verified runner is already the
+only schedule, installs it (`--status` reports without changing anything).
 
 ### Claude Code command is missing
 
