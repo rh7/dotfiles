@@ -2,10 +2,11 @@
 
 {
   # ── Application firewall — CLIENT Macs only ──────────────────────────────────
-  # Imported by the workstation-mac, personal-mac and household-mac roles, NOT server-mac. It is
-  # deliberately kept OFF the Mac Studio (config-service host): enabling the macOS
-  # application firewall there can block incoming tailnet connections to the
-  # config service (the node process is unsigned). See rh7/rh-device-management#93.
+  # Imported by the workstation-mac, personal-mac and household-mac roles, NOT
+  # fleet-member-mac. The Mac Studio (config-service host) has its own
+  # configurations/macos/mac-studio-firewall.nix: on, but with a per-app
+  # allow-list, because a blanket enable blocks incoming tailnet connections to
+  # its unsigned servers (the config service's node). See rh7/rh-device-management#93.
   #
   # Uses the nix-darwin native `networking.applicationFirewall` option instead of a
   # postActivation `socketfilterfw --setglobalstate on` shellout. The old shellout

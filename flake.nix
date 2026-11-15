@@ -51,9 +51,10 @@
         modules = [
           # System-level
           ./modules/darwin/defaults.nix
-          # NOTE: firewall hardening is NOT global — it lives in modules/darwin/firewall.nix
-          # and is imported only by client roles (workstation-mac, personal-mac), to keep the
-          # app firewall OFF the Mac Studio config-service host (#93).
+          # NOTE: the application firewall is NOT global. Client roles import
+          # modules/darwin/firewall.nix (on + stealth); the Mac Studio imports
+          # configurations/macos/mac-studio-firewall.nix (on + a per-app allow-list
+          # for its unsigned servers, rh7/rh-device-management#93).
           ./modules/darwin/homebrew.nix
           ./modules/darwin/mas.nix
           # /etc/rh7/config-service — the fleet's config-service pin.
