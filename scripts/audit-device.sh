@@ -629,18 +629,22 @@ show_checklist() {
   echo -e "${BOLD}${CYAN}│       Post-Setup Checklist               │${NC}" >&2
   echo -e "${BOLD}${CYAN}└──────────────────────────────────────────┘${NC}" >&2
 
+  # The category goes in as argv and is upper-cased in Python: bash 3.2
+  # (/bin/bash on non-nix Macs) has no ${var^^} and aborted here with
+  # "bad substitution", failing the whole gated collector-runner run.
   for cat in "sign-in" "permissions" "setup" "verify"; do
     local items
     items=$(echo "$checklist" | python3 -c "
 import json, sys
+cat = sys.argv[1]
 data = json.load(sys.stdin)
-steps = [s for s in data.get('steps', []) if s['category'] == '$cat']
+steps = [s for s in data.get('steps', []) if s['category'] == cat]
 if steps:
-    print('${cat^^}')
+    print(cat.upper())
     for s in steps:
         notes = f\"  ({s['notes']})\" if s.get('notes') else ''
         print(f\"  [ ] {s['app']}: {s['action']}{notes}\")
-" 2>/dev/null)
+" "$cat" 2>/dev/null)
     if [[ -n "$items" ]]; then
       echo "" >&2
       echo -e "${BOLD}${items%%$'\n'*}${NC}" >&2
