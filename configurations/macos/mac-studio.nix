@@ -26,13 +26,14 @@
   power.sleep.computer = "never";             # pmset sleep 0
   power.sleep.harddisk = "never";             # pmset disksleep 0
   power.restartAfterPowerFailure = true;      # pmset autorestart 1
+  networking.wakeOnLan.enable = true;         # pmset womp 1 (systemsetup -setWakeOnNetworkAccess)
 
-  # No nix-darwin option for wake-on-LAN or Power Nap: pmset, for every power
-  # source (-a). Both are 1 on the Studio today; re-asserting them is a no-op.
-  # A failure warns instead of aborting the rest of activation.
+  # No nix-darwin option for Power Nap: pmset, for every power source (-a).
+  # It is 1 on the Studio today; re-asserting it is a no-op. A failure warns
+  # instead of aborting the rest of activation.
   system.activationScripts.postActivation.text = ''
-    if ! /usr/bin/pmset -a womp 1 powernap 1; then
-      echo "warning: pmset could not set womp=1 powernap=1 (wake-on-LAN, Power Nap)" >&2
+    if ! /usr/bin/pmset -a powernap 1; then
+      echo "warning: pmset could not set powernap=1 (Power Nap)" >&2
     fi
 
     # ── FileVault (rh7/mac-studio-services#913): required ON, checked here ──
