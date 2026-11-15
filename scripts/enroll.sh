@@ -43,7 +43,7 @@ RUNNER_RAW_FALLBACK="https://raw.githubusercontent.com/rh7/dotfiles/main/scripts
 LOCAL_RUNNER="$HOME/dotfiles/scripts/collector-runner.sh"
 LEGACY_AUDIT_LABEL="com.rh7.audit"
 # Keep in sync with SHORTLINK_CRON_RE in collector-runner.sh (the line it removes).
-SHORTLINK_CRON_RE='rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
+SHORTLINK_CRON_RE='(^|[^[:alnum:].-])(https?://)?config\.rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
 
 # One positional mode (run|--status|--force) plus an optional role. Role may come
 # from the environment (ROLE=server curl…|bash) or a flag (--role server); it's

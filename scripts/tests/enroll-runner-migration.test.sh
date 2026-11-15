@@ -32,6 +32,8 @@ SHORTLINK='17 8 * * * t="$(mktemp)" && curl -fsSL https://config.rh7labs.com/aud
 UNRELATED_1='0 3 * * * /usr/local/bin/backup.sh --nightly'
 UNRELATED_2='15 9 * * * bash /home/u/dotfiles/scripts/audit-device.sh --run # fleet-audit'
 UNRELATED_3='30 2 * * * curl -fsSL https://config.rh7labs.com/audit-lite -o /tmp/x # mine'
+UNRELATED_4='45 4 * * * curl -fsSL https://backup.rh7labs.com/audit -o /tmp/y # fleet-audit'
+UNRELATED_5='50 4 * * * curl -fsSL https://evilconfig.rh7labs.com/audit -o /tmp/z # fleet-audit'
 
 pass=0; fail=0
 good() { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -146,6 +148,7 @@ enroll() {
 }
 runner_lines() { grep -c '# fleet-collector-runner' "$1/crontab" 2>/dev/null || true; }
 has_line() { grep -qxF -- "$2" "$1/crontab"; }
+lacks_line() { ! grep -qxF -- "$2" "$1/crontab"; }
 writes() { [ -f "$1/crontab.writes" ] && wc -l < "$1/crontab.writes" | tr -d ' ' || echo 0; }
 
 echo ""
@@ -158,14 +161,16 @@ check "enroll.sh and collector-runner.sh match the SAME short-link line" \
 echo ""
 echo "collector-runner --install (Linux): short-link cron migrated, others kept"
 H="$(new_home linux-migrate)"
-printf '%s\n' "$UNRELATED_1" "$SHORTLINK" "$UNRELATED_2" "$UNRELATED_3" > "$H/crontab"
+printf '%s\n' "$UNRELATED_1" "$SHORTLINK" "$UNRELATED_2" "$UNRELATED_3" "$UNRELATED_4" "$UNRELATED_5" > "$H/crontab"
 runner_install "$H" Linux
 check "install succeeds" "rc=$RC out: $OUT" test "$RC" -eq 0
 check "short-link '# fleet-audit' line removed" "crontab: $(cat "$H/crontab")" \
-  bash -c "! grep -q 'rh7labs.com/audit -o' '$H/crontab'"
+  lacks_line "$H" "$SHORTLINK"
 check "unrelated cron line kept verbatim" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_1"
 check "clone-based '# fleet-audit' line (no short-link fetch) kept" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_2"
 check "short-link fetch WITHOUT the marker kept" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_3"
+check "'# fleet-audit' fetch from ANOTHER rh7labs host kept" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_4"
+check "'# fleet-audit' fetch from a look-alike host kept" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_5"
 check "exactly one runner line" "crontab: $(cat "$H/crontab")" test "$(runner_lines "$H")" -eq 1
 check "runner line points at the on-disk runner" "crontab: $(cat "$H/crontab")" \
   grep -qF "bash $RUNNER_SRC # fleet-collector-runner" "$H/crontab"
@@ -191,7 +196,7 @@ check "runner LaunchAgent bootstrapped" "calls: $(cat "$H/lc/calls.log")" test -
 check "legacy com.rh7.audit booted out" "calls: $(cat "$H/lc/calls.log")" test ! -f "$H/lc/com.rh7.audit"
 check "legacy com.rh7.audit plist removed" "ls: $(ls "$H/Library/LaunchAgents")" test ! -f "$H/Library/LaunchAgents/com.rh7.audit.plist"
 check "short-link cron removed on macOS too" "crontab: $(cat "$H/crontab")" \
-  bash -c "! grep -q 'rh7labs.com/audit -o' '$H/crontab'"
+  lacks_line "$H" "$SHORTLINK"
 check "unrelated macOS cron line kept" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_1"
 
 H="$(new_home mac-clean)"
@@ -236,7 +241,7 @@ printf '%s\n' "$UNRELATED_1" "$SHORTLINK" > "$H/crontab"
 enroll "$H" Linux
 check "exits 0" "rc=$RC out: $OUT" test "$RC" -eq 0
 check "reports the short-link cron as needing migration" "out: $OUT" grep -q "unverified short-link cron" <<<"$OUT"
-check "short-link line removed" "crontab: $(cat "$H/crontab")" bash -c "! grep -q 'rh7labs.com/audit -o' '$H/crontab'"
+check "short-link line removed" "crontab: $(cat "$H/crontab")" lacks_line "$H" "$SHORTLINK"
 check "unrelated line kept" "crontab: $(cat "$H/crontab")" has_line "$H" "$UNRELATED_1"
 check "exactly one runner line" "crontab: $(cat "$H/crontab")" test "$(runner_lines "$H")" -eq 1
 self="$H/.cache/fleet-collector/collector-runner.sh"
@@ -278,7 +283,7 @@ printf '%s\n' "$SHORTLINK" "5 8 * * * bash /x/collector-runner.sh # fleet-collec
 enroll "$H" Linux
 check "exits 0" "rc=$RC out: $OUT" test "$RC" -eq 0
 check "does not call it healthy" "out: $OUT" bash -c "! grep -q 'Already enrolled and healthy' <<<\"\$1\"" _ "$OUT"
-check "short-link line removed" "crontab: $(cat "$H/crontab")" bash -c "! grep -q 'rh7labs.com/audit -o' '$H/crontab'"
+check "short-link line removed" "crontab: $(cat "$H/crontab")" lacks_line "$H" "$SHORTLINK"
 check "exactly one runner line" "crontab: $(cat "$H/crontab")" test "$(runner_lines "$H")" -eq 1
 
 echo ""

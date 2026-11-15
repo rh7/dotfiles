@@ -267,7 +267,7 @@ resolve_self() {
 # ref gate — exactly what this runner exists to replace. Match ONLY lines that
 # carry BOTH the `# fleet-audit` marker and the short-link fetch, so no other
 # cron line (including a clone-based `# fleet-audit` line) is ever touched.
-SHORTLINK_CRON_RE='rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
+SHORTLINK_CRON_RE='(^|[^[:alnum:].-])(https?://)?config\.rh7labs\.com/audit([^[:alnum:]_.-]|$).*#[[:space:]]*fleet-audit([[:space:]]*$)'
 LEGACY_AUDIT_LABEL="com.rh7.audit"
 
 # read_crontab — sets CRONTAB_TEXT. Returns 0 when the crontab was read (an
