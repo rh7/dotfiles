@@ -2268,7 +2268,8 @@ PYEOF
 # body needs no shell-escaping.
 collect_backup_posture() {
   local tm_json=""
-  if [[ "$OS" == "Darwin" ]]; then tm_json="$(collect_time_machine)"; fi
+  # ${OS:-}: the restic suite extracts this function alone, under set -u.
+  if [[ "${OS:-}" == "Darwin" ]]; then tm_json="$(collect_time_machine)"; fi
   TM_JSON="$tm_json" python3 - <<'PYEOF' 2>/dev/null || echo '{}'
 import json, os, subprocess, platform, shutil, time, re, glob
 
