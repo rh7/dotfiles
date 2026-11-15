@@ -227,6 +227,7 @@ modules/
       ai-tools.nix                     #   claude, chatgpt, ollama, superwhisper
       media.nix                        #   spotify, pocketcasts, vlc
       security.nix                     #   expressvpn, PIA, tripmode
+      disk-tools.nix                   #   EVERY Mac (mkMac): dust, dua, ncdu (nixpkgs); mole, grandperspective, pearcleaner, puremac (Homebrew)
 
   home/profiles/                       # Cross-platform Home Manager profiles
     development.nix                    #   nodejs, python, rust, git-lfs, pre-commit

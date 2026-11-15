@@ -13,7 +13,11 @@
   # rebuild.sh replaces each hand-installed bundle with the Homebrew copy
   # inside its single authentication (rh7/dotfiles#116); without that,
   # `brew bundle` stops at "It seems there is already an App at
-  # '/Applications/X.app'". Entries marked NEW are the only software added.
+  # '/Applications/X.app'". Entries marked NEW are the only software added
+  # by THIS file. Like every Mac, it also gets the fleet-wide disk tools from
+  # modules/darwin/profiles/disk-tools.nix (imported by mkMac): dust/dua/ncdu
+  # (nixpkgs), the `mole` formula and the grandperspective, pearcleaner and
+  # puremac casks — all NEW here, all plain `app` artifacts.
   # Every cask here is a plain `app` artifact — no pkg installer — so
   # installing or upgrading one needs no sudo PROVIDED homebrew.user can write
   # /Applications (an admin) and owns the existing bundle. Otherwise Homebrew

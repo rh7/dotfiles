@@ -20,6 +20,8 @@
     "commander-one"
     # "wezterm"  # replaced by ghostty
     # "parallels"  # needs FDA, install manually if needed
+    "devcleaner"  # Xcode DerivedData/simulators/archives — Xcode is declared
+                  # below; the fleet-wide disk tools are profiles/disk-tools.nix
   ];
 
   homebrew.brews = [

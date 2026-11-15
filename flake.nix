@@ -68,6 +68,9 @@
           # LaunchAgent (default) or, on household Macs, a system LaunchDaemon
           # running it as the primary user (services.rh7.fleetAudit.scheduler).
           ./modules/darwin/fleet-audit.nix
+          # Disk usage/cleanup tools on EVERY Mac, household included: CLI from
+          # nixpkgs (also where Homebrew is off), mole + GUI casks via Homebrew.
+          ./modules/darwin/profiles/disk-tools.nix
           {
             # The attr to build is baked in here, never derived at runtime.
             # Every darwinConfigurations attr below equals its hostname.
