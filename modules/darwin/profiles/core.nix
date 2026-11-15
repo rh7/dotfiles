@@ -16,6 +16,7 @@
     #             # brew bundle — provisioned from the App Store instead, in
     #             # productivity.nix. Keep it undeclared; see the note there.
     "tailscale-app"
+    "herdr-app"       # herdr desktop app (terminals + coding agents); CLI `herdr` comes from common.nix
     # dia — no Homebrew cask / not on App Store; auto-installed from the official DMG in postActivation below
     # speedtest — Mac App Store only, not in Homebrew
   ];
