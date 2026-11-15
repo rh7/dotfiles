@@ -1395,8 +1395,29 @@ else:
 " 2>/dev/null || echo '{}'
 }
 
+# parse_filevault_status — stdin: `fdesetup status` output (unprivileged).
+# Prints on|off|encrypting|decrypting|unknown. A conversion in progress is
+# reported as such, not as the On/Off line fdesetup prints beside it; "Off,
+# but will be enabled after the next restart" is still off.
+parse_filevault_status() {
+  local out
+  out="$(cat)"
+  case "$out" in
+    *"Encryption in progress"*) echo encrypting ;;
+    *"Decryption in progress"*) echo decrypting ;;
+    *"FileVault is On"*) echo on ;;
+    *"FileVault is Off"*) echo off ;;
+    *) echo unknown ;;
+  esac
+}
+
 collect_security_posture() {
-  python3 -c "
+  local fv_raw="" fv_status=""
+  if [[ "$OS" == "Darwin" ]]; then
+    fv_raw="$(run_timeout 8 fdesetup status 2>/dev/null || true)"
+    fv_status="$(printf '%s' "$fv_raw" | parse_filevault_status)"
+  fi
+  FV_RAW="$fv_raw" FV_STATUS="$fv_status" python3 -c "
 import subprocess, json, os, platform
 
 def run(cmd):
@@ -1409,8 +1430,10 @@ result = {}
 
 if platform.system() == 'Darwin':
     # FileVault (disk encryption)
-    fv = run('fdesetup status 2>/dev/null')
+    fv = os.environ.get('FV_RAW', '').strip()
     result['filevault'] = 'On' in fv if fv else None
+    # Tri-state+ companion of the boolean above (kept for old servers).
+    result['filevault_status'] = os.environ.get('FV_STATUS') or 'unknown'
 
     # Firewall
     fw = run('/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null')
@@ -2070,13 +2093,183 @@ print(json.dumps(result) if result else '{}')
 " 2>/dev/null || echo '{}'
 }
 
+# Time Machine (macOS) — backup_posture.time_machine. Unprivileged and
+# FDA-free: `tmutil destinationinfo -X` / `latestbackup` / `isexcluded`, plus
+# /Library/Preferences/com.apple.TimeMachine (per-destination encryption and
+# the fixed-path exclusions) read through `defaults export`: cfprefsd answers
+# without Full Disk Access, while open() on that file is TCC-denied (EPERM,
+# silently) on macOS 26 despite its 0644 mode. A failed read reports
+# null/readable:false — never a guess.
+#   destinations[]: name, kind (tmutil's "Network"/"Local"), share_name (the
+#     network share only — never the host, IP or user in the URL), encrypted
+#     (LastKnownEncryptionState; null when unknown).
+#   exclusions: skip_paths (privacy-reduced: ~/<top folder> only, except
+#     ~/Library/<two more>; other users' homes alike; /Volumes/<volume>;
+#     system paths up to 3 components; anything cut ends in "/…"),
+#     applications_excluded (SkipPaths or `tmutil isexcluded`).
+# AUDIT_MACOS_ROOT prefixes the domain path for the test suite.
+collect_time_machine() {
+  python3 - <<'PYEOF' 2>/dev/null || echo '{"error": "collector-failed"}'
+import json, os, plistlib, posixpath, re, subprocess, time, urllib.parse
+
+def run(args, timeout=8):
+    try:
+        r = subprocess.run(args, capture_output=True, timeout=timeout)
+        return r.returncode, r.stdout
+    except Exception:
+        return None, b''
+
+def clean(s, limit=255):
+    return isinstance(s, str) and 0 < len(s) <= limit and not any(ord(c) < 32 for c in s)
+
+def share_name(url):
+    # smb://user@host._smb._tcp.local./Share%20Name/sub -> "Share Name"
+    try:
+        parts = [p for p in urllib.parse.urlsplit(url).path.split('/') if p]
+        name = urllib.parse.unquote(parts[0]) if parts else None
+    except Exception:
+        return None
+    return name if clean(name) else None
+
+home = os.path.expanduser('~')
+
+def redact(p):
+    if not clean(p, 1024):
+        return None
+    if p == '~' or p.startswith('~/'):
+        p = home + p[1:]
+    p = posixpath.normpath(p)
+    if not p.startswith('/'):
+        return None
+    parts = [c for c in p.split('/') if c]
+    def cut(prefix, rest, keep):
+        out = prefix + '/'.join(rest[:keep])
+        return out + ('/…' if len(rest) > keep else '')
+    hp = [c for c in home.split('/') if c]
+    if parts[:len(hp)] == hp:
+        rest = parts[len(hp):]
+        return cut('~/', rest, 3 if rest[:1] == ['Library'] else 1) if rest else '~'
+    if len(parts) >= 2 and parts[0] == 'Users':
+        rest = parts[2:]
+        prefix = '/Users/%s/' % parts[1]
+        return cut(prefix, rest, 3 if rest[:1] == ['Library'] else 1) if rest else prefix.rstrip('/')
+    if parts[:1] == ['Volumes']:
+        return cut('/', parts, 2)
+    return cut('/', parts, 3) if parts else '/'
+
+tm = {'configured': False, 'destinations': []}
+
+# Destinations: the plist form first; the text form only if -X is unusable.
+dests = None
+rc, out = run(['tmutil', 'destinationinfo', '-X'])
+if rc == 0 and out.strip():
+    try:
+        pl = plistlib.loads(out)
+        arr = pl.get('Destinations', []) if isinstance(pl, dict) else None
+        if isinstance(arr, list):
+            dests = [{'name': d.get('Name'), 'kind': d.get('Kind'), 'url': d.get('URL'), 'id': d.get('ID')}
+                     for d in arr if isinstance(d, dict)]
+    except Exception:
+        dests = None
+if dests is None and rc is not None:
+    rc, out = run(['tmutil', 'destinationinfo'])
+    di = out.decode('utf-8', 'replace').strip() if rc == 0 else ''
+    dests = []
+    if di and 'No destinations' not in di:
+        dest = {}
+        for line in di.split('\n'):
+            s = line.strip()
+            # Records are separated by a blank line OR a ==== rule; a repeated
+            # Name: also begins a new record (belt-and-suspenders).
+            if not s or set(s) == {'='}:
+                if dest:
+                    dests.append(dest); dest = {}
+                continue
+            if ':' in s:
+                k, v = s.split(':', 1)
+                k = k.strip().lower(); v = v.strip()
+                if k == 'name' and 'name' in dest:
+                    dests.append(dest); dest = {}
+                if k in ('name', 'kind', 'url', 'id'): dest[k] = v
+        if dest: dests.append(dest)
+
+prefs = None
+rc, out = run(['defaults', 'export', os.environ.get('AUDIT_MACOS_ROOT', '') + '/Library/Preferences/com.apple.TimeMachine', '-'])
+if rc == 0 and out.strip():
+    try:
+        prefs = plistlib.loads(out)
+    except Exception:
+        prefs = None
+if not isinstance(prefs, dict):
+    prefs = None
+
+enc = {}
+if prefs and isinstance(prefs.get('Destinations'), list):
+    for d in prefs['Destinations']:
+        if isinstance(d, dict) and isinstance(d.get('DestinationID'), str):
+            enc[d['DestinationID']] = {'Encrypted': True, 'NotEncrypted': False}.get(d.get('LastKnownEncryptionState'))
+
+for d in dests or []:
+    out = {'name': d.get('name') if clean(d.get('name')) else None,
+           'kind': d.get('kind') if clean(d.get('kind')) else None}
+    if out['kind'] == 'Network' and isinstance(d.get('url'), str):
+        out['share_name'] = share_name(d['url'])
+    out['encrypted'] = enc.get(d.get('id')) if isinstance(d.get('id'), str) else None
+    tm['destinations'].append(out)
+tm['configured'] = len(tm['destinations']) > 0
+tm['auto_backup'] = prefs.get('AutoBackup') if prefs and isinstance(prefs.get('AutoBackup'), bool) else None
+
+excl = {'readable': prefs is not None, 'skip_paths': [], 'skip_paths_count': 0,
+        'skip_system_files': None, 'applications_excluded': None}
+apps_skipped = False
+if prefs is not None:
+    raw = prefs.get('SkipPaths')
+    raw = [p for p in raw if isinstance(p, str)] if isinstance(raw, list) else []
+    excl['skip_paths_count'] = len(raw)
+    for p in raw:
+        r = redact(p)
+        if r and r not in excl['skip_paths'] and len(excl['skip_paths']) < 50:
+            excl['skip_paths'].append(r)
+        try:
+            n = posixpath.normpath(p)
+        except Exception:
+            continue
+        if n in ('/Applications', '/'):
+            apps_skipped = True
+    ssf = prefs.get('SkipSystemFiles')
+    excl['skip_system_files'] = ssf if isinstance(ssf, bool) else None
+if apps_skipped:
+    excl['applications_excluded'] = True
+elif tm['configured']:
+    rc, out = run(['tmutil', 'isexcluded', '/Applications'])
+    s = out.decode('utf-8', 'replace').strip() if rc == 0 else ''
+    excl['applications_excluded'] = True if s.startswith('[Excluded]') else (False if s.startswith('[Included]') else None)
+tm['exclusions'] = excl
+
+rc, out = run(['tmutil', 'latestbackup'])
+latest = out.decode('utf-8', 'replace').strip() if rc == 0 else ''
+if latest:
+    tm['latest_backup'] = latest
+    m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest)
+    if m:
+        try:
+            ts = time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S'))
+            tm['latest_backup_age_hours'] = round((time.time() - ts) / 3600.0, 1)
+        except Exception:
+            pass
+print(json.dumps(tm))
+PYEOF
+}
+
 # Backup / replication posture (rh-device-management#76). Metadata ONLY — never
 # reads file contents. Detection is not restore-verification; cloud sync is
 # reported as enabled+coverage, explicitly NOT verified-current (there is no
 # reliable upload-current CLI). Uses a quoted heredoc so the (larger) Python
 # body needs no shell-escaping.
 collect_backup_posture() {
-  python3 - <<'PYEOF' 2>/dev/null || echo '{}'
+  local tm_json=""
+  if [[ "$OS" == "Darwin" ]]; then tm_json="$(collect_time_machine)"; fi
+  TM_JSON="$tm_json" python3 - <<'PYEOF' 2>/dev/null || echo '{}'
 import json, os, subprocess, platform, shutil, time, re, glob
 
 def run(cmd, timeout=5):
@@ -2129,39 +2322,11 @@ result['important_path_presence'] = {
 }
 
 if sys == 'Darwin':
-    # Time Machine
-    tm = {'configured': False, 'destinations': []}
-    di = run('tmutil destinationinfo 2>/dev/null', timeout=8)
-    if di and 'No destinations' not in di:
-        dest = {}
-        for line in di.split('\n'):
-            s = line.strip()
-            # Records are separated by a blank line OR a ==== rule; a repeated
-            # Name: also begins a new record (belt-and-suspenders).
-            if not s or set(s) == {'='}:
-                if dest:
-                    tm['destinations'].append(dest); dest = {}
-                continue
-            if ':' in s:
-                k, v = s.split(':', 1)
-                k = k.strip().lower(); v = v.strip()
-                if k == 'name' and 'name' in dest:
-                    tm['destinations'].append(dest); dest = {}
-                if k == 'name': dest['name'] = v
-                elif k == 'kind': dest['kind'] = v
-        if dest: tm['destinations'].append(dest)
-        tm['configured'] = len(tm['destinations']) > 0
-    latest = run('tmutil latestbackup 2>/dev/null', timeout=8)
-    if latest:
-        tm['latest_backup'] = latest
-        m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest)
-        if m:
-            try:
-                ts = time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S'))
-                tm['latest_backup_age_hours'] = age_hours(ts)
-            except Exception:
-                pass
-    result['time_machine'] = tm
+    # Time Machine (collect_time_machine, run by the shell wrapper).
+    try:
+        result['time_machine'] = json.loads(os.environ.get('TM_JSON') or '')
+    except Exception:
+        result['time_machine'] = {'error': 'collector-failed'}
 
     # iCloud Drive — enabled + coverage only; currency NOT verifiable via CLI.
     # Desktop & Documents sync presents two ways: ~/Desktop may resolve into
@@ -3345,35 +3510,77 @@ print(json.dumps(settings))
 " 2>/dev/null || echo '{}'
 }
 
+# Local human accounts (UID >= 500, not "_"-prefixed): short name, uid, admin
+# (dseditgroup checkmember — unprivileged), and — only when derivable without
+# root — whether the account is the nix-darwin primary user (the
+# `primaryUser=` line of the world-readable /run/current-system/activate) or
+# owns the Homebrew prefix (stat). Unknown is null/omitted, never guessed. No
+# full names or emails: short names only. AUDIT_MACOS_ROOT prefixes both
+# paths for the test suite.
 collect_user_accounts() {
   if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
-  python3 -c "
-import subprocess, json
+  python3 - <<'PYEOF' 2>/dev/null || echo '{}'
+import json, os, pwd, re, subprocess
 
-def run(cmd):
+def run(args, timeout=5):
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return r.stdout.strip()
-    except: return ''
+    except Exception:
+        return ''
 
-# List local user accounts (UID >= 500, not system)
-users_raw = run('dscl . -list /Users UniqueID')
+NAME = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$')
+ROOT = os.environ.get('AUDIT_MACOS_ROOT', '')
+
+primary = None
+try:
+    with open(ROOT + '/run/current-system/activate') as f:
+        for line in f:
+            m = re.match(r'^primaryUser=([A-Za-z0-9_][A-Za-z0-9._-]{0,63})\s*$', line)
+            if m:
+                primary = m.group(1)
+                break
+except Exception:
+    pass
+
+brew_prefix = brew_owner = None
+for p in ('/opt/homebrew', '/usr/local/Homebrew'):
+    try:
+        if os.path.isdir(ROOT + p):
+            brew_prefix = p
+            brew_owner = pwd.getpwuid(os.stat(ROOT + p).st_uid).pw_name
+            break
+    except Exception:
+        brew_owner = None
+        break
+
 users = []
-for line in users_raw.split('\n'):
+for line in run(['dscl', '.', '-list', '/Users', 'UniqueID']).split('\n'):
     parts = line.split()
-    if len(parts) == 2 and int(parts[1]) >= 500 and not parts[0].startswith('_'):
-        name = parts[0]
-        realname = run(f'dscl . -read /Users/{name} RealName 2>/dev/null').replace('RealName:', '').replace('\\n', '').strip()
-        users.append({'username': name, 'uid': int(parts[1]), 'realname': realname})
+    if len(parts) != 2 or not parts[1].isdigit():
+        continue
+    name, uid = parts[0], int(parts[1])
+    if uid < 500 or name.startswith('_') or not NAME.match(name):
+        continue
+    member = run(['dseditgroup', '-o', 'checkmember', '-m', name, 'admin'])
+    u = {'username': name, 'uid': uid,
+         'admin': True if member.startswith('yes') else (False if member.startswith('no') else None)}
+    if primary:
+        u['nix_primary_user'] = (name == primary)
+    if brew_owner:
+        u['homebrew_owner'] = (name == brew_owner)
+    users.append(u)
 
-result = {
+print(json.dumps({
     'users': users,
-    'current_user': run('whoami'),
-    'computer_name': run('scutil --get ComputerName'),
-    'local_hostname': run('scutil --get LocalHostName'),
-}
-print(json.dumps(result))
-" 2>/dev/null || echo '{}'
+    'current_user': run(['whoami']),
+    'computer_name': run(['scutil', '--get', 'ComputerName']),
+    'local_hostname': run(['scutil', '--get', 'LocalHostName']),
+    'nix_primary_user': primary,
+    'homebrew_prefix': brew_prefix,
+    'homebrew_prefix_owner': brew_owner,
+}))
+PYEOF
 }
 
 collect_wifi_networks() {
@@ -3640,6 +3847,121 @@ else:
 PYEOF
 }
 
+# macOS update context (section macos_update). All unprivileged plain reads:
+#   installs — macOS installs from /Library/Receipts/InstallHistory.plist
+#     (0664 root:admin), newest first, version + date only. WHO started one
+#     (Software Update vs a person) is not recorded reliably, so it is not
+#     reported. previous_version / last_major_install are derived from it;
+#     the factory-installed version is never listed, so a major change before
+#     the first recorded install is unknowable (null).
+#   policy — the Software Update toggles (/Library/Preferences, managed
+#     preferences override and are listed in managed_keys); null = key absent.
+#   pending_macos_updates — macOS entries of RecommendedUpdates (what
+#     softwareupdated has offered), major_upgrade vs the running version.
+# AUDIT_MACOS_ROOT prefixes every path for the test suite.
+collect_macos_update() {
+  if [[ "$OS" != "Darwin" ]]; then echo '{}'; return; fi
+  python3 - <<'PYEOF' 2>/dev/null || echo '{"error": "collector-failed"}'
+import datetime, json, os, plistlib, re, subprocess
+
+ROOT = os.environ.get('AUDIT_MACOS_ROOT', '')
+VERSION = re.compile(r'^\d+(\.\d+){0,2}( \([a-z]\))?$')
+
+def run(args, timeout=5):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except Exception:
+        return ''
+
+def load(path):
+    # open() first; a TCC-denied preferences file (EPERM — the Time Machine
+    # domain is one on macOS 26) is retried through cfprefsd.
+    try:
+        with open(ROOT + path, 'rb') as f:
+            return plistlib.load(f)
+    except PermissionError:
+        if not path.endswith('.plist'):
+            return None
+        try:
+            r = subprocess.run(['defaults', 'export', ROOT + path[:-6], '-'], capture_output=True, timeout=5)
+            return plistlib.loads(r.stdout) if r.returncode == 0 else None
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+def major(v):
+    p = v.split(' ')[0].split('.')
+    return '.'.join(p[:2]) if p[0] == '10' and len(p) > 1 else p[0]
+
+def iso(dt):
+    if not isinstance(dt, datetime.datetime):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+current = run(['sw_vers', '-productVersion'])
+out = {'current_version': current if VERSION.match(current) else None,
+       'current_build': run(['sw_vers', '-buildVersion']) or None}
+
+hist = load('/Library/Receipts/InstallHistory.plist')
+out['installs_readable'] = isinstance(hist, list)
+installs = []
+for e in hist if isinstance(hist, list) else []:
+    if not isinstance(e, dict) or 'contentType' in e:
+        continue
+    name, ver, date = e.get('displayName'), e.get('displayVersion'), iso(e.get('date'))
+    if (isinstance(name, str) and name.startswith(('macOS', 'OS X', 'Mac OS X'))
+            and isinstance(ver, str) and VERSION.match(ver) and date):
+        installs.append({'version': ver, 'date': date})
+installs.sort(key=lambda i: i['date'])
+last_major = None
+for prev, cur in zip(installs, installs[1:]):
+    if major(cur['version']) != major(prev['version']):
+        last_major = {'version': cur['version'], 'from_version': prev['version'], 'date': cur['date']}
+out['installs'] = list(reversed(installs))[:10]
+out['previous_version'] = installs[-2]['version'] if len(installs) >= 2 else None
+out['last_major_install'] = last_major
+
+KEYS = {'AutomaticCheckEnabled': 'automatic_check', 'AutomaticDownload': 'automatic_download',
+        'AutomaticallyInstallMacOSUpdates': 'automatically_install_macos_updates',
+        'CriticalUpdateInstall': 'critical_update_install', 'ConfigDataInstall': 'config_data_install'}
+su = load('/Library/Preferences/com.apple.SoftwareUpdate.plist')
+su = su if isinstance(su, dict) else None
+policy = {'readable': su is not None, 'managed_keys': []}
+def setting(local, managed, key, field):
+    for src, is_managed in ((managed, True), (local, False)):
+        v = src.get(key) if isinstance(src, dict) else None
+        if isinstance(v, (bool, int)):
+            if is_managed:
+                policy['managed_keys'].append(field)
+            return bool(v)
+    return None
+msu = load('/Library/Managed Preferences/com.apple.SoftwareUpdate.plist')
+for key, field in KEYS.items():
+    policy[field] = setting(su, msu, key, field)
+policy['app_store_auto_update'] = setting(load('/Library/Preferences/com.apple.commerce.plist'),
+                                          load('/Library/Managed Preferences/com.apple.commerce.plist'),
+                                          'AutoUpdate', 'app_store_auto_update')
+out['policy'] = policy
+
+pending = []
+for r in (su or {}).get('RecommendedUpdates') or []:
+    if not isinstance(r, dict):
+        continue
+    name, ver = r.get('Display Name'), r.get('Display Version')
+    if isinstance(name, str) and name.startswith('macOS') and isinstance(ver, str) and VERSION.match(ver):
+        p = {'version': ver,
+             'major_upgrade': (major(ver) != major(current)) if out['current_version'] else None}
+        if p not in pending:
+            pending.append(p)
+out['pending_macos_updates'] = pending
+out['last_check_at'] = iso((su or {}).get('LastFullSuccessfulDate'))
+print(json.dumps(out))
+PYEOF
+}
+
 collect_audit_scope() {
   if [[ "$AUDIT_INCLUDE_PROTECTED" == "1" || "$OS" != "Darwin" ]]; then
     echo '{"mode":"deep","protected_locations":true,"permission_note":"May request macOS access to personal/cloud folders, browser profiles, Location, and System Events."}'
@@ -3758,6 +4080,8 @@ $(collect_data_inventory)
 $(collect_secret_inventory)
 ---SECTION: fleet_update
 $(collect_fleet_update)
+---SECTION: macos_update
+$(collect_macos_update)
 AUDIT_DATA
 )
 
