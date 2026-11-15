@@ -83,10 +83,10 @@
 #     `rebuild.sh` (it shows the Dock drift and asks).
 # Activation also runs home-manager via `launchctl asuser`. If the primary user
 # has no GUI login session, home-manager's LaunchAgent bootstrap into gui/<uid>
-# fails and aborts activation (failed/activation-failed) — except on hosts with
-# the household home profile, whose guard installs the agents for her next
-# login instead (configurations/macos/home-household.nix); the run is then
-# `applied` and the log carries a note.
+# fails and aborts activation (failed/activation-failed) — except on household
+# hosts, whose primary user's home-manager declares no LaunchAgent at all (the
+# daily audit is a system LaunchDaemon there, modules/darwin/fleet-audit.nix),
+# so their activation does not depend on her being logged in.
 #
 # Every external step is bounded (fetch 10 min, build 3 h, activation 1 h) and
 # runs with stdin closed, so a prompt can only ever fail, never block.

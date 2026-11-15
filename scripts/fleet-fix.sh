@@ -524,6 +524,9 @@ fix_age_key() {
 # ── audit ────────────────────────────────────────────────────────────────────
 schedule_state() { # prints a description and returns 0 when a schedule exists
   if [ "$OS" = "Darwin" ]; then
+    # Household Macs: a system LaunchDaemon running as the primary user
+    # (modules/darwin/fleet-audit.nix); `print system/…` needs no root.
+    launchctl print "system/$RUNNER_LABEL" >/dev/null 2>&1 && { echo "LaunchDaemon $RUNNER_LABEL loaded (system domain)"; return 0; }
     launchctl print "gui/$(id -u)/$RUNNER_LABEL" >/dev/null 2>&1 && { echo "LaunchAgent $RUNNER_LABEL loaded"; return 0; }
   else
     systemctl --user is-enabled fleet-audit.timer >/dev/null 2>&1 && { echo "systemd user timer fleet-audit.timer (nix-declared)"; return 0; }

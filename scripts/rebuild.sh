@@ -1881,11 +1881,6 @@ run_darwin_rebuild() {
 
   if [[ $rc -eq 0 ]]; then
     ok "System updated"
-    # Household guard (configurations/macos/home-household.nix): the primary
-    # user had no GUI session, so her LaunchAgents were installed, not loaded.
-    if grep -q 'LaunchAgents installed; they load at the next login' "$log"; then
-      info "The primary user is not logged in: her LaunchAgents (daily audit) load at her next login."
-    fi
     rm -f "$log"
     return 0
   fi

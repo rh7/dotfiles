@@ -3,12 +3,16 @@
 # ONE stable program for the fleet's scheduled jobs to start, so ONE optional
 # Full Disk Access (FDA) grant per Mac covers all of them:
 #
-#   /usr/local/libexec/rh7-fleet-launcher audit    com.rh7.collector-runner
-#                                                  (modules/home/profiles/fleet-audit.nix)
+#   /usr/local/libexec/rh7-fleet-launcher audit    com.rh7.collector-runner — gui
+#                                                  LaunchAgent (modules/home/profiles/
+#                                                  fleet-audit.nix) or, on household
+#                                                  Macs, system LaunchDaemon running
+#                                                  as the primary user (modules/
+#                                                  darwin/fleet-audit.nix)
 #   /usr/local/libexec/rh7-fleet-launcher restic   org.rh7.restic-backup
 #                                                  (modules/darwin/restic-backup.nix)
 #
-# Imported by flake.nix's mkMac for EVERY Mac (the audit agent is on every Mac).
+# Imported by flake.nix's mkMac for EVERY Mac (the audit job is on every Mac).
 #
 # WHY A LAUNCHER: macOS privacy protection (TCC) judges the program launchd
 # starts. Without FDA a launchd job cannot read ~/Desktop, ~/Documents,
@@ -32,7 +36,8 @@
 #   1. System Settings → Privacy & Security → Full Disk Access → "+" → ⇧⌘G →
 #      /usr/local/libexec/rh7-fleet-launcher → Open, switch it on;
 #   2. `launchctl kickstart -k gui/$(id -u)/com.rh7.collector-runner` — the next
-#      audit reports data_inventory.protected_access "granted";
+#      audit reports data_inventory.protected_access "granted" (household Macs:
+#      `sudo launchctl kickstart -k system/com.rh7.collector-runner`);
 #      restic: `launchctl kickstart -k gui/$(id -u)/org.rh7.restic-backup`.
 # Grant THAT file — not Terminal, not a wrapper script, not restic/bash. FDA lets
 # it (and the job it starts) read everything the user can. Residual trust: the

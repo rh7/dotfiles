@@ -76,6 +76,7 @@ run_install() {
   : > "$home/launchctl.log"
   OUT="$(env "$@" HOME="$home" LAUNCHCTL_LOG="$home/launchctl.log" \
     COLLECTOR_CACHE_DIR="$home/cache" PATH="$TMP/bin:$PATH" \
+    COLLECTOR_SYSTEM_DAEMON_PLIST="$home/no-system-daemon.plist" \
     bash "$SCRIPT" --install 2>&1)"
 }
 

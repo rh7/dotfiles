@@ -401,10 +401,14 @@ curl -s -X PATCH -H 'content-type: application/json' \
   -d '{"role":"workstation"}' $CS/api/devices/<host>
 ```
 
-**Daily audit.** Every `mkMac` host declares it via
-`modules/home/profiles/fleet-audit.nix` (LaunchAgent `com.rh7.collector-runner`,
-daily 08:17, started through `/usr/local/libexec/rh7-fleet-launcher audit`). A
-host without that agent: `./scripts/collector-runner.sh --install` once
+**Daily audit.** Every `mkMac` host declares it, as `com.rh7.collector-runner`
+daily at 08:17, started through `/usr/local/libexec/rh7-fleet-launcher audit`:
+a home-manager LaunchAgent in the primary user's account
+(`modules/home/profiles/fleet-audit.nix`) — or, on household Macs, a system
+LaunchDaemon that runs it as the primary user whether or not anybody is logged
+in (`services.rh7.fleetAudit.scheduler = "system-daemon"`,
+`modules/darwin/fleet-audit.nix`). A
+host without either: `./scripts/collector-runner.sh --install` once
 (idempotent; it also removes the legacy unverified short-link `# fleet-audit`
 cron line — no other cron line — and retires a legacy `com.rh7.audit`
 LaunchAgent). A legacy `auto-sync.sh` heartbeat cron goes with `./scripts/device
@@ -441,9 +445,12 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   home-manager file in the primary user's home. Its header lists exactly what
   first activation changes system-wide, for the primary user and for everybody
   else.
-- **`username` = the daily user** (as on `Kassie-M5-Air13`). The daily audit
-  is a `gui`-domain LaunchAgent, so it runs only while she is logged in — and
-  the daily user is. Activation itself does **not** need her logged in (see
+- **`username` = the daily user** (as on `Kassie-M5-Air13`). The audit reports
+  her account. She is not logged in every day, so the role runs the daily
+  audit as a **system LaunchDaemon** `com.rh7.collector-runner` (launchd
+  `UserName` = her, 08:17, on wake if the Mac slept through it) instead of a
+  `gui`-domain LaunchAgent, which ran only during her login session. Activation
+  does **not** need her logged in either (see
   [What Kassie experiences](#what-kassie-experiences)).
 - **`homebrew.user` = an admin account** when the daily user is a standard
   one. nix-darwin runs `brew bundle` as `homebrew.user` (default:
@@ -454,15 +461,17 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   nightly run can only fail. `kassie-mbp-m1` therefore sets
   `homebrew.user = "rouven"`: Homebrew, and the app bundles of the casks it
   installed, belong to the maintainer; Kassie stays `primaryUser`
-  (home-manager, audit agent). Hosts that leave it unset are unchanged.
+  (the daily audit runs as her). Hosts that leave it unset are unchanged.
 - **`homeProfile = "household"`** (mkMac switch,
-  `configurations/macos/home-household.nix`). Her home-manager is the audit
-  agent (`com.rh7.collector-runner`) and nothing else: no zsh/starship/git/
+  `configurations/macos/home-household.nix`). Her home-manager installs
+  nothing: no LaunchAgent (asserted — it could not load while she is logged
+  out), no zsh/starship/git/
   editor config, no packages, no `Update.command` — her `~/.zshrc`,
   `~/.zshenv`, `~/.gitconfig` stay as they are (nothing moves to
   `*.hm-backup`). It writes only the empty `~/.cache/.keep` and
-  `~/.local/state/.keep`. The default `"full"` profile is the maintainer's
-  shell takeover — never use it for someone else's account.
+  `~/.local/state/.keep`, and removes the `com.rh7.collector-runner`
+  LaunchAgent earlier generations installed. The default `"full"` profile is
+  the maintainer's shell takeover — never use it for someone else's account.
 - **System-wide shell files.** nix-darwin still owns `/etc/zshrc`,
   `/etc/zshenv`, `/etc/zprofile`, `/etc/bashrc` (originals kept as
   `*.before-nix-darwin`) so nix is on PATH. The role keeps macOS's prompt
@@ -601,14 +610,16 @@ replacement. Say No and it stops with the exact manual command instead;
    /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate   # enabled
    /usr/libexec/ApplicationFirewall/socketfilterfw --getallowsigned   # built-in + downloaded signed: ENABLED
    /usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode   # on
-   sudo ls -l ~kassie/Library/LaunchAgents/com.rh7.collector-runner.plist
+   sudo launchctl print system/com.rh7.collector-runner | grep -E 'state|username|path'   # the audit daemon (as kassie)
+   sudo ls ~kassie/Library/LaunchAgents/ | grep collector-runner   # nothing: the old agent is gone
    sudo rh7-fleet-update --dry-run                    # see the channel note below
    ```
 
-   After Kassie's next login:
-   `sudo launchctl print gui/$(id -u kassie)/com.rh7.collector-runner | head -3`
-   shows the audit agent loaded. Check from both accounts that Dock, Finder,
-   shell and apps are as they were.
+   The first audit through the daemon: either wait for 08:17, or
+   `sudo launchctl kickstart -k system/com.rh7.collector-runner`. Then
+   `sudo tail -3 ~kassie/.cache/fleet-collector/runner.log` shows the gated
+   run, and the dashboard shows a fresh audit for `kassie-mbp-m1`. Check
+   from both accounts that Dock, Finder, shell and apps are as they were.
 
 Later rebuilds are the nightly fleet-update's job (`fleet/stable`). Because
 you just built from `main`, which is usually ahead of `fleet/stable`, the
@@ -622,12 +633,13 @@ channel reaches that commit; then it applies normally.
   the Homebrew copy of the same app (possibly a newer version); settings and
   data in her `~/Library` are kept. If she stayed logged in with an app open,
   that app was replaced underneath her — quit and reopen it.
-- **First login afterwards:** launchd loads the audit agent
-  (`com.rh7.collector-runner`) silently; it does not run at login, only daily
-  at 08:17. Activation while she was logged out could not load it (her `gui`
-  domain did not exist), so home-manager's household guard installed the
-  plist and skipped the load instead of failing — `rebuild.sh` says so, and a
-  nightly run records `applied` with a note in its log.
+- **Her daily audit:** a system job runs it as her every day at 08:17
+  (`com.rh7.collector-runner` in `/Library/LaunchDaemons`), whether she is
+  logged in or not; nothing appears on screen, nothing asks for permission.
+  Her `~/Library/LaunchAgents/com.rh7.collector-runner.plist` from earlier
+  generations is removed by the first activation that brings the daemon —
+  also while she is logged out (`rebuild.sh` and the nightly fleet-update
+  both just report success).
 - **No prompts from the adoption itself:** no password or Touch ID (Homebrew
   runs as the admin `homebrew.user`, inside your authentication; bundles it
   replaces or installed are handed to that account first, so Homebrew never
@@ -658,7 +670,7 @@ curl -fsSL https://raw.githubusercontent.com/rh7/dotfiles/main/scripts/fleet-fix
 | `doctor` | this host's open action items → fix id, then each fix id's plan | nothing (read-only) | — |
 | `backup` | at-risk repos (re-checked live) with the git commands to push every branch to `backup/<host>-<date>/*` — only on a remote `gh` confirms PRIVATE; public/unverifiable remotes get a `git bundle` to keep in iCloud/Dropbox instead; secrets to escrow; other unprotected paths; Time Machine + iCloud Desktop & Documents; restic status (configured? last snapshot age, failure reason, setup command — see [Restic backups](#restic-backups)) | nothing — report-only (never pushes, never runs `op`) | 1Password (escrow by hand) |
 | `age-key` | whether `~/.config/sops/age/keys.txt` exists | runs `setup-secrets.sh` (generate + register); prints `sops-add-host.sh <host>` for an existing recipient | a clone, recipient host |
-| `audit` | collector-runner schedule + last audit age | `collector-runner.sh --install` (reloads the nix-declared agent where one exists) + one gated audit | — |
+| `audit` | collector-runner schedule (household: the system LaunchDaemon) + last audit age | `collector-runner.sh --install` (reloads the nix-declared agent where one exists; never adds an agent beside a household Mac's system daemon) + one gated audit | — |
 | `firewall` | macOS application firewall state; `rouvens-mac-studio` is exempt (#93) unless `--force` | `sudo socketfilterfw --setglobalstate on`, re-verify; if the CLI no-ops (macOS 15+), opens System Settings and re-verifies | sudo, GUI |
 | `filevault` | `fdesetup status` | `sudo fdesetup enable` (interactive) + reminder to store the recovery key in 1Password | sudo |
 | `disk-encryption` | Linux: LUKS present? (macOS: same as `filevault`) | nothing — Linux can't encrypt in place; accepted-risk path is a dashboard Ack | — |
@@ -810,7 +822,9 @@ through (`modules/darwin/fleet-launcher.nix`):
 1. System Settings → Privacy & Security → Full Disk Access → `+` → ⇧⌘G →
    `/usr/local/libexec/rh7-fleet-launcher` → Open, switch it on.
 2. `launchctl kickstart -k gui/$(id -u)/com.rh7.collector-runner` — the audit
-   then reports `protected_access: "granted"` (restic:
+   then reports `protected_access: "granted"` (household Macs, where the audit
+   is a system LaunchDaemon:
+   `sudo launchctl kickstart -k system/com.rh7.collector-runner`; restic:
    `launchctl kickstart -k gui/$(id -u)/org.rh7.restic-backup`).
 
 Grant that file — not Terminal, not a wrapper script, not restic/bash: it is a

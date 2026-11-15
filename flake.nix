@@ -64,6 +64,10 @@
           # The ONE stable launcher the scheduled jobs (audit, restic) start,
           # so one optional Full Disk Access grant per Mac covers both.
           ./modules/darwin/fleet-launcher.nix
+          # Which launchd domain runs the daily audit: home-manager's gui
+          # LaunchAgent (default) or, on household Macs, a system LaunchDaemon
+          # running it as the primary user (services.rh7.fleetAudit.scheduler).
+          ./modules/darwin/fleet-audit.nix
           {
             # The attr to build is baked in here, never derived at runtime.
             # Every darwinConfigurations attr below equals its hostname.
@@ -94,7 +98,9 @@
                 ];
                 household = [ ./configurations/macos/home-household.nix ];
               }.${homeProfile} ++ [
-                # Declarative daily fleet audit (com.rh7.collector-runner).
+                # Declarative daily fleet audit (com.rh7.collector-runner):
+                # the gui LaunchAgent, or — with services.rh7.fleetAudit.scheduler
+                # = "system-daemon" — nothing but the retirement of that agent.
                 # Darwin-only on purpose: mkNixOS/mkLinux hosts don't get it
                 # (systemd --user timers need linger — see the module header).
                 ./modules/home/profiles/fleet-audit.nix
@@ -233,8 +239,9 @@
 
       # ── Shared household MacBook Pro M1 (adopted in place, NOT wiped) ──
       # primaryUser is the day-to-day user (kassie), like Kassie-M5-Air13: the
-      # nightly fleet-update's home-manager step and the daily audit agent need
-      # the primary user's LOGIN SESSION (launchctl gui domain). Homebrew is
+      # audit reports her account. She is not logged in every day, so the role
+      # runs the daily audit as a SYSTEM LaunchDaemon (as kassie, no login
+      # needed) instead of her gui-domain agent. Homebrew is
       # NOT hers: she is a standard user who cannot write /Applications, so the
       # host file sets homebrew.user = "rouven" (the admin maintainer). Home
       # profile "household": her own ~/.zshrc, git config etc. are never

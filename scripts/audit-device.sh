@@ -763,8 +763,11 @@ PY
 collect_mas() {
   if ! command -v mas &>/dev/null; then echo '{"installed": false}'; return; fi
 
+  # Bounded: mas asks Spotlight/App Store services, and the household Mac's
+  # audit runs as a system LaunchDaemon with nobody logged in — no wedged
+  # query may hold the daily job (an unfinished job blocks the next day's).
   local apps
-  apps=$(mas list 2>/dev/null | python3 -c "
+  apps=$(run_timeout 30 mas list 2>/dev/null | python3 -c "
 import sys, json
 apps = []
 for line in sys.stdin:

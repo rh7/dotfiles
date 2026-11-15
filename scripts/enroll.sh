@@ -160,9 +160,13 @@ ok "Config service reachable: ${CONFIG_URL}"
 # `enroll` (no --force) migrates the host; `collector-runner.sh --install`
 # retires both. Functions so we can re-check AFTER the run (post-flight) and
 # catch a silently-failed install instead of reporting a false "enrolled".
+# On a household Mac the runner is a nix-darwin SYSTEM LaunchDaemon (runs as
+# the primary user, modules/darwin/fleet-audit.nix): `launchctl list` in an
+# account does not show it, but `launchctl print system/<label>` needs no root.
 runner_scheduled() {
   if [[ "$OS" == "Darwin" ]]; then
-    launchctl list 2>/dev/null | grep -qE '(^|[[:space:]])com\.rh7\.collector-runner$'
+    launchctl print system/com.rh7.collector-runner >/dev/null 2>&1 \
+      || launchctl list 2>/dev/null | grep -qE '(^|[[:space:]])com\.rh7\.collector-runner$'
   else
     crontab -l 2>/dev/null | grep -q '# fleet-collector-runner'
   fi

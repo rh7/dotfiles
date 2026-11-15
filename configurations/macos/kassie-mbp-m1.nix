@@ -27,8 +27,8 @@
   # from the nightly fleet-update alike. With homebrew.user = rouven, nix-darwin
   # runs `brew bundle` as rouven, rebuild.sh from his account runs brew
   # directly, and its one-time chown hands /opt/homebrew and the installed
-  # casks' app bundles to him. Kassie stays primaryUser (home-manager, daily
-  # audit agent); her `brew` says "managed by rouven; ask an admin".
+  # casks' app bundles to him. Kassie stays primaryUser (home-manager; the
+  # daily audit runs as her); her `brew` says "managed by rouven; ask an admin".
   homebrew.user = "rouven";
 
   homebrew.casks = [

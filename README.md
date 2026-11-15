@@ -218,6 +218,7 @@ modules/
     homebrew.nix                       # Homebrew scaffold (behavior config only)
     restic-backup.nix                  # opt-in daily restic backup -> Studio REST server (mkMac resticBackup = true)
     fleet-launcher.nix                 # /usr/local/libexec/rh7-fleet-launcher: ONE binary for the audit + restic jobs (optional Full Disk Access grant)
+    fleet-audit.nix                    # daily audit scheduler: home-manager LaunchAgent (default) or, household, a system LaunchDaemon run as the primary user
     profiles/                          # Composable app sets (Homebrew casks/brews)
       core.nix                         #   1password, chrome, arc, raycast, tailscale
       dev-apps.nix                     #   cursor, ghostty, zed, orbstack, wezterm
@@ -258,7 +259,7 @@ configurations/
     mac-mini-office.nix                # Mac Mini overrides
     mac-studio.nix                     # Mac Studio overrides
     kassie-mbp-m1.nix                  # shared M1 Pro: adopted casks only
-    home-household.nix                 # minimal home-manager (mkMac homeProfile = "household"): audit agent only, no dotfiles
+    home-household.nix                 # minimal home-manager (mkMac homeProfile = "household"): no LaunchAgent, no dotfiles
   nixos/
     home.nix                           # NixOS user config (imports dev + editor + docker + Search Light)
     vm.nix                             # UTM VM hardware
@@ -348,7 +349,9 @@ rh7-restic-backup status           # restic backup (resticBackup hosts): setup |
 ```
 
 Connectivity comes from the **daily audit**, not a heartbeat. Hosts that import
-`fleet-audit.nix` get it declaratively (LaunchAgent `com.rh7.collector-runner`,
+`fleet-audit.nix` get it declaratively (LaunchAgent `com.rh7.collector-runner`;
+on household Macs the same label as a system LaunchDaemon running as the daily
+user, so it audits whether or not she is logged in;
 the integrity-gated pull runner) — on `main` only the Studio; with
 `chore/326-315-flake-hygiene` every `mkMac` host. Everything else (other Macs
 until then, NixOS, standalone Home Manager) needs `collector-runner.sh

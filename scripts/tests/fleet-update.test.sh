@@ -186,10 +186,6 @@ if [[ -n "\${STUB_BREW_FAIL:-}" ]]; then
 fi
 echo "\\\`brew bundle\\\` complete! 3 Brewfile dependencies now installed."
 if [[ -n "\${STUB_ACTIVATE_FAIL:-}" ]]; then echo "postActivation: boom"; exit 1; fi
-if [[ -n "\${STUB_NO_GUI:-}" ]]; then
-  echo "Activating home-manager configuration for tester"
-  echo "rh7: no GUI login session for tester — LaunchAgents installed; they load at the next login"
-fi
 if [[ -n "\${STUB_RACE:-}" ]]; then
   # A manual rebuild switched profile + current-system to ITS generation
   # while this activation ran; both links agree, neither is ours.
@@ -461,12 +457,6 @@ check "brew fails: new nix generation still recorded" "$(field generation)" "2"
 fresh; refs "$C2" "$C2"
 STUB_ACTIVATE_FAIL=1 run_fu
 expect "activation fails after brew" 1 failed activation-failed
-
-fresh; refs "$C2" "$C2"
-STUB_NO_GUI=1 run_fu
-expect "primary user logged out (agents installed, load at next login)" 0 applied null
-grep -q 'note: tester had no GUI login session' <<<"$OUT" && good "logged out: success logged with a note" \
-  || bad "logged out: success logged with a note" "$OUT"
 
 fresh; refs "$C2" "$C2"
 STUB_RACE=1 run_fu

@@ -178,6 +178,8 @@ echo "== verify: a lost upload counts as a failed check =="
 run verifylost S_MANAGED=1 S_AUDIT_LOST=1 -- --yes
 has "warns" "$OUT" "no new audit of test-mac reached"
 has "verify summary flags it" "$OUT" "1 check(s) need attention"
+has "household: the FDA step restarts the system audit daemon" "$OUT" "sudo launchctl kickstart -k system/com.rh7.collector-runner"
+hasnt "household: no gui-domain kickstart" "$OUT" "kickstart -k gui/"
 
 echo "== Homebrew missing =="
 run brewyes S_BREW=0 S_DOTFILES=absent -- --yes
