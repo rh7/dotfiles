@@ -78,6 +78,8 @@
     # /Applications is shared, so Kassie sees them too. No per-user config:
     # the household role links nothing into rouven's home.
     "ghostty"
+    "claude"           # Claude desktop app (self-updating)
+    "claude-code"      # Claude Code CLI → /opt/homebrew/bin/claude
   ];
 
   # ── Deliberately NOT declared (manual, by design) ──────────────────────────
