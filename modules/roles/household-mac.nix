@@ -15,6 +15,9 @@ let
   hmFiles = if hm == null then [ ]
     else map (f: f.target) (lib.filter (f: f.enable) (lib.attrValues hm.home.file));
   hmAllowedFiles = [ ".cache/.keep" ".local/state/.keep" ];
+  # LaunchAgents the primary user's home-manager declares (none, asserted).
+  hmAgents = if hm == null then [ ]
+    else lib.attrNames (lib.filterAttrs (_: a: a.enable) hm.launchd.agents);
   postActivation = config.system.activationScripts.postActivation.text;
   sshdDropIns = lib.filter (n: lib.hasPrefix "ssh/sshd_config.d/" n
     && config.environment.etc.${n}.enable) (lib.attrNames config.environment.etc);
@@ -63,16 +66,19 @@ in
   #   - NO desktop/dev/ai profiles and no role casks/MAS apps: the host file
   #     ADOPTS what is already installed (exact casks for apps already in
   #     /Applications) instead of adding anything new;
-  #   - a MINIMAL home-manager (mkMac homeProfile = "household"): the daily
-  #     audit agent, nothing else — the user's own dotfiles stay.
+  #   - a MINIMAL home-manager (mkMac homeProfile = "household"): nothing but
+  #     its own state — the user's own dotfiles stay.
   #
   # nix-darwin's system.primaryUser (mkMac `username`) is the person who uses
-  # the Mac DAILY: the daily audit (com.rh7.collector-runner) is a gui-domain
-  # LaunchAgent that runs only while that account is logged in, which the
-  # daily user is. Activation does NOT need her logged in: when she has no GUI
-  # session (the owner adopting the Mac from his account, the nightly
-  # fleet-update while she is logged out) home-household.nix's guard installs
-  # the agent and launchd loads it at her next login. Other accounts (e.g. the
+  # the Mac DAILY, and the audit reports her account. The daily audit
+  # (com.rh7.collector-runner) is a SYSTEM LaunchDaemon that runs as her
+  # (services.rh7.fleetAudit.scheduler = "system-daemon", modules/darwin/
+  # fleet-audit.nix) — not her gui-domain LaunchAgent, which ran only while
+  # she was logged in and left days without an audit. Activation does not
+  # need her logged in either: her home-manager declares no LaunchAgent
+  # (asserted below), so there is nothing to load into a gui domain that may
+  # not exist (the owner adopting the Mac from his account, the nightly
+  # fleet-update while she is logged out). Other accounts (e.g. the
   # maintainer's) get nothing per-user from nix.
   #
   # homebrew.user — who owns and runs Homebrew — is separate from her: it
@@ -108,6 +114,11 @@ in
   #   - root LaunchDaemon org.rh7.fleet-update (nightly unattended switch from
   #     the host's channel), /usr/local/libexec/rh7-fleet-launcher, and the
   #     nix system profile in /run/current-system;
+  #   - LaunchDaemon com.rh7.collector-runner (/Library/LaunchDaemons): the
+  #     daily audit, 08:17 (on wake if the Mac slept through it), run AS the
+  #     primary user through the fleet launcher whether or not anybody is
+  #     logged in. Reads her home like the old agent did, uploads to the
+  #     config service; no window, no prompt (modules/darwin/fleet-audit.nix);
   #   - Homebrew `brew bundle` (run as homebrew.user) installs the host's
   #     declared casks into /Applications — so that account must be able to
   #     write /Applications (an admin), and /opt/homebrew plus the app
@@ -131,11 +142,13 @@ in
   #     as she set them (asserted below — nothing is written);
   #   - home-manager writes no dotfile: ~/.zshrc, ~/.zshenv, ~/.zprofile,
   #     git/editor config are not linked, moved or rewritten (asserted below).
-  #     It adds ~/Library/LaunchAgents/com.rh7.collector-runner.plist (daily
-  #     audit 08:17), retires a legacy com.rh7.audit agent if present, creates
-  #     the empty ~/.cache/.keep and ~/.local/state/.keep, and its own state
-  #     under ~/.local/state/{home-manager,nix} and
-  #     /etc/profiles/per-user/<user> (no tools on PATH);
+  #     It adds NO LaunchAgent: it removes ~/Library/LaunchAgents/
+  #     com.rh7.collector-runner.plist (the audit agent of earlier
+  #     generations; the system daemon above replaces it) and retires a
+  #     legacy com.rh7.audit agent if present, creates the empty
+  #     ~/.cache/.keep and ~/.local/state/.keep, and its own state under
+  #     ~/.local/state/{home-manager,nix} and /etc/profiles/per-user/<user>
+  #     (no tools on PATH);
   #   - declared casks' bundles are owned by homebrew.user, which is her only
   #     when the host leaves homebrew.user at its default.
   #
@@ -156,6 +169,9 @@ in
     allowSigned = true;      # socketfilterfw --setallowsigned on (built-in software)
     allowSignedApp = true;   # socketfilterfw --setallowsignedapp on (downloaded signed apps)
   };
+
+  # The daily audit runs whether or not the daily user is logged in.
+  services.rh7.fleetAudit.scheduler = "system-daemon";
 
   # Keep the stock macOS zsh look for every account: nix-darwin's /etc/zshrc
   # would otherwise switch the default prompt to `prompt suse` and drop the
@@ -245,6 +261,23 @@ in
       message = "household-mac: home-manager for ${primary} must not manage files "
         + "in her home (got: ${lib.concatStringsSep ", " hmFiles}) — use mkMac "
         + "homeProfile = \"household\" and no file-writing extraHomeModules.";
+    }
+    # No home-manager LaunchAgent for her: activation often runs while she has
+    # no GUI login session, and home-manager's bootstrap into gui/<uid> then
+    # fails (nix-community/home-manager#9629) and aborts the whole switch.
+    # A scheduled job on this role is a system LaunchDaemon instead (see
+    # modules/darwin/fleet-audit.nix: UserName runs it as her).
+    {
+      assertion = hmAgents == [ ];
+      message = "household-mac: home-manager for ${primary} must not declare "
+        + "LaunchAgents (got: ${lib.concatStringsSep ", " hmAgents}) — they cannot "
+        + "load while she is logged out; declare a launchd.daemons job with "
+        + "UserName instead.";
+    }
+    {
+      assertion = config.services.rh7.fleetAudit.scheduler == "system-daemon";
+      message = "household-mac: the daily audit must be the system daemon "
+        + "(services.rh7.fleetAudit.scheduler = \"system-daemon\").";
     }
     # The brew shim must reach both system-wide shell files (a disabled
     # programs.zsh/bash or an override would silently drop it, and other

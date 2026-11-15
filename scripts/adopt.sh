@@ -479,6 +479,12 @@ role_has_firewall() {
   case "$1" in workstation-mac|personal-mac|household-mac) return 0 ;; *) return 1 ;; esac
 }
 
+# Roles whose daily audit is a system LaunchDaemon running as the primary user
+# (services.rh7.fleetAudit.scheduler = "system-daemon", modules/darwin/fleet-audit.nix).
+role_audit_daemon() {
+  case "$1" in household-mac) return 0 ;; *) return 1 ;; esac
+}
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Phase a — preflight (read-only)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -796,7 +802,7 @@ phase_rebuild() {
 # ═════════════════════════════════════════════════════════════════════════════
 phase_verify() {
   section "f. Verify"
-  local fails=0 role_reg l home restic_cmd since before
+  local fails=0 role_reg l home restic_cmd since before audit_kick
 
   if [ -n "$P_AUTOUPDATE" ]; then
     if probe_fleet_update; then say_ok "org.rh7.fleet-update loaded (channel $P_AUTOUPDATE)"
@@ -827,7 +833,9 @@ phase_verify() {
       break
     fi
   done
-  manual "Optional Full Disk Access (lets the audit and restic see Desktop/Documents/Photos…): System Settings → Privacy & Security → Full Disk Access → + → ⇧⌘G → $FLEET_LAUNCHER → Open, switch on; then launchctl kickstart -k gui/\$(id -u $P_USER)/com.rh7.collector-runner"
+  if role_audit_daemon "$P_ROLE"; then audit_kick="sudo launchctl kickstart -k system/com.rh7.collector-runner"
+  else audit_kick="launchctl kickstart -k gui/\$(id -u $P_USER)/com.rh7.collector-runner"; fi
+  manual "Optional Full Disk Access (lets the audit and restic see Desktop/Documents/Photos…): System Settings → Privacy & Security → Full Disk Access → + → ⇧⌘G → $FLEET_LAUNCHER → Open, switch on; then $audit_kick"
   if ! $DRY_RUN && probe_launcher && ask n "Open the Full Disk Access settings pane now?"; then act_open_fda || true; fi
 
   if $P_RESTIC; then

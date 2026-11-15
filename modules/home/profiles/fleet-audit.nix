@@ -34,13 +34,27 @@
 # Without the grant the audit behaves as before and its data_inventory reports
 # the protected folders `not-inspected`; with it they are measured.
 #
+# SCHEDULER (macOS): nix-darwin's services.rh7.fleetAudit.scheduler
+# (modules/darwin/fleet-audit.nix), read here through osConfig.
+#   "user-agent" (default) — this module's gui LaunchAgent below. It runs only
+#     while the primary user has a GUI login session.
+#   "system-daemon" (household Macs, modules/roles/household-mac.nix) — the
+#     SAME label/program/time as a system LaunchDaemon running as the primary
+#     user, independent of who is logged in. This module then declares NO
+#     agent and retires one left in ~/Library/LaunchAgents (a previous
+#     generation's, or an imperative `collector-runner.sh --install` copy),
+#     so the Mac never audits twice.
+#
 # COVERAGE (honest bound): only takes effect on Macs that are actually
 # nix-darwin-managed AND rebuilt since this landed. Linux hosts, appliances/
 # phones/routers, not-yet-migrated Macs and offline/stale hosts are NOT covered
 # by this — they keep the imperative pull-runner (com.rh7.collector-runner via
 # `collector-runner.sh --install`) or the no-clone curl path. On a migrated Mac
 # the declarative agent supersedes the imperative one (same Label, see below).
-{ pkgs, lib, config, ... }:
+#
+# osConfig is the nix-darwin config home-manager's darwin module passes in;
+# it is read only on Darwin (mkMac), never on Linux.
+{ pkgs, lib, config, osConfig, ... }:
 
 let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
@@ -53,16 +67,13 @@ let
   runner = "${homeDir}/dotfiles/scripts/collector-runner.sh";
   launcher = "/usr/local/libexec/rh7-fleet-launcher";
 
-  # Fixed daily time. NOTE: a per-host minute stagger can't be derived in this
-  # layer — the hostname is NOT threaded into home-manager (mkMac/mkNixOS pass no
-  # extraSpecialArgs; only mkLinux passes `username`). To stagger, add
-  # `extraSpecialArgs = { inherit hostname; }` to the mk* helpers and hash it
-  # into `minute`. A synchronized ~dozen-host POST at 08:17 is harmless for the
-  # single-writer config service.
-  hour = 8;
-  minute = 17;
+  # Daily time, shared with the household system daemon.
+  inherit (import ../../fleet-audit-time.nix) hour minute;
   hh = lib.fixedWidthString 2 "0" (toString hour);
   mm = lib.fixedWidthString 2 "0" (toString minute);
+
+  label = "com.rh7.collector-runner";
+  scheduler = if isDarwin then osConfig.services.rh7.fleetAudit.scheduler else "user-agent";
 
   # Load-bearing PATH (Linux; on macOS the rh7-fleet-audit wrapper in
   # fleet-launcher.nix sets its own): collector-runner itself needs
@@ -78,19 +89,44 @@ in
   # direct-audit agent has a DIFFERENT label (com.rh7.audit) and the runner only
   # retires it in --install mode (not the default --run this agent uses), so it
   # is retired explicitly in home.activation below.
-  launchd.agents.fleet-audit = lib.mkIf isDarwin {
+  launchd.agents.fleet-audit = lib.mkIf (isDarwin && scheduler == "user-agent") {
     enable = true;
     config = {
-      Label = "com.rh7.collector-runner";
+      Label = label;
       # The launcher rebuilds the environment (fixed PATH, HOME from the
       # password database); rh7-fleet-audit sets the tool PATH itself.
       ProgramArguments = [ launcher "audit" ]; # runner defaults to --run
       StartCalendarInterval = { Hour = hour; Minute = minute; };
       RunAtLoad = false; # don't audit on every login/rebuild; setup.sh does the first audit
-      StandardOutPath = "/tmp/com.rh7.collector-runner.out.log";
-      StandardErrorPath = "/tmp/com.rh7.collector-runner.err.log";
+      StandardOutPath = "/tmp/${label}.out.log";
+      StandardErrorPath = "/tmp/${label}.err.log";
     };
   };
+
+  # The system daemon runs the audit: remove this account's agent of the same
+  # label BEFORE setupLaunchAgents. home-manager would drop a previous
+  # generation's agent itself, but it skips a plist whose content diverged (an
+  # imperative --install copy) and it bootouts through gui/<uid>; doing it here
+  # covers both, and leaves home-manager nothing to boot out. Without a GUI
+  # session nothing is loaded and the plist is simply removed. A LOADED agent
+  # that refuses to boot out fails activation with its plist kept, instead of
+  # running beside the daemon until logout. launchctl + ~/Library/LaunchAgents
+  # only, so TCC-safe.
+  home.activation.retireUserAuditAgent = lib.mkIf (isDarwin && scheduler == "system-daemon") (
+    lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "writeBoundary" ] ''
+      agent="$HOME/Library/LaunchAgents/${label}.plist"
+      if /bin/launchctl print "gui/$UID/${label}" >/dev/null 2>&1 \
+        && ! run /bin/launchctl bootout "gui/$UID/${label}" \
+        && /bin/launchctl print "gui/$UID/${label}" >/dev/null 2>&1; then
+        errorEcho "rh7: cannot boot out gui/$UID/${label} — the old audit agent would run beside the system daemon; kept $agent, re-run the rebuild"
+        exit 1
+      fi
+      if [[ -e "$agent" || -L "$agent" ]]; then
+        run rm -f "$agent"
+        noteEcho "rh7: removed the ${label} LaunchAgent — the daily audit is the system daemon /Library/LaunchDaemons/${label}.plist"
+      fi
+    ''
+  );
 
   # Retire the legacy imperative com.rh7.audit agent when a host comes under nix
   # management. It has a different Label so the new agent won't supersede it, and

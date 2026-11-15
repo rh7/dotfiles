@@ -49,6 +49,8 @@ if [ "$1" = "bootstrap" ]; then
   fi
   echo "loaded-content $(head -c 64 "$3")" >> "$LAUNCHCTL_LOG"
 fi
+# No system-domain job of this label on these hosts (household: enroll-runner-migration.test.sh).
+if [ "$1" = "print" ] && [ "${2#system/}" != "$2" ]; then exit 113; fi
 exit 0
 EOF
 # crontab: empty, read-only. --install consults it for the legacy short-link
@@ -76,6 +78,8 @@ run_install() {
   : > "$home/launchctl.log"
   OUT="$(env "$@" HOME="$home" LAUNCHCTL_LOG="$home/launchctl.log" \
     COLLECTOR_CACHE_DIR="$home/cache" PATH="$TMP/bin:$PATH" \
+    COLLECTOR_SYSTEM_DAEMON_PLIST="$home/no-system-daemon.plist" \
+    COLLECTOR_LAUNCHD_DAEMON_PLIST="$home/no-launchd-daemon.plist" \
     bash "$SCRIPT" --install 2>&1)"
 }
 

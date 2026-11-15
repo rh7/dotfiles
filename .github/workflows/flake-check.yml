@@ -52,3 +52,9 @@ jobs:
         # about the brew user's Homebrew dirs); no SSH host keys or sshd
         # drop-ins on household hosts; every other host unchanged.
         run: bash scripts/ci/check-household-compinit-sshd.sh
+
+      - name: Fleet audit scheduler (eval-level)
+        # Household hosts audit through a system LaunchDaemon running as the
+        # primary user (no home-manager LaunchAgent); every other host keeps
+        # home-manager's gui LaunchAgent, unchanged.
+        run: bash scripts/ci/check-fleet-audit-scheduler.sh

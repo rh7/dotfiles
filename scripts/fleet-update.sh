@@ -704,13 +704,6 @@ activate_system() {
     rm -f "$act_log"
     return 1
   fi
-  # The primary user was logged out: home-manager's household guard
-  # (configurations/macos/home-household.nix) installed her LaunchAgents
-  # without loading them. A success — they load at her next GUI login — so
-  # the run stays `applied`; the note is for whoever reads the log.
-  if grep -q 'LaunchAgents installed; they load at the next login' "$act_log"; then
-    log "note: ${PRIMARY_USER:-the primary user} had no GUI login session — LaunchAgents installed, they load at the next login (applied)"
-  fi
   rm -f "$act_log"
   if ! system_is_out "$out"; then
     log "activation exited 0 but the profile / $CURRENT_SYSTEM are not $out"

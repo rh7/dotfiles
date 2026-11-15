@@ -69,7 +69,8 @@ case "${1:-}" in
   *)  exit 2 ;;
 esac
 EOF
-# launchctl: loaded labels are files in $LC_STATE; every call is logged.
+# launchctl: loaded labels are files in $LC_STATE (system-domain jobs in
+# $LC_STATE/system); every call is logged.
 cat > "$BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$LC_STATE/calls.log"
@@ -77,7 +78,10 @@ case "$1" in
   bootstrap) touch "$LC_STATE/$(basename "$3" .plist)" ;;
   bootout)   [ -f "$LC_STATE/${2##*/}" ] || exit 3; rm -f "$LC_STATE/${2##*/}" ;;
   unload)    rm -f "$LC_STATE/$(basename "$2" .plist)" ;;
-  print)     [ -f "$LC_STATE/${2##*/}" ] || exit 113 ;;
+  print)     case "$2" in
+               system/*) [ -f "$LC_STATE/system/${2##*/}" ] || exit 113 ;;
+               *)        [ -f "$LC_STATE/${2##*/}" ] || exit 113 ;;
+             esac ;;
   list)      for f in "$LC_STATE"/com.*; do [ -f "$f" ] && printf -- '-\t0\t%s\n' "${f##*/}"; done ;;
 esac
 exit 0
@@ -133,7 +137,9 @@ sandbox_env() {
     "CRONTAB_FILE=$1/crontab" "LC_STATE=$1/lc" "CURL_LOG=$1/curl.log" \
     "RUNNER_SRC=$RUNNER_SRC" "FAKE_AUDIT=$FAKE_AUDIT" \
     "CONFIG_SERVICE_URL=http://stub-config:3456" \
-    "CONFIG_SERVICE_PIN_SYSTEM=$1/no-pin" "XDG_CONFIG_HOME=$1/.config"
+    "CONFIG_SERVICE_PIN_SYSTEM=$1/no-pin" "XDG_CONFIG_HOME=$1/.config" \
+    "COLLECTOR_SYSTEM_DAEMON_PLIST=$1/sysd/com.rh7.collector-runner.plist" \
+    "COLLECTOR_LAUNCHD_DAEMON_PLIST=$1/libd/com.rh7.collector-runner.plist"
 }
 # runner_install <home> <os>  — the runner from its on-disk path (clone-style)
 runner_install() {
@@ -233,6 +239,72 @@ check "declared agent: plist not overwritten" "plist: $(cat "$H/Library/LaunchAg
   test "$(cat "$H/Library/LaunchAgents/com.rh7.collector-runner.plist")" = declared-by-home-manager
 check "declared agent: legacy com.rh7.audit still retired" "ls: $(ls "$H/Library/LaunchAgents")" \
   test ! -f "$H/Library/LaunchAgents/com.rh7.audit.plist" -a ! -f "$H/lc/com.rh7.audit"
+
+echo ""
+echo "collector-runner --install (macOS, household): the system LaunchDaemon runs the audit"
+# household_mac <home> [loaded] — the active nix-darwin system declares the
+# runner as a LaunchDaemon; with "loaded" launchd has it in the system domain.
+household_mac() {
+  mkdir -p "$1/sysd" "$1/lc/system"
+  echo declared-daemon > "$1/sysd/com.rh7.collector-runner.plist"
+  [ "${2:-}" = loaded ] && touch "$1/lc/system/com.rh7.collector-runner"
+  return 0
+}
+H="$(new_home mac-household)"
+household_mac "$H" loaded
+echo imperative > "$H/Library/LaunchAgents/com.rh7.collector-runner.plist"; touch "$H/lc/com.rh7.collector-runner"
+echo legacy > "$H/Library/LaunchAgents/com.rh7.audit.plist"; touch "$H/lc/com.rh7.audit"
+runner_install "$H" Darwin
+check "install succeeds" "rc=$RC out: $OUT" test "$RC" -eq 0
+check "no LaunchAgent bootstrapped" "calls: $(cat "$H/lc/calls.log")" bash -c '! grep -q "^bootstrap " "$1"' _ "$H/lc/calls.log"
+check "this account's runner agent booted out + removed" "ls: $(ls "$H/Library/LaunchAgents")" \
+  test ! -f "$H/lc/com.rh7.collector-runner" -a ! -f "$H/Library/LaunchAgents/com.rh7.collector-runner.plist"
+check "legacy com.rh7.audit still retired" "ls: $(ls "$H/Library/LaunchAgents")" \
+  test ! -f "$H/lc/com.rh7.audit" -a ! -f "$H/Library/LaunchAgents/com.rh7.audit.plist"
+check "the system daemon is never touched" "calls: $(cat "$H/lc/calls.log")" \
+  bash -c '[ -f "$2" ] && ! grep -qE "^(bootout|bootstrap|unload|kickstart|enable|disable) system" "$1"' _ "$H/lc/calls.log" "$H/lc/system/com.rh7.collector-runner"
+check "says the system LaunchDaemon runs the audit" "out: $OUT" grep -q "nix-declared system LaunchDaemon" <<<"$OUT"
+
+H="$(new_home mac-household-unloaded)"
+household_mac "$H"
+runner_install "$H" Darwin
+check "daemon declared but not loaded: --install fails loud" "rc=$RC out: $OUT" test "$RC" -ne 0
+check "…and installs no LaunchAgent beside it" "calls: $(cat "$H/lc/calls.log")" \
+  test ! -f "$H/Library/LaunchAgents/com.rh7.collector-runner.plist" -a ! -f "$H/lc/com.rh7.collector-runner"
+check "…and names the fix" "out: $OUT" grep -q "sudo launchctl bootstrap system" <<<"$OUT"
+
+# Activation loaded the daemon, then failed before /run/current-system
+# switched: only the loaded job tells. Still no agent beside it.
+H="$(new_home mac-household-partial)"
+mkdir -p "$H/lc/system"; touch "$H/lc/system/com.rh7.collector-runner"
+runner_install "$H" Darwin
+check "daemon loaded, current-system not switched: install succeeds" "rc=$RC out: $OUT" test "$RC" -eq 0
+check "…without a LaunchAgent" "calls: $(cat "$H/lc/calls.log")" \
+  bash -c '! grep -q "^bootstrap " "$1" && [ ! -f "$2" ]' _ "$H/lc/calls.log" "$H/Library/LaunchAgents/com.rh7.collector-runner.plist"
+# The plist is in /Library/LaunchDaemons but neither declared by the active
+# system nor loaded: fail loud, no agent.
+H="$(new_home mac-household-installed-only)"
+mkdir -p "$H/libd"; echo daemon > "$H/libd/com.rh7.collector-runner.plist"
+runner_install "$H" Darwin
+check "daemon plist installed but not loaded: --install fails loud" "rc=$RC out: $OUT" test "$RC" -ne 0
+check "…and installs no LaunchAgent beside it" "calls: $(cat "$H/lc/calls.log")" \
+  test ! -f "$H/Library/LaunchAgents/com.rh7.collector-runner.plist" -a ! -f "$H/lc/com.rh7.collector-runner"
+
+echo ""
+echo "enroll (macOS, household): the system LaunchDaemon counts as the verified runner"
+H="$(new_home enroll-household)"
+household_mac "$H" loaded
+enroll "$H" Darwin
+check "exits 0" "rc=$RC out: $OUT" test "$RC" -eq 0
+check "reports the verified runner as installed" "out: $OUT" grep -q "verified collector-runner installed" <<<"$OUT"
+check "no LaunchAgent written or bootstrapped" "calls: $(cat "$H/lc/calls.log")" \
+  bash -c '! grep -q "^bootstrap " "$1" && [ ! -f "$2" ]' _ "$H/lc/calls.log" "$H/Library/LaunchAgents/com.rh7.collector-runner.plist"
+H="$(new_home enroll-household-force)"
+household_mac "$H" loaded
+enroll "$H" Darwin --force
+check "--force: exits 0" "rc=$RC out: $OUT" test "$RC" -eq 0
+check "--force: still no LaunchAgent beside the daemon" "calls: $(cat "$H/lc/calls.log")" \
+  bash -c '! grep -q "^bootstrap " "$1" && [ ! -f "$2" ]' _ "$H/lc/calls.log" "$H/Library/LaunchAgents/com.rh7.collector-runner.plist"
 
 echo ""
 echo "enroll (Linux, no clone): short-link host migrates on a PLAIN run"
