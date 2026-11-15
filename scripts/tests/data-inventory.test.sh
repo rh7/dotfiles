@@ -80,11 +80,18 @@ cat >"$BIN/tmutil" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
   destinationinfo) printf 'Name          : TM\nKind          : Local\n' ;;
-  latestbackup) echo "/Volumes/TM/Backups.backupdb/mac/$TM_AT" ;;
+  latestbackup) [ -n "${TM_NONE:-}" ] || echo "/Volumes/TM/Backups.backupdb/mac/$TM_AT" ;;
   isexcluded) shift; for p in "$@"; do case "$p" in */Proton) echo "[Included]    $p" ;; *) echo "[Excluded]    $p" ;; esac; done ;;
 esac
 STUB
-chmod +x "$BIN/du" "$BIN/tmutil"
+# defaults export DOMAIN - : prints DOMAIN.plist (rebased by AUDIT_MACOS_ROOT).
+cat >"$BIN/defaults" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = export ] || exit 1
+cat "$2.plist" 2>/dev/null
+STUB
+chmod +x "$BIN/du" "$BIN/tmutil" "$BIN/defaults"
+R="$T/root"; TMP_PLIST="$R/Library/Preferences/com.apple.TimeMachine.plist"; mkdir -p "$(dirname "$TMP_PLIST")"
 export DU_LOG
 PYDIR="$(dirname "$(command -v python3)")"
 
@@ -122,7 +129,7 @@ GIT_REPOS_JSON='{"repos":[{"path":"~/code/clean","at_risk":false,"dirty":0,"has_
 
 inv() { # inv [VAR=val …] — runs the collector into $OUT
   OUT="$(env -i PATH="$BIN:$PYDIR:/usr/bin:/bin" HOME="$H" DU_LOG="$DU_LOG" GIT_REPOS_JSON="$GIT_REPOS_JSON" TM_AT="${TM_AT:-$(at 120 local)}" \
-    AUDIT_DATA_PLATFORM=Darwin "$@" bash "$T/collector.sh")"
+    AUDIT_MACOS_ROOT="$R" AUDIT_DATA_PLATFORM=Darwin "$@" bash "$T/collector.sh")"
 }
 q() { python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$OUT" "$1"; }
 item() { q "next(((i['status'], i['category'], i['size_bytes'], sorted(i['coverage'])) for i in d['items'] if i['path'] == '$1'), 'absent')"; }
@@ -188,6 +195,26 @@ check "no cap recorded (older status file): module default 100M assumed" "$(item
 echo "== coverage: a folder created after the latest backup is in neither backup =="
 mkfix; restic_status "$(at -3600 utc)"; TM_AT="$(at -3600 local)" inv
 check "~/Proton (created now, backups 1h old): not covered" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
+
+echo "== coverage: tmutil answers nothing (no session) -> Time Machine prefs SnapshotDates =="
+# tm_prefs [ISO_UTC …] — a sanitized TimeMachine prefs plist; no argument =
+# a destination without SnapshotDates.
+tm_prefs() {
+  { printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict><key>Destinations</key><array><dict>'
+    printf '<key>DestinationID</key><string>AAAA</string>'
+    printf '<key>AttemptDates</key><array><date>%s</date></array>' "$(at 600 utc)"
+    if [ $# -gt 0 ]; then printf '<key>SnapshotDates</key><array>'; printf '<date>%s</date>' "$@"; printf '</array>'; fi
+    printf '</dict></array></dict>\n</plist>\n'; } >"$TMP_PLIST"
+}
+mkfix; restic_status "$(at 120 utc)" 100M
+tm_prefs "$(at -86400 utc)" "$(at 120 utc)"; inv TM_NONE=1
+check "~/Proton: Time Machine covered from the newest SnapshotDates" "$(item '~/Proton')" "('covered', 'user-data', 5120000, ['time-machine'])"
+tm_prefs "$(at -$((72 * 3600)) utc)"; inv TM_NONE=1
+check "prefs backup 72h old: not fresh" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
+tm_prefs; inv TM_NONE=1
+check "no SnapshotDates (only AttemptDates): never a guess" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
+rm -f "$TMP_PLIST"; inv TM_NONE=1
+check "prefs unreadable: not covered" "$(item '~/Proton')" "('unprotected', 'user-data', 5120000, [])"
 
 echo "== FDA granted: protected folders measured =="
 mkfix; grant_fda
