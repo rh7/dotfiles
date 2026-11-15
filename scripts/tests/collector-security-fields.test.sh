@@ -124,7 +124,7 @@ check "no file name from a home folder" "$(printf '%s' "$OUT" | grep -cE 'secret
 check "skip_paths_count counts every string entry" "$(q "d['exclusions']['skip_paths_count']")" 9
 check "skip_system_files / readable" "$(q "(d['exclusions']['skip_system_files'], d['exclusions']['readable'])")" "(True, True)"
 check "/Applications in SkipPaths -> excluded" "$(q "d['exclusions']['applications_excluded']")" True
-check "latest backup + age" "$(q "(d['latest_backup'].endswith('.backup'), isinstance(d['latest_backup_age_hours'], float))")" "(True, True)"
+check "latest backup + age, from tmutil" "$(q "(d['latest_backup'].endswith('.backup'), isinstance(d['latest_backup_age_hours'], float), d['latest_backup_source'])")" "(True, True, 'tmutil')"
 
 echo "== Time Machine: /Applications excluded or not per tmutil isexcluded =="
 plist '{"SkipPaths":["~/Downloads"]}' >"$TMP_PLIST"
@@ -141,10 +141,85 @@ cp "$TMP_PLIST" "$TMP_PLIST.cfprefs"; chmod 000 "$TMP_PLIST"; tm
 check "exclusions readable via defaults export" "$(q "(d['exclusions']['readable'], d['exclusions']['skip_paths'])")" "(True, ['~/Downloads'])"
 chmod 644 "$TMP_PLIST"; rm -f "$TMP_PLIST.cfprefs"
 
+# A sanitized macOS 26 com.apple.TimeMachine.plist as `defaults export` prints
+# it. SnapshotDates = completed backups; AttemptDates and
+# ReferenceLocalSnapshotDate are later on purpose (not completions); the
+# 2099 date stands in for clock skew.
+cat >"$TMP_PLIST" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AutoBackup</key>
+	<true/>
+	<key>Destinations</key>
+	<array>
+		<dict>
+			<key>AttemptDates</key>
+			<array>
+				<date>2026-11-15T16:00:00Z</date>
+			</array>
+			<key>BytesAvailable</key>
+			<integer>1000000000</integer>
+			<key>DestinationID</key>
+			<string>AAAA</string>
+			<key>DestinationUUIDs</key>
+			<array>
+				<string>00000000-0000-0000-0000-000000000000</string>
+			</array>
+			<key>LastKnownEncryptionState</key>
+			<string>Encrypted</string>
+			<key>RESULT</key>
+			<integer>0</integer>
+			<key>ReferenceLocalSnapshotDate</key>
+			<date>2026-11-15T15:30:00Z</date>
+			<key>SnapshotDates</key>
+			<array>
+				<date>2026-11-14T13:05:45Z</date>
+				<date>2026-11-15T14:05:45Z</date>
+			</array>
+		</dict>
+		<dict>
+			<key>DestinationID</key>
+			<string>BBBB</string>
+			<key>SnapshotDates</key>
+			<array>
+				<date>2026-11-10T08:00:00Z</date>
+				<date>2099-01-01T00:00:00Z</date>
+			</array>
+		</dict>
+	</array>
+	<key>PreferencesVersion</key>
+	<integer>6</integer>
+</dict>
+</plist>
+XML
+mv "$FX/latest" "$FX/latest.keep"
+
+echo "== Time Machine: tmutil answers nothing (no session) -> prefs SnapshotDates =="
+tm
+check "newest SnapshotDates across destinations, ISO UTC" "$(q "(d['latest_backup'], d['latest_backup_source'])")" "('2026-11-15T14:05:45Z', 'preferences')"
+check "age from the prefs date" "$(q "isinstance(d['latest_backup_age_hours'], float)")" True
+check "prefs read through cfprefsd when the file is TCC-denied" \
+  "$(cp "$TMP_PLIST" "$TMP_PLIST.cfprefs"; chmod 000 "$TMP_PLIST"; tm; chmod 644 "$TMP_PLIST"; rm -f "$TMP_PLIST.cfprefs"; q "d['latest_backup_source']")" preferences
+
+echo "== Time Machine: tmutil wins over the prefs =="
+mv "$FX/latest.keep" "$FX/latest"; tm
+check "tmutil path kept" "$(q "(d['latest_backup'].endswith('.backup'), d['latest_backup_source'])")" "(True, 'tmutil')"
+
+echo "== Time Machine: no tmutil answer, prefs without SnapshotDates -> null, never a guess =="
+plist '{"Destinations":[{"DestinationID":"AAAA","LastKnownEncryptionState":"Encrypted","AttemptDates":["@date:2026-11-15T16:00:00"],"ReferenceLocalSnapshotDate":"@date:2026-11-15T15:30:00"}]}' >"$TMP_PLIST"
+rm -f "$FX/latest"; tm
+check "all three null" "$(q "(d['latest_backup'], d['latest_backup_age_hours'], d['latest_backup_source'])")" "(None, None, None)"
+plist '{"Destinations":[{"DestinationID":"AAAA","SnapshotDates":["@date:2099-01-01T00:00:00","not-a-date"]}]}' >"$TMP_PLIST"; tm
+check "only future / non-date entries -> null" "$(q "(d['latest_backup'], d['latest_backup_source'])")" "(None, None)"
+
 echo "== Time Machine: no destinations =="
+# A leftover SnapshotDates entry does not count once no destination is configured.
+plist '{"Destinations":[{"DestinationID":"AAAA","SnapshotDates":["@date:2026-11-15T14:05:45"]}]}' >"$TMP_PLIST"
 plist '{}' >"$FX/dest.xml"; rm -f "$FX/latest"; tm
 check "not configured, nothing listed" "$(q "(d['configured'], d['destinations'], d['exclusions']['applications_excluded'])")" "(False, [], None)"
-check "no latest backup key" "$(q "'latest_backup' in d")" False
+check "latest backup fields null" "$(q "(d['latest_backup'], d['latest_backup_age_hours'], d['latest_backup_source'])")" "(None, None, None)"
 
 echo "== Time Machine: -X unusable -> text form; prefs unreadable -> unknown =="
 rm -f "$FX/dest.xml" "$TMP_PLIST"

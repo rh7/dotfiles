@@ -2121,10 +2121,14 @@ print(json.dumps(result) if result else '{}')
 #     ~/Library/<two more>; other users' homes alike; /Volumes/<volume>;
 #     system paths up to 3 components; anything cut ends in "/…"),
 #     applications_excluded (SkipPaths or `tmutil isexcluded`).
+#   latest_backup / latest_backup_age_hours / latest_backup_source: `tmutil
+#     latestbackup` (path, source "tmutil"), else the newest
+#     Destinations[].SnapshotDates in the prefs (ISO UTC, source
+#     "preferences"); all null when neither yields a date.
 # AUDIT_MACOS_ROOT prefixes the domain path for the test suite.
 collect_time_machine() {
   python3 - <<'PYEOF' 2>/dev/null || echo '{"error": "collector-failed"}'
-import json, os, plistlib, posixpath, re, subprocess, time, urllib.parse
+import calendar, datetime, json, os, plistlib, posixpath, re, subprocess, time, urllib.parse
 
 def run(args, timeout=8):
     try:
@@ -2217,6 +2221,20 @@ if rc == 0 and out.strip():
 if not isinstance(prefs, dict):
     prefs = None
 
+def prefs_latest_snapshot(prefs):
+    # Newest Destinations[].SnapshotDates entry (epoch). plistlib yields naive
+    # UTC datetimes; a date in the future (clock skew) is ignored.
+    best = None
+    for d in prefs.get('Destinations') if isinstance(prefs.get('Destinations'), list) else []:
+        dates = d.get('SnapshotDates') if isinstance(d, dict) else None
+        for s in dates if isinstance(dates, list) else []:
+            if not isinstance(s, datetime.datetime):
+                continue
+            ts = s.timestamp() if s.tzinfo else calendar.timegm(s.timetuple())
+            if ts <= time.time() and (best is None or ts > best):
+                best = ts
+    return best
+
 enc = {}
 if prefs and isinstance(prefs.get('Destinations'), list):
     for d in prefs['Destinations']:
@@ -2260,10 +2278,19 @@ elif tm['configured']:
     excl['applications_excluded'] = True if s.startswith('[Excluded]') else (False if s.startswith('[Included]') else None)
 tm['exclusions'] = excl
 
+# Latest backup: `tmutil latestbackup` first. It answers nothing for an
+# account without a login session (the household daemon runs the audit as a
+# standard user, dotfiles #133) while a backup to a network destination
+# exists, so fall back to the prefs' per-destination SnapshotDates — the
+# completed backups — newest across destinations. Neither -> both null.
+tm['latest_backup'] = None
+tm['latest_backup_age_hours'] = None
+tm['latest_backup_source'] = None
 rc, out = run(['tmutil', 'latestbackup'])
 latest = out.decode('utf-8', 'replace').strip() if rc == 0 else ''
 if latest:
     tm['latest_backup'] = latest
+    tm['latest_backup_source'] = 'tmutil'
     m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest)
     if m:
         try:
@@ -2271,6 +2298,12 @@ if latest:
             tm['latest_backup_age_hours'] = round((time.time() - ts) / 3600.0, 1)
         except Exception:
             pass
+elif tm['configured'] and prefs is not None:
+    ts = prefs_latest_snapshot(prefs)
+    if ts is not None:
+        tm['latest_backup'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts))
+        tm['latest_backup_age_hours'] = round((time.time() - ts) / 3600.0, 1)
+        tm['latest_backup_source'] = 'preferences'
 print(json.dumps(tm))
 PYEOF
 }
@@ -2590,7 +2623,7 @@ collect_data_inventory() {
   DATA_CLASS_RULES="$DATA_CLASS_RULES" WALLET_APPS="$WALLET_APPS" WALLET_EXTENSIONS="$WALLET_EXTENSIONS" \
   CHROMIUM_BROWSERS="$CHROMIUM_BROWSERS" GIT_REPOS_JSON="${GIT_REPOS_JSON:-}" \
     python3 - <<'PYEOF' 2>/dev/null || echo '{"schema": 1, "error": "collector-failed", "items": [], "largest_files": []}'
-import calendar, fnmatch, json, pwd, os, platform, plistlib, re, shutil, stat, subprocess, sys, time
+import calendar, datetime, fnmatch, json, pwd, os, platform, plistlib, re, shutil, stat, subprocess, sys, time
 
 T0 = time.monotonic()
 NOW = time.time()
@@ -2781,19 +2814,46 @@ try:
 except Exception:
     pass
 
+# Same sources as collect_time_machine: `tmutil latestbackup`, else (no
+# session, dotfiles #133) the newest Destinations[].SnapshotDates read via
+# `defaults export` (open() on the prefs is TCC-denied without FDA).
+# AUDIT_MACOS_ROOT prefixes the prefs path for the test suite.
+def prefs_latest_snapshot():
+    rc, out = run(['defaults', 'export', os.environ.get('AUDIT_MACOS_ROOT', '') + '/Library/Preferences/com.apple.TimeMachine', '-'])
+    try:
+        prefs = plistlib.loads(out.encode('utf-8')) if rc == 0 and out.strip() else None
+    except Exception:
+        prefs = None
+    dests = prefs.get('Destinations') if isinstance(prefs, dict) else None
+    best = None
+    for d in dests if isinstance(dests, list) else []:
+        dates = d.get('SnapshotDates') if isinstance(d, dict) else None
+        for s in dates if isinstance(dates, list) else []:
+            if not isinstance(s, datetime.datetime):
+                continue
+            ts = s.timestamp() if s.tzinfo else calendar.timegm(s.timetuple())
+            # A future date (clock skew) would let born_before() credit a
+            # folder created after the real backup: ignored.
+            if ts <= NOW and (best is None or ts > best):
+                best = ts
+    return best
+
 tm_fresh = False
 tm_snap = None   # time of the latest Time Machine backup (epoch)
 if DARWIN and shutil.which('tmutil'):
     rc, di = run(['tmutil', 'destinationinfo'])
     if rc == 0 and di.strip() and 'No destinations' not in di:
         rc, latest = run(['tmutil', 'latestbackup'])
-        m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', latest or '')
+        m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', (latest if rc == 0 else '') or '')
         if m:
             try:
                 tm_snap = time.mktime(time.strptime(m.group(1), '%Y-%m-%d-%H%M%S'))
-                tm_fresh = NOW - tm_snap < FRESH_HOURS * 3600
             except Exception:
                 pass
+        else:
+            tm_snap = prefs_latest_snapshot()
+        if tm_snap is not None:
+            tm_fresh = NOW - tm_snap < FRESH_HOURS * 3600
 
 try:
     git = json.loads(os.environ.get('GIT_REPOS_JSON') or '{}')
