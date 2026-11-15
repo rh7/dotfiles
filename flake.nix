@@ -224,6 +224,13 @@
         role = ./modules/roles/fleet-member-mac.nix;
         extraModules = [
           ./configurations/macos/mac-studio.nix
+          {
+            # Not auto-updated, so mkMac leaves configurationRevision unset.
+            # Record the dotfiles commit anyway: `darwin-version --json` then
+            # shows the applied commit, which mac-studio-services' read-only
+            # baseline check compares against its recorded pin (#920).
+            system.configurationRevision = self.rev or self.dirtyRev or null;
+          }
         ];
       };
 
