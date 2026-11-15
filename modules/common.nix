@@ -26,6 +26,7 @@ in
     # AI agents
     opencode     # opencode.ai terminal coding agent
     goose-cli    # Block's Goose agent CLI
+    herdr        # agent multiplexer for the terminal (herdr.dev)
 
     # Dev
     gnupg
