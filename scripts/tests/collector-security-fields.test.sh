@@ -237,6 +237,11 @@ if [ -r "$SU" ]; then echo "  skip (running as root: chmod 000 does not deny)"; 
 fi
 chmod 644 "$SU"; rm -f "$SU.cfprefs"
 
+echo "== macOS update: managed policy only (no local plist) is readable =="
+mv "$SU" "$SU.bak"; mu
+check "readable via managed prefs, managed value" "$(q "(d['policy']['readable'], d['policy']['automatically_install_macos_updates'], d['policy']['automatic_download'])")" "(True, True, None)"
+mv "$SU.bak" "$SU"
+
 echo "== macOS update: unreadable sources -> unknown, not guessed =="
 rm -rf "${R:?}/Library"; mu
 check "installs unreadable" "$(q "(d['installs_readable'], d['installs'], d['previous_version'], d['last_major_install'])")" "(False, [], None, None)"

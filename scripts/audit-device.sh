@@ -3929,7 +3929,10 @@ KEYS = {'AutomaticCheckEnabled': 'automatic_check', 'AutomaticDownload': 'automa
         'CriticalUpdateInstall': 'critical_update_install', 'ConfigDataInstall': 'config_data_install'}
 su = load('/Library/Preferences/com.apple.SoftwareUpdate.plist')
 su = su if isinstance(su, dict) else None
-policy = {'readable': su is not None, 'managed_keys': []}
+msu = load('/Library/Managed Preferences/com.apple.SoftwareUpdate.plist')
+msu = msu if isinstance(msu, dict) else None
+# readable: a Software Update policy source (local or managed) was read.
+policy = {'readable': su is not None or msu is not None, 'managed_keys': []}
 def setting(local, managed, key, field):
     for src, is_managed in ((managed, True), (local, False)):
         v = src.get(key) if isinstance(src, dict) else None
@@ -3938,7 +3941,6 @@ def setting(local, managed, key, field):
                 policy['managed_keys'].append(field)
             return bool(v)
     return None
-msu = load('/Library/Managed Preferences/com.apple.SoftwareUpdate.plist')
 for key, field in KEYS.items():
     policy[field] = setting(su, msu, key, field)
 policy['app_store_auto_update'] = setting(load('/Library/Preferences/com.apple.commerce.plist'),
