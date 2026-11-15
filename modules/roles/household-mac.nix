@@ -157,7 +157,7 @@ in
   #   the account IS homebrew.user — then `brew` is the plain command).
   imports = [
     ../darwin/firewall.nix          # application firewall (client Macs only, #93)
-    ../darwin/software-update.nix   # macOS update policy (client Macs only)
+    ../darwin/software-update.nix   # macOS update policy
   ];
 
   # Signed software never triggers the firewall's "Do you want the application

@@ -1,10 +1,14 @@
 { ... }:
 
 {
-  # ── macOS Software Update policy — CLIENT Macs only ─────────────────────────
-  # Imported by the workstation-mac, personal-mac and household-mac roles, NOT fleet-member-mac:
-  # the Mac Studio is the control plane (config service, inference stack), and an
-  # OS install there is a scheduled, attended event, never a background one.
+  # ── macOS Software Update policy — every Mac role ────────────────────────────
+  # Imported by the workstation-mac, personal-mac, household-mac and
+  # fleet-member-mac roles. The Mac Studio (fleet-member-mac: config service,
+  # inference stack) runs the SAME policy since rh7/mac-studio-services#913: an
+  # OS install never happens in the background (AutomaticallyInstallMacOSUpdates
+  # is off below), so on the Studio it stays an owner-scheduled, attended event —
+  # after the restart it waits at the FileVault unlock for a person. Security
+  # responses and system data files install automatically there as everywhere.
   #
   # Policy (owner decision):
   #   check for updates automatically ............. yes

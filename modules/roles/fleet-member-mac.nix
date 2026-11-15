@@ -28,6 +28,11 @@
   #   - Remote Login + Screen Sharing (remote-access.nix) and the maintainer's
   #     Dock/Finder/keyboard user defaults (workstation-defaults.nix) — both
   #     were in the global defaults.nix before it was split; imported below.
+  #   - the fleet's macOS Software Update policy (software-update.nix, since
+  #     rh7/mac-studio-services#913): check, download, security responses and
+  #     system data files automatic; OS installs are never automatic — the
+  #     owner schedules them, because the Studio then waits at the FileVault
+  #     unlock. It writes /Library/Preferences only; nothing that serves.
   #
   # What it deliberately DROPS, and who owns it instead:
   #   - Homebrew casks/brews/taps + activation-time upgrades → brew is
@@ -45,5 +50,6 @@
   imports = [
     ../darwin/remote-access.nix      # Remote Login + Screen Sharing (reached over SSH)
     ../darwin/workstation-defaults.nix  # opinionated Dock/Finder/keyboard user defaults
+    ../darwin/software-update.nix    # macOS update policy; OS installs owner-scheduled (#913)
   ];
 }

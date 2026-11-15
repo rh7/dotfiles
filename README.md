@@ -17,7 +17,7 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `rouven-air-m3` | MacBook Air M3 | workstation | `macbook.nix` |
 | `rouven-pro-m4` | MacBook Pro M4 | workstation | `macbook.nix` |
 | `rouvens-mac-mini` → `rouvens-mac-mini-m4` | Mac mini M4 (office) | workstation | `mac-mini-office.nix`, smart-home |
-| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS defaults + `workstation-defaults.nix` + `remote-access.nix`, Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix`, `fleet-audit.nix` |
+| `rouvens-mac-studio` | Mac Studio | fleet-member (nix owns toolchain, secrets, audit schedule, macOS defaults + `workstation-defaults.nix` + `remote-access.nix` + `software-update.nix` (OS installs owner-scheduled), Lima; Homebrew, apps and Dock layout are imperative) | `mac-studio.nix` (power: never sleep, restart after power failure, wake-on-LAN, Power Nap; FileVault-off warning), `fleet-audit.nix` |
 | `Kassie-M5-Air13` | MacBook Air M5 (user `kassie`) | personal | `macbook.nix`; `needsSecrets = false` |
 | `kassie-mbp-m1` | MacBook Pro M1 Pro, shared (primary user `kassie`, minimal home-manager; Homebrew owned by the admin `rouven` via `homebrew.user`; `rouven` otherwise untouched) | household (adopted in place: firewall + update policy, no user defaults, no Dock, no Remote Login/Screen Sharing management, adopts hand-installed casks) | `kassie-mbp-m1.nix`; `homeProfile = "household"`; `needsSecrets = false` |
 | `nixos-vm` | UTM VM (aarch64) | workstation-linux (NixOS) | `vm.nix` |
@@ -246,7 +246,7 @@ modules/
   roles/                               # Composable role bundles
     workstation-mac.nix                #   imports all darwin profiles
     workstation-linux.nix              #   imports desktop + all nixos profiles
-    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit + workstation-defaults + remote-access; Homebrew disabled
+    fleet-member-mac.nix               #   Mac Studio: toolchain + secrets + audit + workstation-defaults + remote-access + update policy; Homebrew disabled
     ai-inference.nix                   #   lm-studio (not imported by any host today)
     smart-home.nix                     #   sensibo, sonos, homey (Mac Mini)
     personal-mac.nix                   #   lighter setup for non-developers
@@ -257,7 +257,7 @@ configurations/
     home.nix                           # macOS user config (imports dev + editor profiles)
     macbook.nix                        # MacBook-specific overrides
     mac-mini-office.nix                # Mac Mini overrides
-    mac-studio.nix                     # Mac Studio overrides
+    mac-studio.nix                     # Mac Studio overrides (Lima, power settings, FileVault check)
     kassie-mbp-m1.nix                  # shared M1 Pro: adopted casks only
     home-household.nix                 # minimal home-manager (mkMac homeProfile = "household"): no LaunchAgent, no dotfiles
   nixos/
