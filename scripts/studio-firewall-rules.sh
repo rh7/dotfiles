@@ -22,23 +22,29 @@
 # with every `brew upgrade`, and the config service's restic rest-server is an
 # out-link rh7/rh-device-management repoints. The wrapper therefore names a
 # STABLE path (a profile or opt/ symlink), this script resolves it to the real
-# binary on every run and adds a rule for that, and the module runs it on
-# every activation and from a LaunchDaemon every 10 minutes, so a path that
-# moved between rebuilds gets its rule back without one.
+# binary on every run and adds a rule for that. The module runs it on every
+# activation and from a LaunchDaemon — at once when Homebrew relinks a formula
+# or the rest-server out-link is replaced, and every 10 minutes regardless — so
+# a path that moved between rebuilds gets its rule back without one.
 #
 # A rule for a path that no longer exists under /nix/store/ or
 # /opt/homebrew/Cellar/ is stale (an old generation, an upgraded formula) and
-# is removed. Rules elsewhere (the ones macOS keeps itself) are never touched.
+# is removed — but only once no process of that name runs. `brew upgrade`
+# deletes the old Cellar version while the service keeps running from it until
+# it is restarted, so the old rule is kept until then; an always-on daemon's
+# old rules therefore stay, harmlessly (each matches only that exact old
+# binary). Rules elsewhere (the ones macOS keeps itself) are never touched.
 #
 # Exit: 0 converged (apply) / no drift (check); 1 a rule could not be set, or
 # drift (check); 64 usage.
 set -uo pipefail
 
 SFW="${STUDIO_FW_SOCKETFILTERFW:-/usr/libexec/ApplicationFirewall/socketfilterfw}"
-# Space-separated; the override exists for scripts/tests only.
+PGREP="${STUDIO_FW_PGREP:-pgrep}"
+# Space-separated; the overrides exist for scripts/tests only.
 read -r -a STALE_PREFIXES <<<"${STUDIO_FW_STALE_PREFIXES:-/nix/store/ /opt/homebrew/Cellar/}"
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
 die_usage() { echo "studio-firewall-rules: $*" >&2; exit 64; }
 
 mode=apply
@@ -120,6 +126,8 @@ while IFS=$'\t' read -r _ p; do
   done
   [ "$stale" = 1 ] && [ ! -e "$p" ] || continue
   printf '%s' "$desired" | grep -qxF -- "$p" && continue
+  # Still running from the deleted binary (upgraded, not yet restarted): keep.
+  "$PGREP" -x "$(basename "$p")" >/dev/null 2>&1 && continue
   drift=$((drift + 1))
   if [ "$mode" = check ]; then
     log "drift: stale rule for $p (path gone)"

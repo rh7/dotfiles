@@ -63,6 +63,10 @@ STUB
 chmod +x "$T/socketfilterfw"
 export STUDIO_FW_SOCKETFILTERFW="$T/socketfilterfw"
 export STUDIO_FW_STALE_PREFIXES="$T/store/"
+# pgrep stub: `pgrep -x NAME` succeeds when NAME is listed in $RUNNING.
+printf '#!/usr/bin/env bash\ncase " ${RUNNING:-} " in *" $2 "*) exit 0 ;; esac\nexit 1\n' >"$T/pgrep"
+chmod +x "$T/pgrep"
+export STUDIO_FW_PGREP="$T/pgrep"
 
 pass=0; fail=0
 check() { # check <name> <got> <want>
@@ -117,18 +121,30 @@ run --check "${ARGS[@]}"
 check "check exit 0 when converged" "$rc" 0
 has "check reports zero drift" "$out" "drift=0 missing=0"
 
-echo "== upgrade: the symlink moves, the old store path is gone =="
+echo "== upgrade: the symlink moves, the old store path is gone, the service still runs it =="
 printf 'allow\t/usr/bin/ruby-not-here\n' >>"$STATE"   # outside the store prefix: never pruned
 mkdir -p "$T/store/tailscale-2/bin" && touch "$T/store/tailscale-2/bin/tailscaled"
 ln -sfn "$T/store/tailscale-2" "$T/opt/tailscale"
 rm -rf "$T/store/tailscale-1"
+export RUNNING="tailscaled"   # brew upgraded, tailscaled not yet restarted
 run --check "${ARGS[@]}"
-check "check sees new path + stale rule" "$rc" 1
-has "check: drift=2" "$out" "drift=2 missing=0"
+check "check sees the new path only" "$rc" 1
+has "check: drift=1 (old rule kept while running)" "$out" "drift=1 missing=0"
 : >"$CALLS"
 run "${ARGS[@]}"
 check "apply after upgrade exit 0" "$rc" 0
 has "new path allowed" "$(state)" "$(printf 'allow\t%s' "$T/store/tailscale-2/bin/tailscaled")"
+check "old rule kept while tailscaled runs" "$(grep -c "tailscale-1" "$STATE")" 1
+check "no --remove while it runs" "$(grep -c '^--remove' "$CALLS")" 0
+
+echo "== nothing of that name runs any more: the stale rule is pruned =="
+export RUNNING=""
+run --check "${ARGS[@]}"
+check "check sees the stale rule" "$rc" 1
+has "check: drift=1 (stale)" "$out" "drift: stale rule for $T/store/tailscale-1/bin/tailscaled"
+: >"$CALLS"
+run "${ARGS[@]}"
+check "prune exit 0" "$rc" 0
 check "stale rule removed" "$(grep -c "tailscale-1" "$STATE")" 0
 has "stale removal logged" "$out" "removed stale rule for $T/store/tailscale-1/bin/tailscaled"
 check "rule outside the store prefixes kept" "$(grep -c "ruby-not-here" "$STATE")" 1

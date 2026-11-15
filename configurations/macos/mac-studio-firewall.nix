@@ -43,9 +43,13 @@
 #          server. Apple-signed, so it would be allowed without this rule.
 #   block  limactl (Homebrew) — colima's port forwarder republishes a
 #          guest-internal service on the host's interfaces; nothing off-host
-#          uses it. The guests' own traffic (hermes-lab's guest tailscaled
-#          included) is outbound-initiated and is expected to keep working;
-#          the owner window checks it before keeping the rule.
+#          uses it. The same binary is hermes-lab's hostagent and runs both
+#          guests' user-mode networking, so the rule covers their traffic too.
+#          That traffic is outbound-initiated (hermes-lab's own guest
+#          tailscaled included) and is expected to keep working. If the
+#          firewall drops inbound peer UDP to it anyway, hermes-lab's tailnet
+#          node falls back to a DERP relay — slower, not cut off. The owner
+#          window checks the guest's path before keeping the rule.
 #
 # STEALTH MODE stays OFF, as today. Stealth only stops the Mac answering
 # pings and probes of closed ports. The Studio sits behind the home router
@@ -110,13 +114,23 @@ in
     fi
   '';
 
-  # Re-apply every 10 minutes: a `brew upgrade tailscale` or a new rest-server
-  # out-link moves a binary without a rebuild. Quiet unless it changes a rule,
-  # so the log stays small. Stable path on purpose (fleet-update.nix: the plist
-  # survives rebuilds); the program name is what Login Items shows.
+  # Re-apply when a binary moves without a rebuild. On the Studio Homebrew is
+  # imperative (fleet-member-mac.nix: homebrew.enable = false, nothing
+  # declared), so a tailscale upgrade is a hand `brew upgrade`, never a
+  # rebuild.sh step. Homebrew relinks /opt/homebrew/opt/<formula> on every
+  # upgrade and rh-device-management replaces its rest-server out-link in
+  # place: launchd starts the job as soon as either directory changes, so the
+  # new binary has its rule before the service restarts onto it. Every 10
+  # minutes as a backstop. Quiet unless it changes a rule, so the log stays
+  # small. Stable path on purpose (fleet-update.nix: the plist survives
+  # rebuilds); the program name is what Login Items shows.
   launchd.daemons.studio-firewall-rules.serviceConfig = {
     Label = "org.rh7.studio-firewall-rules";
     ProgramArguments = [ "/run/current-system/sw/bin/rh7-studio-firewall-rules" ];
+    WatchPaths = [
+      "/opt/homebrew/opt"
+      "${home}/rh-device-management/services/config-service/data"
+    ];
     StartInterval = 600;
     RunAtLoad = false;
     StandardOutPath = "/var/log/rh7-studio-firewall-rules.log";
