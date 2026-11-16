@@ -165,6 +165,13 @@ in
     ../darwin/software-update.nix   # macOS update policy
   ];
 
+  # Apps every household Mac gets (owner decision 2026-11-16). Plain `app`
+  # casks only, so the unattended nightly fleet-update needs no password
+  # (homebrew.user must still be able to write /Applications).
+  homebrew.casks = [
+    "superwhisper"   # dictation (self-updating)
+  ];
+
   # Signed software never triggers the firewall's "Do you want the application
   # to accept incoming network connections?" dialog — a prompt nobody in the
   # household should have to answer. Both are the macOS defaults; pinning them

@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ ... }:
 
 {
   # ── kassie-mbp-m1: shared household MacBook Pro (M1 Pro), ADOPTED in place ──
@@ -17,7 +17,9 @@
   # by THIS file. Like every Mac, it also gets the fleet-wide disk tools from
   # modules/darwin/profiles/disk-tools.nix (imported by mkMac): dust/dua/ncdu
   # (nixpkgs), the `mole` formula and the grandperspective, pearcleaner and
-  # puremac casks — all NEW here, all plain `app` artifacts.
+  # puremac casks — all NEW here, all plain `app` artifacts — plus `gh` in the
+  # system profile (modules/darwin/profiles/base-cli.nix), and the household
+  # role's superwhisper cask (modules/roles/household-mac.nix).
   # Every cask here is a plain `app` artifact — no pkg installer — so
   # installing or upgrading one needs no sudo PROVIDED homebrew.user can write
   # /Applications (an admin) and owns the existing bundle. Otherwise Homebrew
@@ -34,14 +36,6 @@
   # casks' app bundles to him. Kassie stays primaryUser (home-manager; the
   # daily audit runs as her); her `brew` says "managed by rouven; ask an admin".
   homebrew.user = "rouven";
-
-  # CLI tools for EVERY account on this Mac, from nixpkgs into the system
-  # profile (/run/current-system/sw/bin). Kassie is a standard user and
-  # Homebrew belongs to rouven, so she cannot `brew install` anything herself;
-  # the household home profile installs no CLI tools. Ask here, not via brew.
-  environment.systemPackages = [
-    pkgs.gh            # GitHub CLI (NEW — Kassie asked for it, 2026-11-16)
-  ];
 
   homebrew.casks = [
     # ── Browsers ──
