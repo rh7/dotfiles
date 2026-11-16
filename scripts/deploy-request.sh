@@ -19,7 +19,8 @@
 #      request_id (an earlier poll ran it but its ack was lost, or this poller
 #      was unloaded mid-run by the activation it started), only that result is
 #      acked — the update is not run twice. Otherwise ack `started` (once per
-#      request) and run `rh7-fleet-update --requested <id> [--fast-lane]`.
+#      request; rejected with a 4xx = cancelled or replaced since the GET ->
+#      not run) and run `rh7-fleet-update --requested <id> [--fast-lane]`.
 #   4. ack the final result read back from state.json — only if state.json
 #      carries THIS request_id and a final result:
 #        applied | no-op | refused | failed  -> the same status
@@ -81,6 +82,10 @@ parse_args() {
     esac
   done
   [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] || { echo "--hostname must be a flake attribute / host name" >&2; exit 64; }
+  # The registry's key is the canonical, lower-case host name (the service
+  # canonicalizes every write path the same way); Kassie-M5-Air13 polls as
+  # kassie-m5-air13.
+  HOST=$(printf '%s' "$HOST" | tr '[:upper:]' '[:lower:]')
   [[ -x "$FLEET_UPDATE" ]] || { echo "--fleet-update must be the rh7-fleet-update executable" >&2; exit 64; }
 }
 
@@ -141,7 +146,9 @@ state_has_request() {
   [[ -r "$STATE_FILE" ]] && jq -e --arg rid "$1" '.request_id == $rid' "$STATE_FILE" >/dev/null 2>&1
 }
 
-# ack <json> — POST it; logs the outcome. 0 when the server took it.
+# ack <json> — POST it; logs the outcome. 0 accepted, 1 not delivered
+# (transport error or 5xx: the next poll retries), 2 rejected (4xx: the
+# request was cancelled or replaced, or the body refused — dropped).
 ack() {
   local body="$1" status
   status=$(jq -r '.status' <<<"$body")
@@ -151,7 +158,7 @@ ack() {
   fi
   case "$HTTP_CODE" in
     2??) log "ack $status accepted: $body"; return 0 ;;
-    4??) log "ack $status rejected (HTTP $HTTP_CODE) — the request was cancelled or replaced; dropped" ; return 0 ;;
+    4??) log "ack $status rejected (HTTP $HTTP_CODE) — the request was cancelled or replaced; dropped"; return 2 ;;
     *)   log "ack $status: HTTP $HTTP_CODE — retried on the next poll"; return 1 ;;
   esac
 }
@@ -193,11 +200,17 @@ main() {
     exit 0
   fi
 
-  # `started` once per request, not on every retry of a pending one.
+  # `started` once per request, not on every retry of a pending one. A
+  # rejected `started` means the request was cancelled or replaced between the
+  # GET and now: do not run it. An undelivered one does not stop the run —
+  # the owner asked, and the final ack carries the outcome.
   if [[ "$(cat "$STARTED_FILE" 2>/dev/null || true)" != "$rid" ]] && ! state_has_request "$rid"; then
-    if ack "$(jq -cn --arg rid "$rid" '{request_id: $rid, status: "started", commit: null, lane: null, reason: null}')"; then
-      mkdir -p "$STATE_DIR" && printf '%s\n' "$rid" >"$STARTED_FILE"
-    fi
+    local arc=0
+    ack "$(jq -cn --arg rid "$rid" '{request_id: $rid, status: "started", commit: null, lane: null, reason: null}')" || arc=$?
+    case $arc in
+      0) mkdir -p "$STATE_DIR" && printf '%s\n' "$rid" >"$STARTED_FILE" ;;
+      2) log "request $rid no longer pending — not run"; exit 0 ;;
+    esac
   fi
 
   local -a args=(--requested "$rid")

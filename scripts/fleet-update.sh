@@ -343,7 +343,10 @@ finish() {
       applied_lane=""; [[ "$LANE" == fast ]] && applied_lane=fast
       generation="$NEW_GENERATION"; rc=0 ;;
     no-op)
-      success="$(now_iso)"; failures=0; rc=0 ;;
+      success="$(now_iso)"; failures=0; rc=0
+      # The channel reached the fast-laned commit: the host is no longer ahead
+      # of it, so a later channel rewind must refuse again (not-fast-forward).
+      [[ "$TARGET" != "$CHANNEL_TIP" ]] || applied_lane="" ;;
     skipped)
       rc=0 ;;
     failed)

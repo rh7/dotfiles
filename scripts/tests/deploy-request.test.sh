@@ -175,6 +175,21 @@ check "same request again: only the final ack re-sent" "$(ack_n 3 | jq -r .statu
 check "same request again: no second started" "$(grep -c started "$ROOT/acks")" "1"
 
 fresh
+STUB_ACK_CODES="409" STUB_GET_BODY="$(request gone-1 true)" STUB_STATE="$(state applied null fast null)" run_dr
+check "started rejected (cancelled/replaced since the GET): update not run" "$(runs)" "0"
+grep -q 'request gone-1 no longer pending — not run' <<<"$(logf)" && good "started rejected: logged" || bad "started rejected log" "$(logf)"
+
+fresh
+STUB_ACK_CODES="down 200" STUB_GET_BODY="$(request down-1 true)" STUB_STATE="$(state applied null fast null)" run_dr
+check "started undelivered (transport): still runs and acks the result" "$(runs)/$(ack_n 2 | jq -r .status)" "1/applied"
+
+fresh
+env DEPLOY_REQUEST_ROOT="$ROOT" PATH="$STUBS:$PATH" STUB_LOG="$ROOT/stub.log" STUB_ACKS="$ROOT/acks" \
+  STUB_GET_BODY="$IDLE" bash "$POLLER" --hostname Test-Host --fleet-update "$STUBS/rh7-fleet-update" >/dev/null 2>&1
+grep -q 'curl GET http://100.100.241.110:3456/api/fleet/deploy-request/test-host$' "$ROOT/stub.log" \
+  && good "mixed-case flake attr polls the canonical lower-case host" || bad "lower-case host" "$(cat "$ROOT/stub.log")"
+
+fresh
 STUB_GET_BODY="$(request r2 false)" STUB_STATE="$(state applied null channel not-requested)" run_dr
 grep -q '^fleet-update --requested r2$' "$ROOT/stub.log" \
   && good "fast_lane false: no --fast-lane" || bad "fast_lane false args" "$(cat "$ROOT/stub.log")"

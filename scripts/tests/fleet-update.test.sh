@@ -890,11 +890,22 @@ check "behind fast lane: nothing built" "$(builds)" "1"
 run_fu --requested req-2 --fast-lane
 expect "requested again, main unchanged (main tip == applied)" 0 no-op null
 lane "requested again" fast null req-2
+check "requested again: still ahead of the channel, applied_lane kept" "$(field applied_lane)" "fast"
 refs "$FL_NEXT" "$FL_CASK2"
 run_fu
 expect "the channel catches up past the fast-laned commit" 0 applied null
 check "caught up: applied_commit is the channel tip" "$(field applied_commit)" "$FL_CASK2"
 check "caught up: applied_lane cleared" "$(field applied_lane)" "null"
+
+fresh; refs "$FL_CASK" "$FL_BASE"
+run_fu --requested req-x --fast-lane
+refs "$FL_CASK" "$FL_CASK"      # the channel reaches exactly the fast-laned commit
+run_fu
+expect "channel caught up exactly with the fast-laned commit" 0 no-op null
+check "caught up exactly: applied_lane cleared" "$(field applied_lane)" "null"
+refs "$FL_CASK" "$FL_BASE"      # then the channel is rewound
+run_fu
+expect "channel rewound after catching up: refused again" 3 refused not-fast-forward
 
 fresh; refs "$FL_CASK2" "$FL_BASE"
 run_fu --requested req-3 --fast-lane
