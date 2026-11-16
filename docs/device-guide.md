@@ -668,7 +668,7 @@ PR otherwise).
 | Host | Login account | Why that account |
 |---|---|---|
 | `kassie-mbp-m1` | `rouven` | the admin maintainer account: `sudo` works for a rebuild. **Never** Kassie's `kassie` (a standard account with her data). |
-| `Kassie-M5-Air13` | `kassie` | the only account on that Mac (admin). |
+| `Kassie-M5-Air13` | `kassie` | the only account on that Mac today (admin). Planned: a separate owner admin account `rouven`; then `user = "rouven"` in `flake.nix` is the whole switch (CI follows the evaluated account). |
 
 **What is allowed — and nothing else:**
 

@@ -19,9 +19,13 @@
 # Run from the repo root (flake-check.yml). Exit 0 ok, 1 any failure.
 set -euo pipefail
 
-# host:user — the hosts that enable services.rh7.remoteMaintenance in flake.nix /
-# their host files. A new host fails the "nobody else" check until listed here.
-RM_HOSTS="kassie-mbp-m1:rouven Kassie-M5-Air13:kassie"
+# The hosts that enable services.rh7.remoteMaintenance in flake.nix / their host
+# files, as `host` or `host:user`. A new host fails the "nobody else" check until
+# listed here. `:user` pins the login account: kassie-mbp-m1 must use the admin
+# maintainer account, never Kassie's. Kassie-M5-Air13 is unpinned on purpose:
+# it uses kassie today and moves to a separate admin account later with a
+# one-line host change (the checks below follow the evaluated user).
+RM_HOSTS="kassie-mbp-m1:rouven Kassie-M5-Air13"
 HOUSEHOLD_HOSTS="kassie-mbp-m1"
 DROPIN="ssh/sshd_config.d/000-rh7-remote-maintenance.conf"
 FROM='from="100.64.0.0/10,fd7a:115c:a1e0::/48" '
@@ -69,14 +73,18 @@ hosts=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.attrNames' | 
 [[ -n "$hosts" ]] || { bad "no darwinConfigurations found"; exit 1; }
 
 for h in $hosts; do
-  want_user=""
-  for e in $RM_HOSTS; do [[ "${e%%:*}" == "$h" ]] && want_user="${e#*:}"; done
+  listed=false want_user=""
+  for e in $RM_HOSTS; do
+    [[ "${e%%:*}" == "$h" ]] || continue
+    listed=true
+    [[ "$e" == *:* ]] && want_user="${e#*:}"
+  done
   rm=$(cfg "$h" services.rh7.remoteMaintenance 'r: { inherit (r) enable user; }')
   enabled=$(jq -r .enable <<<"$rm")
   dropins=$(etc_names "$h" ssh/sshd_config.d/)
   keyfiles=$(etc_names "$h" ssh/nix_authorized_keys.d/)
 
-  if [[ -z "$want_user" ]]; then
+  if [[ "$listed" == false ]]; then
     [[ "$enabled" == false ]] || bad "$h: not listed but enables remoteMaintenance"
     grep -qx "$DROPIN" <<<"$dropins" && bad "$h: carries $DROPIN"
     [[ -z "$keyfiles" ]] || bad "$h: nix authorized keys present: $(tr '\n' ' ' <<<"$keyfiles")"
@@ -85,7 +93,12 @@ for h in $hosts; do
   fi
 
   [[ "$enabled" == true ]] || { bad "$h: remoteMaintenance not enabled"; continue; }
-  [[ "$(jq -r .user <<<"$rm")" == "$want_user" ]] || bad "$h: remoteMaintenance.user is $(jq -r .user <<<"$rm"), want $want_user"
+  user=$(jq -r .user <<<"$rm")
+  if [[ -n "$want_user" && "$user" != "$want_user" ]]; then
+    bad "$h: remoteMaintenance.user is $user, want $want_user"
+  fi
+  [[ -n "$user" && "$user" != root ]] || { bad "$h: remoteMaintenance.user must be one non-root account"; continue; }
+  want_user="$user"
   [[ "$(head -1 <<<"$dropins")" == "$DROPIN" ]] || bad "$h: $DROPIN is not the first drop-in: $(tr '\n' ' ' <<<"$dropins")"
 
   text=$(etc_text "$h" "$DROPIN")

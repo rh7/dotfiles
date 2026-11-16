@@ -254,9 +254,11 @@
           ./configurations/macos/macbook.nix
           {
             # Owner remote maintenance (modules/darwin/remote-maintenance.nix):
-            # kassie is the only account (admin). Remote Login is already on
-            # here (personal-mac imports remote-access.nix); the drop-in makes it
-            # key-only for kassie, owner keys from tailnet addresses only.
+            # kassie is the only account today (admin). Once the owner's own
+            # admin account `rouven` exists here, `user = "rouven"` is the whole
+            # switch. Remote Login is already on here (personal-mac imports
+            # remote-access.nix); the drop-in makes it key-only for that one
+            # account, owner keys from tailnet addresses only.
             services.rh7.remoteMaintenance = {
               enable = true;
               user = "kassie";
