@@ -4,6 +4,9 @@
   # ── Mac Studio overrides ─────────────────────────────────────────────────
   # AI inference apps are in modules/roles/ai-inference.nix (imported via flake.nix)
 
+  # Application firewall ON with a per-app allow-list (rh7/mac-studio-services#920).
+  imports = [ ./mac-studio-firewall.nix ];
+
   # Lima is the native hypervisor boundary for isolated Linux workloads such as
   # the knowledge VM. Use nixpkgs rather than Homebrew so the reviewed flake.lock
   # pins the version and a nix-darwin generation can roll it back.
