@@ -441,7 +441,9 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   tap-to-click, screenshots folder) or `remote-access.nix` (Remote Login +
   Screen Sharing), declares no Dock list, profiles or new apps. Assertions make
   each of those a build failure: Homebrew `cleanup = "none"`, no Dock list, no
-  user `defaults` written at all, no sshd/Screen Sharing enablement, and no
+  user `defaults` written at all, no sshd/Screen Sharing enablement (the one
+  exception: [owner remote maintenance](#remote-maintenance-owner-kassies-macs),
+  asserted hardened), and no
   home-manager file in the primary user's home. Its header lists exactly what
   first activation changes system-wide, for the primary user and for everybody
   else.
@@ -498,13 +500,15 @@ apps, their own Dock — brought under nix-darwin in place. Example:
   connections?" dialog for them), Touch ID for sudo, the update policy and
   App Store auto-update.
   Remote Login and Screen Sharing stay as set in System Settings → General →
-  Sharing (both off on `kassie-mbp-m1` — the 2026-11-12 audit reports
-  `remote_login: false`). nix-darwin also creates no SSH host keys and links
-  no `/etc/ssh/sshd_config.d/*` drop-in here: by default it does both even
-  with `services.openssh.enable` unset (the role sets
-  `services.openssh.hostKeys = [ ]`; the keys a first activation already
-  generated on `kassie-mbp-m1` stay, unused while Remote Login is off).
-  `scripts/ci/check-household-compinit-sshd.sh` pins both.
+  Sharing (both off on `kassie-mbp-m1` before remote maintenance). nix-darwin
+  creates no SSH host keys and links no `/etc/ssh/sshd_config.d/*` drop-in
+  here: by default it does both even with `services.openssh.enable` unset (the
+  role sets `services.openssh.hostKeys = [ ]`). Exception: a host that enables
+  `services.rh7.remoteMaintenance` (`kassie-mbp-m1` does) gets Remote Login on,
+  the standard host keys and exactly its hardened drop-in — see
+  [Remote maintenance](#remote-maintenance-owner-kassies-macs).
+  `scripts/ci/check-household-compinit-sshd.sh` and
+  `scripts/ci/check-remote-maintenance.sh` pin both cases.
 - **Adopt, don't add.** The host file declares only casks for apps already in
   `/Applications` (exact cask, not deprecated-and-disabled). Keep crypto
   wallets, licensed vendor installers (Adobe/Maxon) and Tailscale manual, and
@@ -650,6 +654,90 @@ channel reaches that commit; then it applies normally.
   Gatekeeper's one-time "downloaded from the Internet — Open?" confirmation.
 - **Her `brew`:** Homebrew is not hers — in her shells `brew` answers
   "Homebrew on this Mac is managed by rouven; ask an admin".
+
+---
+
+## Remote maintenance (owner, Kassie's Macs)
+
+The owner can SSH into exactly two of Kassie's Macs over Tailscale to maintain
+them (rebuild, fix, inspect): `kassie-mbp-m1` and `Kassie-M5-Air13`. Opt-in per
+host with `services.rh7.remoteMaintenance` (`modules/darwin/remote-maintenance.nix`);
+every other Mac has it off (`scripts/ci/check-remote-maintenance.sh` fails the
+PR otherwise).
+
+| Host | Login account | Why that account |
+|---|---|---|
+| `kassie-mbp-m1` | `rouven` | the admin maintainer account: `sudo` works for a rebuild. **Never** Kassie's `kassie` (a standard account with her data). |
+| `Kassie-M5-Air13` | `kassie` | the only account on that Mac (admin). |
+
+**What is allowed — and nothing else:**
+
+- Network: only the owner's own devices (`group:owner`), only TCP `:22`, only
+  to these two nodes (rh7/tailscale-acl rule 11). No Screen Sharing, no file
+  sharing over the tailnet; Kassie's other devices stay closed.
+- sshd (`/etc/ssh/sshd_config.d/000-rh7-remote-maintenance.conf`, first in
+  include order so its values win — sshd keeps the first value it reads):
+  `AllowUsers <that account>`, `AuthenticationMethods publickey`,
+  `PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
+  `PermitEmptyPasswords no`, `PermitRootLogin no`, `X11Forwarding no`,
+  `MaxAuthTries 3`, `AuthorizedKeysFile none`.
+- Keys: only the owner keys in `keys/owner-ssh-keys.nix` (m5-air,
+  rouven-m5-pro), installed as `/etc/ssh/nix_authorized_keys.d/<account>`, each
+  with `from="100.64.0.0/10,fd7a:115c:a1e0::/48"` — accepted only from a
+  tailnet source address, so the same key is refused from the LAN. Keys in the
+  account's own `~/.ssh/authorized_keys` are **ignored** (`AuthorizedKeysFile none`).
+- Screen Sharing is not turned on by this. (On `Kassie-M5-Air13` it is already
+  on through the personal role's `remote-access.nix`; the ACL does not grant
+  `:5900`, so it is LAN-only.)
+
+**Connect** from m5-air or rouven-m5-pro, Tailscale up:
+
+```bash
+ssh rouven@kassie-mbp-m1-1     # MagicDNS name of the M1's node under Kassie's login
+ssh kassie@kassie-m5-air13-1   # the Air's node
+# or by the node's 100.x address (tailscale status | grep -i kassie)
+```
+
+Both nodes were re-registered under Kassie's login, so their MagicDNS names
+carry a `-1` suffix while the old nodes (`kassie-mbp-m1`, `kassie-m5-air13`)
+still exist in the admin console. Once those stale nodes are removed and the
+new ones renamed, `ssh rouven@kassie-mbp-m1` / `ssh kassie@kassie-m5-air13`
+work. A re-registered node gets a new address: SSH then fails closed until the
+`hosts` alias in rh7/tailscale-acl follows. Rebuild over SSH as usual:
+`cd ~/dotfiles && ./scripts/rebuild.sh` (on the M1 as `rouven`, whose sudo
+prompts for his password or Touch ID — over SSH it is the password).
+
+**What changed on `Kassie-M5-Air13`.** Before: Remote Login on (personal role,
+`remote-access.nix`) with macOS's defaults — password and keyboard-interactive
+login for **any** account, reachable from the LAN (measured 2026-11-16), plus
+whatever keys sat in `~/.ssh/authorized_keys` (two, one of them the Studio's).
+After: the hardened drop-in above wins over nix-darwin's and macOS's drop-ins —
+only `kassie`, only the owner keys, only from tailnet addresses; password
+login is gone from the LAN as well, and the old `authorized_keys` entries no
+longer work. (The audit's `remote_login: false` for this Mac is wrong: the
+collector's `systemsetup -getremotelogin` needs Full Disk Access.)
+
+**Turn it off:**
+
+- Immediately, network side: revert rule 11 in rh7/tailscale-acl (applied by
+  its CI on merge). Nobody reaches `:22` over the tailnet after that.
+- Host side: set `services.rh7.remoteMaintenance.enable = false` for the host
+  (by PR) and rebuild. The keys and the drop-in go away. Turning it off does
+  **not** switch Remote Login off: on `kassie-mbp-m1` do that in System
+  Settings → General → Sharing → Remote Login (or
+  `sudo launchctl bootout system/com.openssh.sshd && sudo launchctl disable system/com.openssh.sshd`).
+  On `Kassie-M5-Air13` the personal role keeps Remote Login on with macOS's
+  defaults, i.e. **password login comes back** — turn it off there in System
+  Settings too if that is not wanted.
+
+**Residual risk.** A stolen owner key (or a compromised m5-air / rouven-m5-pro)
+that also has tailnet access as the owner gets a shell as that account: on
+`Kassie-M5-Air13` that is Kassie's account and all her data, with admin rights
+(sudo still asks for her password); on `kassie-mbp-m1` it is `rouven`, which
+holds sensitive data of its own and is an admin. FileVault does not help
+against a logged-in session. Protect the two private keys accordingly
+(passphrase / Secure Enclave-backed key); rotate by editing
+`keys/owner-ssh-keys.nix` (by PR) and rebuilding both Macs.
 
 ---
 

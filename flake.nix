@@ -74,6 +74,9 @@
           ./modules/darwin/profiles/disk-tools.nix
           # Fleet-wide CLI tools (gh) in the system profile: every Mac, every account.
           ./modules/darwin/profiles/base-cli.nix
+          # Owner remote maintenance over SSH (services.rh7.remoteMaintenance):
+          # opt-in per host, key-only, tailnet-only. Off unless a host enables it.
+          ./modules/darwin/remote-maintenance.nix
           {
             # The attr to build is baked in here, never derived at runtime.
             # Every darwinConfigurations attr below equals its hostname.
@@ -247,7 +250,20 @@
         autoUpdate = "fleet/stable";
         role = ./modules/roles/personal-mac.nix;
         needsSecrets = false;
-        extraModules = [ ./configurations/macos/macbook.nix ];
+        extraModules = [
+          ./configurations/macos/macbook.nix
+          {
+            # Owner remote maintenance (modules/darwin/remote-maintenance.nix):
+            # kassie is the only account (admin). Remote Login is already on
+            # here (personal-mac imports remote-access.nix); the drop-in makes it
+            # key-only for kassie, owner keys from tailnet addresses only.
+            services.rh7.remoteMaintenance = {
+              enable = true;
+              user = "kassie";
+              authorizedKeys = import ./keys/owner-ssh-keys.nix;
+            };
+          }
+        ];
       };
 
       # ── Shared household MacBook Pro M1 (adopted in place, NOT wiped) ──
