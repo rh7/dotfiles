@@ -44,6 +44,12 @@
       # fleet-audit.nix is added in both cases. A switch here, not in the role:
       # roles are nix-darwin modules and cannot REMOVE home-manager imports.
       homeProfile ? "full",
+      # The host's OWN configuration file (configurations/macos/<host>.nix),
+      # imported like extraModules. Never a shared file (macbook.nix): it is
+      # also what a requested deploy's fast lane may apply ahead of the
+      # channel (services.rh7.fleetUpdate.fastLaneFile, modules/darwin/
+      # fleet-update.nix) — a change there must reach no other host.
+      hostFile ? null,
     }:
       assert nixpkgs.lib.assertOneOf "mkMac homeProfile" homeProfile [ "full" "household" ];
       nix-darwin.lib.darwinSystem {
@@ -83,7 +89,10 @@
             services.rh7.fleetUpdate = {
               enable = autoUpdate != null;
               flakeAttr = hostname;
-            } // nixpkgs.lib.optionalAttrs (autoUpdate != null) { channel = autoUpdate; };
+            } // nixpkgs.lib.optionalAttrs (autoUpdate != null) { channel = autoUpdate; }
+              // nixpkgs.lib.optionalAttrs (hostFile != null) {
+                fastLaneFile = nixpkgs.lib.removePrefix "./" (nixpkgs.lib.path.removePrefix ./. hostFile);
+              };
             # The rewind floor for an auto-updated host's FIRST unattended run:
             # the daemon refuses any channel tip that does not descend from the
             # commit the running generation was built from.
@@ -124,7 +133,8 @@
         ] ++ nixpkgs.lib.optionals needsSecrets [
           sops-nix.darwinModules.sops
           ./modules/secrets.nix
-        ] ++ extraModules;
+        ] ++ nixpkgs.lib.optional (hostFile != null) hostFile
+          ++ extraModules;
       };
 
     # ── Helper: full NixOS system config (NixOS + home-manager) ─────────────
@@ -285,7 +295,7 @@
         role = ./modules/roles/household-mac.nix;
         homeProfile = "household";
         needsSecrets = false;
-        extraModules = [ ./configurations/macos/kassie-mbp-m1.nix ];
+        hostFile = ./configurations/macos/kassie-mbp-m1.nix;
       };
     };
 
