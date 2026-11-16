@@ -71,6 +71,8 @@
           # Disk usage/cleanup tools on EVERY Mac, household included: CLI from
           # nixpkgs (also where Homebrew is off), mole + GUI casks via Homebrew.
           ./modules/darwin/profiles/disk-tools.nix
+          # Fleet-wide CLI tools (gh) in the system profile: every Mac, every account.
+          ./modules/darwin/profiles/base-cli.nix
           {
             # The attr to build is baked in here, never derived at runtime.
             # Every darwinConfigurations attr below equals its hostname.
