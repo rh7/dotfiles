@@ -133,7 +133,9 @@ for h in $hosts; do
       "authorizedkeyscommand /bin/cat /etc/ssh/nix_authorized_keys.d/%u"; do
       grep -qxF "$kv" <<<"$eff" || bad "$h: sshd -T does not yield '$kv' (got: $(grep -i "^${kv%% *} " <<<"$eff" || echo "$eff" | head -3))"
     done
-    grep -q '^authorizedkeysfile ' <<<"$eff" && bad "$h: sshd -T still reads an AuthorizedKeysFile: $(grep '^authorizedkeysfile ' <<<"$eff")"
+    # macOS's sshd -T omits the keyword for `none`; Linux prints `authorizedkeysfile none`.
+    akf=$(grep '^authorizedkeysfile ' <<<"$eff" || true)
+    [[ -z "$akf" || "$akf" == "authorizedkeysfile none" ]] || bad "$h: sshd -T still reads an AuthorizedKeysFile: $akf"
     echo "$h: sshd -T over its drop-ins yields the hardened values"
   else
     echo "::notice::no sshd binary; effective-config check skipped for $h"
