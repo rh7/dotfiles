@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 {
   # ── Disk usage + cleanup tools — EVERY Mac (imported by mkMac in flake.nix) ──
@@ -44,11 +44,15 @@
   #     otherwise the next activation simply installs them again.
   environment.systemPackages = with pkgs; [ dust dua ncdu ];
 
-  homebrew.brews = [ "mole" ];
-
-  homebrew.casks = [
-    "grandperspective"
-    "pearcleaner"
-    "puremac"
-  ];
+  # Only where Homebrew is on: on the Studio (homebrew.enable = false) the
+  # declarations would install nothing but still read as "declared, not
+  # installed" in audit-config-drift.sh.
+  homebrew = lib.mkIf config.homebrew.enable {
+    brews = [ "mole" ];
+    casks = [
+      "grandperspective"
+      "pearcleaner"
+      "puremac"
+    ];
+  };
 }
