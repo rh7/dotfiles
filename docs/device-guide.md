@@ -688,6 +688,55 @@ need a clone (they evaluate the flake / secrets file) and say so.
 
 ---
 
+## Disk cleanup tools
+
+Every Mac gets them from `modules/darwin/profiles/disk-tools.nix` (imported by
+`mkMac`, household included). Nothing runs them — they are for a human who
+wants to know where the space went. The fleet's own, automatic cleanup is only
+`fleet-fix.sh resources --apply` above (nix garbage + `brew cleanup`, never
+user data).
+
+| Tool | From | Use it for |
+|---|---|---|
+| `dust ~` | nixpkgs, every Mac | Quick tree of the biggest directories. Read-only. |
+| `dua i ~` | nixpkgs, every Mac | Interactive browser; marks and deletes only what you select. |
+| `ncdu ~` | nixpkgs, every Mac | The classic interactive browser (`d` deletes, asks first). |
+| `mo` (Mole) | Homebrew formula `mole` | `mo analyze` (disk explorer), `mo clean --dry-run` (caches/logs/leftovers), `mo purge --dry-run` (project build artifacts), `mo installer --dry-run` (old installers). |
+| GrandPerspective | cask | Treemap of a disk or folder — spot the big blocks. |
+| PureMac | cask | GUI cleaner for caches, logs and app leftovers. |
+| Pearcleaner | cask | Finds the leftovers of an app you are removing (and orphans of apps already gone). |
+| DevCleaner | cask, only where Xcode is declared (`profiles/dev-apps.nix`) | Xcode DerivedData, archives, old simulators and device support. |
+
+The nixpkgs tools are on every Mac, including the Studio. Mole and the casks
+come through Homebrew, so the Studio (`fleet-member-mac`: `homebrew.enable =
+false`) does not get them. (nixpkgs' `mole` is a different program, an SSH
+tunnelling tool — hence the formula.)
+
+**Don'ts**
+
+- **Never run a cleaner automatically or on a schedule** — no LaunchAgent,
+  cron job or activation step. A cleaner is run by a person who reads its list.
+- **Dry-run first, always.** `mo clean`, `mo purge` and `mo installer` delete
+  permanently (not to Trash); run them with `--dry-run` and read the output.
+  `mo clean` also empties `~/.Trash` unless you protect it in
+  `mo clean --whitelist`. In the GUIs, review the list before confirming.
+- **Never `mo touchid`.** It rewrites `/etc/pam.d/sudo_local`, which nix-darwin
+  owns (`security.pam.services.sudo_local`, `modules/darwin/defaults.nix`;
+  `sudo-rebuild.nix` builds on it) — the next rebuild fights it.
+- **Never `mo slim`.** It thins the binaries inside app bundles in place; that
+  can break a bundle's code signature, and a Homebrew-installed app then no
+  longer matches its cask.
+- **Never `mo update` / `mo remove`** — Homebrew owns Mole here; it upgrades
+  with `rebuild.sh --upgrade=all`.
+- **Homebrew-managed apps are removed through dotfiles, not `mo uninstall` or
+  Pearcleaner:** drop the cask from its profile and add it to
+  `dotfiles.homebrew.retiredCasks` (`modules/darwin/homebrew.nix`); the next
+  `rebuild.sh` uninstalls it inside its one authentication. Removed by hand, the
+  next activation simply installs it again. Pearcleaner / `mo uninstall` are
+  fine for apps the flake does not declare.
+
+---
+
 ## Restic backups
 
 Targeted, encrypted, versioned backups of the folders the fleet backup policy

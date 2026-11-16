@@ -65,7 +65,8 @@ in
   #     imported, so both stay as set in System Settings → General → Sharing;
   #   - NO desktop/dev/ai profiles and no role casks/MAS apps: the host file
   #     ADOPTS what is already installed (exact casks for apps already in
-  #     /Applications) instead of adding anything new;
+  #     /Applications) instead of adding anything new — apart from the
+  #     fleet-wide disk tools every Mac gets (profiles/disk-tools.nix);
   #   - a MINIMAL home-manager (mkMac homeProfile = "household"): nothing but
   #     its own state — the user's own dotfiles stay.
   #
@@ -90,9 +91,9 @@ in
   # ── What FIRST activation changes ────────────────────────────────────────
   # Derived from what mkMac (flake.nix) imports for EVERY Mac: modules/darwin/
   # {defaults,homebrew,mas,xcode-license,fleet-update,restic-backup,
-  # fleet-launcher}.nix, this role, and home-manager for the primary user
-  # (configurations/macos/home-household.nix + modules/home/profiles/
-  # fleet-audit.nix).
+  # fleet-launcher,profiles/disk-tools}.nix, this role, and home-manager for
+  # the primary user (configurations/macos/home-household.nix +
+  # modules/home/profiles/fleet-audit.nix).
   #
   # (a) SYSTEM-WIDE (affects every account on the Mac):
   #   - application firewall ON + stealth mode (firewall.nix), with built-in
@@ -119,6 +120,10 @@ in
   #     primary user through the fleet launcher whether or not anybody is
   #     logged in. Reads her home like the old agent did, uploads to the
   #     config service; no window, no prompt (modules/darwin/fleet-audit.nix);
+  #   - disk tools for every account (profiles/disk-tools.nix): dust, dua and
+  #     ncdu on the system PATH (nixpkgs), the `mole` formula and the
+  #     grandperspective, pearcleaner and puremac casks via Homebrew (below).
+  #     Nothing runs them; they are on hand for a human;
   #   - Homebrew `brew bundle` (run as homebrew.user) installs the host's
   #     declared casks into /Applications — so that account must be able to
   #     write /Applications (an admin), and /opt/homebrew plus the app
