@@ -1,4 +1,4 @@
-{ ... }:
+{ pkgs, ... }:
 
 {
   # ── kassie-mbp-m1: shared household MacBook Pro (M1 Pro), ADOPTED in place ──
@@ -34,6 +34,14 @@
   # casks' app bundles to him. Kassie stays primaryUser (home-manager; the
   # daily audit runs as her); her `brew` says "managed by rouven; ask an admin".
   homebrew.user = "rouven";
+
+  # CLI tools for EVERY account on this Mac, from nixpkgs into the system
+  # profile (/run/current-system/sw/bin). Kassie is a standard user and
+  # Homebrew belongs to rouven, so she cannot `brew install` anything herself;
+  # the household home profile installs no CLI tools. Ask here, not via brew.
+  environment.systemPackages = [
+    pkgs.gh            # GitHub CLI (NEW — Kassie asked for it, 2026-11-16)
+  ];
 
   homebrew.casks = [
     # ── Browsers ──
