@@ -91,8 +91,31 @@
 # Every external step is bounded (fetch 10 min, build 3 h, activation 1 h) and
 # runs with stdin closed, so a prompt can only ever fail, never block.
 #
+# DEPLOY NOW (org.rh7.deploy-request). A second root LaunchDaemon, every 15
+# minutes, asks the pinned config service (/etc/rh7/config-service) whether
+# the owner requested a deploy of this host: GET /api/fleet/deploy-request/
+# <flakeAttr>. Nothing requested -> it exits silently; an unreachable service
+# -> one log line, nothing else (fail-soft). Requested -> it acks `started`,
+# runs this same rh7-fleet-update once with --requested <id> (and --fast-lane
+# when the owner allowed it), and acks the result read back from state.json
+# (status, commit, lane, reason). It goes through the update's own lock, so it
+# never overlaps the nightly run: whichever comes second logs lock-held and
+# the request stays pending for the next poll. Outbound only — nothing on the
+# Mac listens, and SSH / Screen Sharing stay as they are (household Macs: off).
+# Requested runs keep every trust check; they differ only in power (battery
+# with >= 50% charge is enough), jitter (none) and the FAST LANE: with
+# `fastLaneFile` set (mkMac `hostFile`, a file only this host imports) and
+# the owner's consent, the signed main tip is applied instead of the channel
+# tip when channel..main touches nothing but that file and only adds
+# cask/formula/package list entries (and CI is green on it). fleet/stable is
+# not moved; the host is ahead of it until it catches up (channel runs record
+# skipped/channel-behind meanwhile). Details: scripts/fleet-update.sh
+# "REQUESTED RUNS", scripts/deploy-request.sh, docs/device-guide.md
+# "Deploy now (remote, household)".
+#
 # Studio and mini are deliberately NOT enabled (control plane / out of scope);
-# hosts opt in through mkMac's `autoUpdate` argument in flake.nix.
+# hosts opt in through mkMac's `autoUpdate` argument in flake.nix. The deploy-
+# request daemon exists exactly where this module is enabled.
 { config, lib, pkgs, ... }:
 
 let
@@ -106,7 +129,7 @@ let
   runner = pkgs.writeShellScriptBin "rh7-fleet-update" ''
     # Store tools first. nix itself comes from the official installer's default
     # profile (nix.enable = false in defaults.nix); pmset/pgrep/sudo from macOS.
-    export PATH=${lib.makeBinPath [ pkgs.git pkgs.gnupg pkgs.coreutils pkgs.jq pkgs.gnugrep pkgs.gnused ]}:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    export PATH=${lib.makeBinPath [ pkgs.git pkgs.gnupg pkgs.coreutils pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.curl ]}:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin
     export NIX_REMOTE=daemon
     export HOME=/var/root
     exec ${pkgs.bash}/bin/bash ${../../scripts/fleet-update.sh} \
@@ -114,6 +137,18 @@ let
       --flake-attr ${lib.escapeShellArg cfg.flakeAttr} \
       --signer-key ${signerKey} \
       --primary-user ${lib.escapeShellArg config.system.primaryUser} \
+      ${lib.optionalString (cfg.fastLaneFile != null) "--fast-lane-file ${lib.escapeShellArg cfg.fastLaneFile}"} \
+      "$@"
+  '';
+
+  # The deploy-request poller. It runs the update through the store path of the
+  # runner above (same generation), never through a PATH lookup.
+  poller = pkgs.writeShellScriptBin "rh7-deploy-request" ''
+    export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.curl ]}:/usr/bin:/bin:/usr/sbin:/sbin
+    export HOME=/var/root
+    exec ${pkgs.bash}/bin/bash ${../../scripts/deploy-request.sh} \
+      --hostname ${lib.escapeShellArg cfg.flakeAttr} \
+      --fleet-update ${runner}/bin/rh7-fleet-update \
       "$@"
   '';
 in
@@ -135,6 +170,18 @@ in
         user can change.
       '';
     };
+
+    fastLaneFile = lib.mkOption {
+      type = lib.types.nullOr (lib.types.strMatching "configurations/macos/[A-Za-z0-9._-]+\\.nix");
+      default = null;
+      example = "configurations/macos/kassie-mbp-m1.nix";
+      description = ''
+        Repo-relative path of the file only this host imports (mkMac sets it
+        from `hostFile`). A requested deploy may take the fast lane only for
+        a change confined to this file. null = no fast lane: a shared file
+        (macbook.nix) changes other hosts too.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -143,7 +190,7 @@ in
       message = "services.rh7.fleetUpdate.flakeAttr must name this host's darwinConfiguration";
     }];
 
-    environment.systemPackages = [ runner ];
+    environment.systemPackages = [ runner poller ];
 
     launchd.daemons.fleet-update.serviceConfig = {
       Label = "org.rh7.fleet-update";
@@ -158,6 +205,21 @@ in
       AbandonProcessGroup = true;
       LowPriorityIO = true;
       Nice = 5;
+    };
+
+    # "Deploy now" poller — see DEPLOY NOW above. Stable path for the same
+    # reason as the update's plist. AbandonProcessGroup: when an update it
+    # started changes THIS plist, activation unloads the poller mid-run; the
+    # update itself must finish, and the next poll acks its result from
+    # state.json. No Nice/LowPriorityIO: somebody is waiting for this one.
+    launchd.daemons.deploy-request.serviceConfig = {
+      Label = "org.rh7.deploy-request";
+      ProgramArguments = [ "/run/current-system/sw/bin/rh7-deploy-request" ];
+      StartInterval = 900;
+      RunAtLoad = false;
+      StandardOutPath = "/var/log/rh7-deploy-request.launchd.log";
+      StandardErrorPath = "/var/log/rh7-deploy-request.launchd.log";
+      AbandonProcessGroup = true;
     };
   };
 }

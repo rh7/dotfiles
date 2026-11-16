@@ -651,6 +651,79 @@ channel reaches that commit; then it applies normally.
 - **Her `brew`:** Homebrew is not hers — in her shells `brew` answers
   "Homebrew on this Mac is managed by rouven; ask an admin".
 
+### Deploy now (remote, household)
+
+For "add an app for Kassie and have it on her Mac within half an hour" —
+without SSH or Screen Sharing (both stay off on household Macs). Every Mac
+with the nightly fleet-update (canaries and `fleet/stable` hosts; not the
+Studio or the mini) also runs `org.rh7.deploy-request`, a root LaunchDaemon
+that asks the config service every 15 minutes whether a deploy of this host
+was requested. Outbound only; nothing on the Mac listens.
+
+1. Add the app to the host's own file and merge it as usual (PR, CI green):
+
+   ```nix
+   # configurations/macos/kassie-mbp-m1.nix
+   homebrew.casks = [
+     …
+     "newapp"           # NEW — for Kassie
+   ];
+   ```
+
+2. Request the deploy (admin, from a tailnet machine with admin identity —
+   the same gate as ack/snooze):
+
+   ```bash
+   curl -X POST -H 'Content-Type: application/json' -d '{"fast_lane": true}' \
+     http://100.100.241.110:3456/api/fleet/deploy-request/kassie-mbp-m1
+   # status / result:
+   curl http://100.100.241.110:3456/api/fleet/deploy-request/kassie-mbp-m1
+   # cancel while still pending:
+   curl -X DELETE http://100.100.241.110:3456/api/fleet/deploy-request/kassie-mbp-m1
+   ```
+
+3. Within 15 minutes the Mac picks it up, acknowledges `started`, runs its
+   normal signed update once and acknowledges the result: `applied`, `no-op`,
+   `refused` or `failed`, with the commit, the `lane` and a `reason`. The
+   GET above shows it as `last_result`.
+
+**Which commit it applies.** Normally the host's channel (`fleet/stable`) —
+which does not have your change until the canaries soaked it. With
+`"fast_lane": true` the Mac instead applies the newest signed `main` commit,
+but **only** if everything between its channel and that commit is:
+
+- confined to the host's own file — the one passed as `hostFile` in
+  `flake.nix` (today only `kassie-mbp-m1`; a host built from a shared file
+  such as `macbook.nix` has no fast lane);
+- additions of list entries in it — a quoted cask/formula in
+  `homebrew.casks`/`homebrew.brews`, or `pkgs.<name>` in
+  `environment.systemPackages` — plus comment/blank-line edits; nothing
+  removed or changed, and no `''` strings in the file;
+- signed by GitHub's web-flow key (the same check the nightly run makes) and
+  green in CI (read from GitHub's public API).
+
+Anything else — another file touched, a removal, CI red, pending or
+unreachable — applies the channel instead and says why
+(`reason: fast-lane:other-files`, `…:ci-not-green`, …). `fleet/stable` is never
+moved by this: the Mac is simply ahead of it, and its nightly run records
+`skipped` / `channel-behind` (not a failure) until the channel catches up.
+
+**What still holds a request.** Every nightly rule still applies: the
+signature and no-rewind checks, the Dock guard (`failed`, reason
+`dock-protect` — a human decides), the Homebrew-user check, the 3-hour build
+bound. On battery it runs with **at least 50 % charge** (the nightly run never
+runs on battery); below that, while a manual `rebuild.sh` is running, or while
+the nightly run holds the lock, the request simply stays pending and the next
+poll tries again. If Kassie is logged out, it still applies (household
+activation does not need her session). New apps get Gatekeeper's one-time
+"downloaded from the Internet — Open?" on first launch.
+
+**On the Mac** (owner, locally): `sudo rh7-deploy-request` polls once now;
+logs are `/var/log/rh7-deploy-request.log` and
+`/var/log/rh7-fleet-update.log`; the result is `request_id`/`lane`/
+`fast_lane_reason` in `/var/lib/rh7-fleet-update/state.json` (also reported
+by the daily audit's `fleet_update`).
+
 ---
 
 ## Fixing issues on a device

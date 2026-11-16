@@ -3821,7 +3821,10 @@ print(json.dumps(result) if result else '{}')
 #                                     `dock_protect` (would_remove entries: app
 #                                     folders verbatim, the user's home as ~
 #                                     without the user name, anything else
-#                                     basename only).
+#                                     basename only). A requested ("deploy
+#                                     now") run's state also carries
+#                                     `request_id`, `lane`, `fast_lane_reason`,
+#                                     and a fast-lane apply `applied_lane`.
 # Linux has no such daemon -> {"enabled": false}. Paths are parameters so the
 # test suite can point them at fixtures.
 collect_fleet_update() {
@@ -3847,6 +3850,11 @@ RESULT_REASONS = {"applied": {None}, "no-op": {None}, "skipped": SKIPPED,
 KEYS = ("schema", "enabled", "channel", "last_run_at", "last_result", "reason",
         "target_commit", "applied_commit", "last_success_at", "generation",
         "consecutive_failures")
+REQUEST_KEYS = ("request_id", "lane", "fast_lane_reason")
+REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+FAST_LANE_REASONS = {"not-requested", "channel-is-main", "no-host-file", "same-as-channel",
+                     "signature-invalid", "not-descendant", "other-files", "not-list-addition",
+                     "ci-not-green", "ci-unknown"}
 DOCK_MAX = 30
 USER_HOME = re.compile(r"^/Users/[^/]+/(.+)$")
 
@@ -3900,6 +3908,19 @@ def valid(s):
     f = s.get("consecutive_failures")
     if isinstance(f, bool) or not isinstance(f, int) or f < 0:
         return False
+    # Requested-run keys: all three or none (fleet-update.sh write_state).
+    present = [k in s for k in REQUEST_KEYS]
+    if any(present) and not all(present):
+        return False
+    if all(present):
+        if not (isinstance(s["request_id"], str) and REQUEST_ID.match(s["request_id"])):
+            return False
+        if s["lane"] not in (None, "fast", "channel"):
+            return False
+        if s["fast_lane_reason"] is not None and s["fast_lane_reason"] not in FAST_LANE_REASONS:
+            return False
+    if "applied_lane" in s and (s["applied_lane"] != "fast" or s["applied_commit"] is None):
+        return False
     return True
 
 try:
@@ -3912,6 +3933,9 @@ if not valid(state):
     print(json.dumps(UNREADABLE))
 else:
     out = {k: state[k] for k in KEYS}
+    for k in REQUEST_KEYS + ("applied_lane",):
+        if k in state:
+            out[k] = state[k]
     if "dock_protect" in state:
         d = state["dock_protect"]
         out["dock_protect"] = {"would_remove": [dock_path(p) for p in d["would_remove"]],

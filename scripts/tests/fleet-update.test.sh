@@ -118,11 +118,129 @@ DIV_B=$(commit pinned "div b")
 gw -c gpg.program="$W/sign-pinned" merge -q --no-ff -m "merge div a" -S"$(cat "$W/pinned.fpr")" "$DIV_A"
 DIV_MAIN=$(gw rev-parse HEAD)
 
+# Fast-lane fixtures: commits that change files. FL_BASE (the channel) carries
+# the host's own file configurations/macos/test-host.nix; each variant on top
+# of it is one kind of main tip a requested run may or may not fast-lane.
+HF_REL=configurations/macos/test-host.nix
+HF="$W/work/$HF_REL"
+# hf <casks> <packages> <program-arguments> — the host file's three lists.
+hf() {
+  mkdir -p "$(dirname "$HF")"
+  { echo '{ pkgs, ... }:'; echo '{'
+    echo '  homebrew.casks = ['; printf '%s\n' "$1"; echo '  ];'
+    echo '  environment.systemPackages = ['; printf '%s\n' "$2"; echo '  ];'
+    echo '  launchd.daemons.demo.serviceConfig.ProgramArguments = ['; printf '%s\n' "$3"; echo '  ];'
+    echo '}'; } >"$HF"
+}
+CASKS0='    "firefox"          # browser
+                       # (a continued comment)
+    "zen"'
+PKGS0='    pkgs.git'
+PROG0='    "/bin/echo"'
+# commit_files <key|none> <msg> — commit the work tree as it is, prints its sha.
+commit_files() {
+  gw add -A
+  if [[ "$1" == none ]]; then
+    gw -c commit.gpgsign=false commit -q -m "$2"
+  else
+    gw -c gpg.program="$W/sign-$1" commit -q -m "$2" -S"$(cat "$W/$1.fpr")"
+  fi
+  gw rev-parse HEAD
+}
+gw checkout -q --detach "$C2"
+echo "other" >"$W/work/other.txt"
+hf "$CASKS0" "$PKGS0" "$PROG0"
+FL_BASE=$(commit_files pinned "fl: base with the host file")
+hf "$CASKS0
+    \"newapp\"           # NEW — Kassie asked for it" "$PKGS0" "$PROG0"
+FL_CASK=$(commit_files pinned "fl: one cask added")
+hf "$CASKS0
+    \"newapp\"           # NEW — Kassie asked for it
+    \"acme/tap/another\"" "$PKGS0" "$PROG0"
+FL_CASK2=$(commit_files pinned "fl: a second (tap-qualified) cask")
+echo "changed elsewhere" >"$W/work/other.txt"
+FL_NEXT=$(commit_files pinned "fl: an unrelated change after both")
+gw checkout -q --detach "$FL_BASE"
+hf "$CASKS0" "$PKGS0
+    pkgs.jq" "$PROG0"
+FL_PKGS=$(commit_files pinned "fl: one package added")
+gw checkout -q --detach "$FL_BASE"
+hf "$CASKS0
+    \"newapp\"" "$PKGS0" "$PROG0"
+echo "also touched" >"$W/work/other.txt"
+FL_OTHER=$(commit_files pinned "fl: a cask plus another file")
+gw checkout -q --detach "$FL_BASE"
+hf '    "firefox"          # browser
+                       # (a continued comment)' "$PKGS0" "$PROG0"
+FL_REMOVE=$(commit_files pinned "fl: a cask removed")
+gw checkout -q --detach "$FL_BASE"
+hf '    "firefox"          # browser
+    "zen"
+    "newapp"' "$PKGS0" "$PROG0"
+FL_COMMENT=$(commit_files pinned "fl: a comment line dropped, a cask added")
+gw checkout -q --detach "$FL_BASE"
+hf "$CASKS0" "$PKGS0" '    "reboot"
+    "/bin/echo"'
+FL_PROG=$(commit_files pinned "fl: a token added to ProgramArguments")
+gw checkout -q --detach "$FL_BASE"
+hf "$CASKS0" "$PKGS0" "$PROG0"
+printf '  system.activationScripts.postActivation.text = %s\n' "''" >>"$HF"
+FL_CODE=$(commit_files pinned "fl: code added to the host file")
+gw checkout -q --detach "$FL_BASE"
+chmod +x "$HF"
+FL_MODE=$(commit_files pinned "fl: host file mode changed")
+gw checkout -q --detach "$FL_BASE"
+hf "$CASKS0
+    \"newapp\"" "$PKGS0" "$PROG0"
+FL_UNSIGNED=$(commit_files none "fl: one cask added, unsigned")
+
 # ── Stubs ────────────────────────────────────────────────────────────────────
 STUBS="$W/stubs"; mkdir -p "$STUBS"
 cat >"$STUBS/pmset" <<'EOF'
 #!/usr/bin/env bash
 echo "Now drawing from '${STUB_POWER:-AC Power}'"
+echo " -InternalBattery-0 (id=4653155)	${STUB_BATTERY-80}%; discharging; 4:12 remaining present: true"
+EOF
+cat >"$STUBS/curl" <<'EOF'
+#!/usr/bin/env bash
+# The public GitHub API (fleet-update's fast-lane CI check) and the config
+# service (the deploy-request poller, end to end). STUB_CI: green (default) |
+# red | pending | error | truncated. Config service: GET -> $STUB_DR_GET,
+# POST -> body appended to $STUB_DR_ACKS, answered $STUB_ACK_CODE (200).
+url="" out="" fmt="" method=GET data=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -w) fmt="$2"; shift 2 ;;
+    -X) method="$2"; shift 2 ;;
+    --data-binary) data="$2"; shift 2 ;;
+    -H|--connect-timeout|--max-time|--proto) shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "curl $method $url" >>"$STUB_LOG"
+code=200
+case "$url" in
+  https://api.github.com/repos/rh7/dotfiles/commits/*/check-runs\?per_page=100)
+    ok='{"status":"completed","conclusion":"success"}'
+    case "${STUB_CI:-green}" in
+      error) exit 22 ;;
+      red) body="{\"total_count\":2,\"check_runs\":[$ok,{\"status\":\"completed\",\"conclusion\":\"failure\"}]}" ;;
+      pending) body="{\"total_count\":2,\"check_runs\":[$ok,{\"status\":\"in_progress\",\"conclusion\":null}]}" ;;
+      truncated) body="{\"total_count\":120,\"check_runs\":[$ok]}" ;;
+      *) body="{\"total_count\":2,\"check_runs\":[$ok,$ok]}" ;;
+    esac ;;
+  https://api.github.com/repos/rh7/dotfiles/commits/*/status)
+    body='{"total_count":0,"state":"pending","statuses":[]}' ;;
+  */api/fleet/deploy-request/*/ack)
+    echo "$data" >>"$STUB_DR_ACKS"; code=${STUB_ACK_CODE:-200}; body='{}' ;;
+  */api/fleet/deploy-request/*)
+    body=$(cat "$STUB_DR_GET") ;;
+  *) exit 6 ;;
+esac
+if [[ -n "$out" ]]; then printf '%s' "$body" >"$out"; else printf '%s' "$body"; fi
+[[ -z "$fmt" ]] || printf '%s' "$code"
 EOF
 cat >"$STUBS/pgrep" <<'EOF'
 #!/usr/bin/env bash
@@ -221,11 +339,13 @@ fresh() { # new sandbox root + stub store
   STATE="$ROOT/var/lib/rh7-fleet-update/state.json"
   : >"$ROOT/stub.log"
 }
-run_fu() { # run_fu [args...] -> OUT, RC   (CHANNEL / PINNED overridable)
+run_fu() { # run_fu [args...] -> OUT, RC   (CHANNEL / PINNED overridable; NO_FLF=1: no host file)
+  local flf=(--fast-lane-file "$HF_REL")
+  [[ -z "${NO_FLF:-}" ]] || flf=()
   OUT=$(env FLEET_UPDATE_ROOT="$ROOT" FLEET_UPDATE_REPO_URL="file://$W/origin.git" \
         PATH="$STUBS:$PATH" STUB_LOG="$ROOT/stub.log" STUB_STORE="$ROOT/store" \
         bash "$SCRIPT" --channel "${CHANNEL:-fleet/stable}" --flake-attr test-host \
-        --signer-key "${PINNED:-$W/pinned.asc}" --primary-user tester "$@" 2>&1)
+        --signer-key "${PINNED:-$W/pinned.asc}" --primary-user tester "${flf[@]}" "$@" 2>&1)
   RC=$?
 }
 field() { jq -r --arg k "$1" '.[$k] | if . == null then "null" else tostring end' "$STATE" 2>/dev/null; }
@@ -236,8 +356,17 @@ validate_state() {
   jq -e '
     def iso: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
     def sha: type == "string" and test("^[0-9a-f]{40}$");
-    ((keys - ["dock_protect"]) == ["applied_commit","channel","consecutive_failures","enabled","generation",
+    ((keys - ["dock_protect", "request_id", "lane", "fast_lane_reason", "applied_lane"])
+      == ["applied_commit","channel","consecutive_failures","enabled","generation",
               "last_result","last_run_at","last_success_at","reason","schema","target_commit"])
+    and (has("request_id") == has("lane") and has("lane") == has("fast_lane_reason"))
+    and (if has("request_id") then (.request_id | type == "string")
+          and (.lane == null or (.lane | IN("fast", "channel")))
+          and (.fast_lane_reason == null or (.fast_lane_reason | IN("not-requested", "channel-is-main",
+               "no-host-file", "same-as-channel", "signature-invalid", "not-descendant", "other-files",
+               "not-list-addition", "ci-not-green", "ci-unknown")))
+         else true end)
+    and (if has("applied_lane") then .applied_lane == "fast" else true end)
     and .schema == 1 and .enabled == true
     and (.channel | IN("main", "fleet/stable"))
     and (.last_run_at | iso)
@@ -724,6 +853,183 @@ echo "fleet-update — usage"
 fresh
 run_fu --channel nightly
 check "unknown channel rejected" "$RC" "64"
+run_fu --fast-lane
+check "--fast-lane without --requested rejected" "$RC" "64"
+run_fu --requested 'r1;reboot'
+check "request id outside [A-Za-z0-9-] rejected" "$RC" "64"
+run_fu --requested r1 --scheduled
+check "--requested with --scheduled rejected" "$RC" "64"
+NO_FLF=1 run_fu --fast-lane-file ../../etc/x.nix
+check "--fast-lane-file outside configurations/macos rejected" "$RC" "64"
+
+echo ""
+echo "fleet-update — requested runs: the fast lane (eligible)"
+ciq() { grep -c 'api.github.com' "$ROOT/stub.log" || true; }
+# lane <label> <lane|null> <fast_lane_reason|null> <request id>
+lane() {
+  check "$1: lane=$2" "$(field lane)" "$2"
+  check "$1: fast_lane_reason=$3" "$(field fast_lane_reason)" "$3"
+  check "$1: request_id recorded" "$(field request_id)" "$4"
+}
+fresh; refs "$FL_CASK" "$FL_BASE"
+run_fu --requested req-1 --fast-lane
+expect "cask added to the host's own file" 0 applied null
+lane "cask added" fast null req-1
+check "cask added: the main tip is applied" "$(field applied_commit)" "$FL_CASK"
+check "cask added: applied_lane fast" "$(field applied_lane)" "fast"
+check "cask added: CI asked (check runs + status)" "$(ciq)" "2"
+check "cask added: checkout is the main tip" "$(git -C "$ROOT/var/lib/rh7-fleet-update/dotfiles" rev-parse HEAD)" "$FL_CASK"
+check "cask added: the channel is not moved" "$(git -C "$W/origin.git" rev-parse refs/heads/fleet/stable)" "$FL_BASE"
+cp "$STATE" "$W/fast-state.json"
+run_fu
+expect "nightly run after a fast-lane apply: channel behind it" 0 skipped channel-behind
+check "behind fast lane: not counted as a failure" "$(field consecutive_failures)" "0"
+check "behind fast lane: no request keys on a nightly state" "$(field request_id)" "null"
+check "behind fast lane: applied_lane carried" "$(field applied_lane)" "fast"
+check "behind fast lane: nothing built" "$(builds)" "1"
+run_fu --requested req-2 --fast-lane
+expect "requested again, main unchanged (main tip == applied)" 0 no-op null
+lane "requested again" fast null req-2
+refs "$FL_NEXT" "$FL_CASK2"
+run_fu
+expect "the channel catches up past the fast-laned commit" 0 applied null
+check "caught up: applied_commit is the channel tip" "$(field applied_commit)" "$FL_CASK2"
+check "caught up: applied_lane cleared" "$(field applied_lane)" "null"
+
+fresh; refs "$FL_CASK2" "$FL_BASE"
+run_fu --requested req-3 --fast-lane
+expect "two casks (one tap-qualified) in one go" 0 applied null
+lane "two casks" fast null req-3
+fresh; refs "$FL_PKGS" "$FL_BASE"
+run_fu --requested req-4 --fast-lane
+lane "pkgs.<name> added to environment.systemPackages" fast null req-4
+fresh; refs "$FL_COMMENT" "$FL_BASE"
+run_fu --requested req-5 --fast-lane
+lane "a comment line removed, a cask added" fast null req-5
+
+fresh; refs "$FL_CASK" "$FL_BASE"
+run_fu --requested req-6 --fast-lane --dry-run
+check "dry-run, fast lane: exit 0" "$RC" "0"
+grep -q "dry-run result: would-apply target=$FL_CASK lane=fast" <<<"$OUT" \
+  && good "dry-run reports the fast-lane target" || bad "dry-run fast lane" "$OUT"
+[[ ! -e "$STATE" ]] && good "dry-run, fast lane: no state written" || bad "dry-run fast lane: no state" "$(cat "$STATE")"
+
+echo ""
+echo "fleet-update — requested runs: the channel lane (fast lane not eligible)"
+# channel_lane <label> <main tip> <fast_lane_reason> [run_fu args...]
+channel_lane() {
+  local label="$1" tip="$2" why="$3"; shift 3
+  fresh; refs "$tip" "$FL_BASE"
+  run_fu --requested req-c "$@"
+  expect "$label" 0 applied null
+  lane "$label" channel "$why" req-c
+  check "$label: the channel tip is applied" "$(field applied_commit)" "$FL_BASE"
+  check "$label: no applied_lane" "$(field applied_lane)" "null"
+}
+channel_lane "diff touches another file" "$FL_OTHER" other-files --fast-lane
+check "another file: CI not even asked" "$(ciq)" "0"
+channel_lane "host file mode changed" "$FL_MODE" other-files --fast-lane
+channel_lane "a cask line removed" "$FL_REMOVE" not-list-addition --fast-lane
+check "removal: CI not even asked" "$(ciq)" "0"
+channel_lane "a token added to a non-package list (ProgramArguments)" "$FL_PROG" not-list-addition --fast-lane
+channel_lane "code added to the host file" "$FL_CODE" not-list-addition --fast-lane
+channel_lane "main tip not signed" "$FL_UNSIGNED" signature-invalid --fast-lane
+STUB_CI=red channel_lane "CI red" "$FL_CASK" ci-not-green --fast-lane
+STUB_CI=pending channel_lane "CI still running" "$FL_CASK" ci-not-green --fast-lane
+STUB_CI=error channel_lane "GitHub API unreachable" "$FL_CASK" ci-unknown --fast-lane
+STUB_CI=truncated channel_lane "more check runs than one page" "$FL_CASK" ci-unknown --fast-lane
+channel_lane "owner did not allow the fast lane" "$FL_CASK" not-requested
+check "not allowed: CI not asked" "$(ciq)" "0"
+NO_FLF=1 channel_lane "host without a host file of its own" "$FL_CASK" no-host-file --fast-lane
+channel_lane "main is the channel tip" "$FL_BASE" same-as-channel --fast-lane
+fresh; refs "$FL_CASK"
+CHANNEL=main run_fu --requested req-m --fast-lane
+expect "canary (follows main): requested" 0 applied null
+lane "canary" channel channel-is-main req-m
+
+fresh; refs "$FL_CASK" "$FL_CASK"; installed "$FL_CASK"
+run_fu
+refs "$FL_OTHER" "$FL_BASE"     # never: fleet/stable rewound below what was applied
+run_fu --requested req-r --fast-lane
+expect "channel rewound below a CHANNEL apply, fast lane not eligible" 3 refused not-fast-forward
+
+echo ""
+echo "fleet-update — requested runs: trust, power, lock"
+fresh; refs "$FL_CASK" "$UNSIGNED"
+run_fu --requested req-s --fast-lane
+expect "unsigned channel tip, eligible main: still refused" 3 refused signature-invalid
+check "unsigned channel: lane never chosen" "$(field lane)" "null"
+check "unsigned channel: request_id recorded" "$(field request_id)" "req-s"
+check "unsigned channel: nothing built" "$(builds)" "0"
+
+fresh; refs "$FL_CASK" "$FL_BASE"
+STUB_POWER='Battery Power' STUB_BATTERY=62 run_fu --requested req-b --fast-lane
+expect "requested on battery at 62%" 0 applied null
+fresh; refs "$FL_CASK" "$FL_BASE"
+STUB_POWER='Battery Power' STUB_BATTERY=50 run_fu --requested req-b --fast-lane
+expect "requested on battery at exactly 50%" 0 applied null
+fresh; refs "$FL_CASK" "$FL_BASE"
+STUB_POWER='Battery Power' STUB_BATTERY=49 run_fu --requested req-b --fast-lane
+expect "requested on battery at 49%" 0 skipped on-battery
+check "49%: request recorded, lane not chosen" "$(field request_id)/$(field lane)" "req-b/null"
+fresh; refs "$FL_CASK" "$FL_BASE"
+STUB_POWER='Battery Power' STUB_BATTERY='' run_fu --requested req-b --fast-lane
+expect "requested on battery, charge unknown" 0 skipped on-battery
+fresh; refs "$FL_CASK" "$FL_BASE"
+STUB_POWER='Battery Power' STUB_BATTERY=95 run_fu
+expect "nightly run on battery at 95%: still never" 0 skipped on-battery
+
+fresh; refs "$FL_CASK" "$FL_BASE"
+mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"; echo "$$ $(date +%s)" >"$ROOT/var/run/rh7-fleet-update.lock/pid"
+run_fu --requested req-l --fast-lane
+check "requested while the nightly run holds the lock: exit 0" "$RC" "0"
+[[ ! -e "$STATE" ]] && good "requested, lock held: state left to the holder" || bad "requested lock-held: state" "$(cat "$STATE")"
+check "requested, lock held: nothing built" "$(builds)" "0"
+
+echo ""
+echo "deploy-request poller -> fleet-update, end to end"
+POLLER="$HERE/../deploy-request.sh"
+cat >"$W/fu-wrapper" <<EOF
+#!/usr/bin/env bash
+exec bash '$SCRIPT' --channel fleet/stable --flake-attr test-host --signer-key '$W/pinned.asc' \\
+  --primary-user tester --fast-lane-file '$HF_REL' "\$@"
+EOF
+chmod +x "$W/fu-wrapper"
+run_dr() { # run_dr <GET body>
+  printf '%s' "$1" >"$ROOT/dr-get"
+  env DEPLOY_REQUEST_ROOT="$ROOT" FLEET_UPDATE_ROOT="$ROOT" FLEET_UPDATE_REPO_URL="file://$W/origin.git" \
+      PATH="$STUBS:$PATH" STUB_LOG="$ROOT/stub.log" STUB_STORE="$ROOT/store" \
+      STUB_DR_GET="$ROOT/dr-get" STUB_DR_ACKS="$ROOT/acks" \
+      bash "$POLLER" --hostname test-host --fleet-update "$W/fu-wrapper" >/dev/null 2>&1
+  RC=$?
+}
+dr_fresh() { fresh; mkdir -p "$ROOT/etc/rh7"; echo "http://127.0.0.1:3456" >"$ROOT/etc/rh7/config-service"; : >"$ROOT/acks"; }
+REQ='{"hostname":"test-host","requested":true,"request_id":"7c1e0a52-e2e","requested_at":"2026-11-16T09:58:00Z","fast_lane":true,"last_result":null}'
+dr_fresh; refs "$FL_CASK" "$FL_BASE"
+run_dr '{"hostname":"test-host","requested":false,"request_id":null,"requested_at":null,"fast_lane":false,"last_result":null}'
+check "no request: nothing run, nothing acked" "$(builds)/$(wc -l <"$ROOT/acks" | tr -d ' ')" "0/0"
+[[ ! -e "$STATE" ]] && good "no request: no state" || bad "no request: no state" "$(cat "$STATE")"
+
+dr_fresh; refs "$FL_CASK" "$FL_BASE"
+mkdir -p "$ROOT/var/run/rh7-fleet-update.lock"; echo "$$ $(date +%s)" >"$ROOT/var/run/rh7-fleet-update.lock/pid"
+run_dr "$REQ"
+check "nightly run holds the lock: only started acked" "$(jq -r .status "$ROOT/acks" | paste -sd ' ' -)" "started"
+check "lock held: nothing built" "$(builds)" "0"
+rm -rf "$ROOT/var/run/rh7-fleet-update.lock"
+run_dr "$REQ"
+check "lock released, next poll: started once, then applied" "$(jq -r .status "$ROOT/acks" | paste -sd ' ' -)" "started applied"
+check "final ack: same request_id, fast lane, the main tip" "$(tail -n 1 "$ROOT/acks" | jq -c '{request_id, lane, commit}')" \
+  "{\"request_id\":\"7c1e0a52-e2e\",\"lane\":\"fast\",\"commit\":\"$FL_CASK\"}"
+check "state.json carries the request id" "$(field request_id)" "7c1e0a52-e2e"
+expect "end to end" 0 applied null
+
+dr_fresh; refs "$FL_OTHER" "$FL_BASE"
+STUB_ACK_CODE=503 run_dr "$REQ"
+check "final ack refused by a 503: built once" "$(builds)" "1"
+run_dr "$REQ"
+check "next poll: result re-sent from state.json, not rebuilt" "$(builds)" "1"
+check "re-sent ack: channel lane, the reason, the channel tip" "$(tail -n 1 "$ROOT/acks" | jq -c '{status, lane, reason, commit}')" \
+  "{\"status\":\"applied\",\"lane\":\"channel\",\"reason\":\"fast-lane:other-files\",\"commit\":\"$FL_BASE\"}"
 
 # ── audit-device.sh collect_fleet_update ─────────────────────────────────────
 echo ""
@@ -787,6 +1093,17 @@ for bad_state in '.last_run_at = "garbage"' '.reason = "fetch-failed"' \
                  '.last_result = "skipped" | .reason = "dock-protect" | .dock_protect = {"would_remove": [], "checked_at": "2026-11-11T03:30:00Z", "user": "kassie"}'; do
   jq "$bad_state" "$W/case1/var/lib/rh7-fleet-update/state.json" >"$A/off.json"
   check "contract violation ($bad_state) -> state-unreadable" \
+    "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
+done
+got=$(collect_fleet_update "$A/plist" "$W/fast-state.json")
+check "requested fast-lane state -> request keys and applied_lane relayed" \
+  "$(jq -c '{request_id, lane, fast_lane_reason, applied_lane}' <<<"$got")" \
+  '{"request_id":"req-1","lane":"fast","fast_lane_reason":null,"applied_lane":"fast"}'
+check "plain nightly state -> no request keys" "$(collect_fleet_update "$A/plist" "$A/state.json" | jq -c 'has("request_id") or has("lane")')" "false"
+for bad_state in 'del(.lane)' '.lane = "slow"' '.fast_lane_reason = "because"' '.request_id = "a b"' \
+                 '.applied_lane = "channel"' '.applied_commit = null'; do
+  jq "$bad_state" "$W/fast-state.json" >"$A/off.json"
+  check "requested-state violation ($bad_state) -> state-unreadable" \
     "$(collect_fleet_update "$A/plist" "$A/off.json")" '{"enabled": true, "error": "state-unreadable"}'
 done
 # shellcheck disable=SC2034
