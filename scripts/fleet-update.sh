@@ -86,7 +86,9 @@
 #     is then ahead of it, and later channel runs record skipped /
 #     channel-behind until the channel catches up (`applied_lane: fast`);
 #   - state.json additionally carries `request_id`, `lane` and
-#     `fast_lane_reason` (keys present only on a requested run's state).
+#     `fast_lane_reason` (keys present only on a requested run's state), and
+#     the same state is also kept as request-result.json, which only the next
+#     requested run replaces — the poller acknowledges from that file.
 #
 # Exit status: 0 applied / no-op / skipped / dry-run, 1 failed (or unreadable
 # state), 3 refused, 64 usage, 77 not root.
@@ -100,6 +102,10 @@ set -euo pipefail
 ROOT="${FLEET_UPDATE_ROOT:-}"
 STATE_DIR="$ROOT/var/lib/rh7-fleet-update"
 STATE_FILE="$STATE_DIR/state.json"
+# The last REQUESTED run's state, kept apart from state.json (which the next
+# nightly run overwrites) until the next requested run: the deploy-request
+# poller acks from it, also after a lost ack or after being unloaded mid-run.
+REQUEST_RESULT_FILE="$STATE_DIR/request-result.json"
 CHECKOUT="$STATE_DIR/dotfiles"
 BUILD_LINK="$STATE_DIR/result"
 LOCK_DIR="$ROOT/var/run/rh7-fleet-update.lock"
@@ -312,7 +318,11 @@ write_state() {
         { request_id: $rid, lane: ($lane | nullable), fast_lane_reason: ($flr | nullable) } end)
     + (if $alane == "fast" then { applied_lane: "fast" } else {} end)' >"$tmp"
   chmod 0644 "$tmp"
+  [[ -z "$REQUEST_ID" ]] || cp -pf "$tmp" "$STATE_DIR/.request-result.json.tmp"
   mv -f "$tmp" "$STATE_FILE"
+  if [[ -n "$REQUEST_ID" ]]; then
+    mv -f "$STATE_DIR/.request-result.json.tmp" "$REQUEST_RESULT_FILE"
+  fi
 }
 
 # ── Result handling ──────────────────────────────────────────────────────────

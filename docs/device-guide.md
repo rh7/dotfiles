@@ -722,7 +722,8 @@ activation does not need her session). New apps get Gatekeeper's one-time
 logs are `/var/log/rh7-deploy-request.log` and
 `/var/log/rh7-fleet-update.log`; the result is `request_id`/`lane`/
 `fast_lane_reason` in `/var/lib/rh7-fleet-update/state.json` (also reported
-by the daily audit's `fleet_update`).
+by the daily audit's `fleet_update`) until the next nightly run, and in
+`/var/lib/rh7-fleet-update/request-result.json` until the next request.
 
 ---
 

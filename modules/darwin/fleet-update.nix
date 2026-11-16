@@ -97,7 +97,8 @@
 # <flakeAttr>. Nothing requested -> it exits silently; an unreachable service
 # -> one log line, nothing else (fail-soft). Requested -> it acks `started`,
 # runs this same rh7-fleet-update once with --requested <id> (and --fast-lane
-# when the owner allowed it), and acks the result read back from state.json
+# when the owner allowed it), and acks the result read back from the update's
+# request-result.json (the requested run's state.json, kept until the next request)
 # (status, commit, lane, reason). It goes through the update's own lock, so it
 # never overlaps the nightly run: whichever comes second logs lock-held and
 # the request stays pending for the next poll. Outbound only — nothing on the
@@ -211,7 +212,7 @@ in
     # reason as the update's plist. AbandonProcessGroup: when an update it
     # started changes THIS plist, activation unloads the poller mid-run; the
     # update itself must finish, and the next poll acks its result from
-    # state.json. No Nice/LowPriorityIO: somebody is waiting for this one.
+    # request-result.json. No Nice/LowPriorityIO: somebody is waiting for this one.
     launchd.daemons.deploy-request.serviceConfig = {
       Label = "org.rh7.deploy-request";
       ProgramArguments = [ "/run/current-system/sw/bin/rh7-deploy-request" ];

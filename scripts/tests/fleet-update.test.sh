@@ -1037,8 +1037,13 @@ expect "end to end" 0 applied null
 dr_fresh; refs "$FL_OTHER" "$FL_BASE"
 STUB_ACK_CODE=503 run_dr "$REQ"
 check "final ack refused by a 503: built once" "$(builds)" "1"
+check "requested run: request-result.json holds it" "$(jq -r .request_id "$ROOT/var/lib/rh7-fleet-update/request-result.json")" "7c1e0a52-e2e"
+run_fu      # the nightly run comes first: state.json no longer names the request
+expect "nightly run before the next poll" 0 no-op null
+check "nightly run: no request keys in state.json" "$(field request_id)" "null"
+check "nightly run: request-result.json untouched" "$(jq -r .request_id "$ROOT/var/lib/rh7-fleet-update/request-result.json")" "7c1e0a52-e2e"
 run_dr "$REQ"
-check "next poll: result re-sent from state.json, not rebuilt" "$(builds)" "1"
+check "next poll: result re-sent from request-result.json, not rebuilt" "$(builds)" "1"
 check "re-sent ack: channel lane, the reason, the channel tip" "$(tail -n 1 "$ROOT/acks" | jq -c '{status, lane, reason, commit}')" \
   "{\"status\":\"applied\",\"lane\":\"channel\",\"reason\":\"fast-lane:other-files\",\"commit\":\"$FL_BASE\"}"
 

@@ -15,13 +15,15 @@
 #   2. GET /api/fleet/deploy-request/<host>. Unreachable, non-200 or not the
 #      contract -> one log line, exit 0 (fail-soft: the next poll retries).
 #      `requested: false` -> exit 0 without a word.
-#   3. requested: if state.json already holds the FINAL result of this
-#      request_id (an earlier poll ran it but its ack was lost, or this poller
-#      was unloaded mid-run by the activation it started), only that result is
-#      acked — the update is not run twice. Otherwise ack `started` (once per
+#   3. requested: if the update's request-result.json (the last requested
+#      run's state; state.json itself is overwritten by the next nightly run)
+#      already holds the FINAL result of this request_id (an earlier poll ran
+#      it but its ack was lost, or this poller was unloaded mid-run by the
+#      activation it started), only that result is acked — the update is not
+#      run twice. Otherwise ack `started` (once per
 #      request; rejected with a 4xx = cancelled or replaced since the GET ->
 #      not run) and run `rh7-fleet-update --requested <id> [--fast-lane]`.
-#   4. ack the final result read back from state.json — only if state.json
+#   4. ack the final result read back from request-result.json — only if it
 #      carries THIS request_id and a final result:
 #        applied | no-op | refused | failed  -> the same status
 #        skipped / channel-behind            -> no-op (nothing newer to apply)
@@ -49,7 +51,7 @@ set -uo pipefail
 ROOT="${DEPLOY_REQUEST_ROOT:-}"
 PIN_FILE="$ROOT/etc/rh7/config-service"
 STATE_DIR="$ROOT/var/lib/rh7-fleet-update"
-STATE_FILE="$STATE_DIR/state.json"
+RESULT_FILE="$STATE_DIR/request-result.json"
 STARTED_FILE="$STATE_DIR/deploy-request.started"
 LOG_FILE="$ROOT/var/log/rh7-deploy-request.log"
 LOG_MAX_BYTES=$((256 * 1024))
@@ -122,9 +124,9 @@ http() {
 }
 
 # final_ack <request_id> — the final ack body for this request from
-# state.json, on stdout; 1 when state.json holds no final result for it.
+# RESULT_FILE, on stdout; 1 when it holds no final result for it.
 final_ack() {
-  [[ -r "$STATE_FILE" ]] || return 1
+  [[ -r "$RESULT_FILE" ]] || return 1
   jq -ce --arg rid "$1" '
     select(type == "object" and .request_id == $rid)
     | (if .last_result == "skipped" then
@@ -138,12 +140,12 @@ final_ack() {
                    (if .fast_lane_reason != null and .fast_lane_reason != "not-requested"
                     then "fast-lane:" + .fast_lane_reason else null end) ]
                  | map(select(type == "string")) | if length == 0 then null else join("; ") end) }' \
-    "$STATE_FILE" 2>/dev/null
+    "$RESULT_FILE" 2>/dev/null
 }
 
-# state_has_request <request_id> — state.json was written by a run of it.
+# state_has_request <request_id> — RESULT_FILE was written by a run of it.
 state_has_request() {
-  [[ -r "$STATE_FILE" ]] && jq -e --arg rid "$1" '.request_id == $rid' "$STATE_FILE" >/dev/null 2>&1
+  [[ -r "$RESULT_FILE" ]] && jq -e --arg rid "$1" '.request_id == $rid' "$RESULT_FILE" >/dev/null 2>&1
 }
 
 # ack <json> — POST it; logs the outcome. 0 accepted, 1 not delivered
@@ -195,7 +197,7 @@ main() {
 
   local body
   if body=$(final_ack "$rid"); then
-    log "request $rid already ran (state.json) — acknowledging its result"
+    log "request $rid already ran ($RESULT_FILE) — acknowledging its result"
     ack "$body"
     exit 0
   fi
@@ -217,12 +219,12 @@ main() {
   [[ "$fast" == 1 ]] && args+=(--fast-lane)
   log "deploy requested (request $rid, fast lane allowed: $([[ "$fast" == 1 ]] && echo yes || echo no)) — running rh7-fleet-update ${args[*]}"
   local rc=0
-  # Its own log is /var/log/rh7-fleet-update.log; the result is state.json.
+  # Its own log is /var/log/rh7-fleet-update.log; the result is RESULT_FILE.
   "$FLEET_UPDATE" "${args[@]}" </dev/null >/dev/null 2>&1 || rc=$?
   if body=$(final_ack "$rid"); then
     ack "$body"
   elif state_has_request "$rid"; then
-    log "request $rid not done: $(jq -r '"\(.last_result) (\(.reason // "-"))"' "$STATE_FILE" 2>/dev/null) — retried on the next poll"
+    log "request $rid not done: $(jq -r '"\(.last_result) (\(.reason // "-"))"' "$RESULT_FILE" 2>/dev/null) — retried on the next poll"
   else
     log "request $rid not run (rh7-fleet-update exit $rc, no state from this request: another run holds the lock, or it stopped early) — retried on the next poll"
   fi

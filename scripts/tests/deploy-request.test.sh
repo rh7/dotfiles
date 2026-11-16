@@ -8,7 +8,7 @@
 # Pinned here: it is silent and does nothing when nothing is requested or the
 # service is away; it runs the update once per request and never twice for the
 # same request; the final ack carries THIS request_id and the result mapped
-# from state.json; transient holds (lock held by the nightly run, battery,
+# from the update's request-result.json; transient holds (lock held by the nightly run, battery,
 # manual rebuild) leave the request pending for the next poll.
 #
 # curl and rh7-fleet-update are stubs. The end-to-end path through the real
@@ -73,12 +73,15 @@ EOF
 cat >"$STUBS/rh7-fleet-update" <<'EOF'
 #!/usr/bin/env bash
 # Records its arguments; writes $STUB_STATE (a jq program over the request id,
-# $rid) as state.json unless it is "none" (lock held: nothing written).
+# $rid) as state.json AND request-result.json — what a requested run of the
+# real script writes — unless it is "none" (lock held: nothing written).
 echo "fleet-update $*" >>"$STUB_LOG"
 rid=""; while [[ $# -gt 0 ]]; do [[ "$1" == --requested ]] && rid="$2"; shift; done
 [[ "${STUB_STATE:-none}" == none ]] && exit 0
-mkdir -p "$DEPLOY_REQUEST_ROOT/var/lib/rh7-fleet-update"
-jq -n --arg rid "$rid" "$STUB_STATE" >"$DEPLOY_REQUEST_ROOT/var/lib/rh7-fleet-update/state.json"
+d="$DEPLOY_REQUEST_ROOT/var/lib/rh7-fleet-update"
+mkdir -p "$d"
+jq -n --arg rid "$rid" "$STUB_STATE" >"$d/state.json"
+cp "$d/state.json" "$d/request-result.json"
 EOF
 chmod +x "$STUBS"/*
 
@@ -244,8 +247,13 @@ fresh
 STUB_ACK_CODES="200 down 200" STUB_GET_BODY="$(request d1 true)" STUB_STATE="$(state applied null fast null)" run_dr
 check "final ack lost in transit: run once" "$(runs)" "1"
 grep -q 'ack applied: config service unreachable' <<<"$(logf)" && good "lost ack: logged" || bad "lost ack logged" "$(logf)"
+# A nightly run in between overwrites state.json (no request keys); the
+# request's own result file is what the re-send comes from.
+jq 'del(.request_id, .lane, .fast_lane_reason) | .last_result = "no-op"' \
+  "$ROOT/var/lib/rh7-fleet-update/state.json" >"$W/s" && mv "$W/s" "$ROOT/var/lib/rh7-fleet-update/state.json"
 STUB_ACK_CODES="200 down 200" STUB_GET_BODY="$(request d1 true)" STUB_STATE="$(state applied null fast null)" run_dr
-check "next poll: re-sends the result from state.json, no re-run" "$(runs)/$(ack_n 3 | jq -r '"\(.request_id) \(.status)"')" "1/d1 applied"
+check "next poll after a nightly run: re-sends the result, no re-run" "$(runs)/$(ack_n 3 | jq -c '{request_id, status}')" \
+  '1/{"request_id":"d1","status":"applied"}'
 
 fresh
 STUB_ACK_CODES="200 409" STUB_GET_BODY="$(request x1 true)" STUB_STATE="$(state applied null fast null)" run_dr
@@ -254,8 +262,8 @@ check "409: exit 0" "$RC" "0"
 
 fresh
 STUB_GET_BODY="$(request new-2 true)" STUB_STATE="$(state applied null fast null)" run_dr
-mkdir -p "$ROOT/var/lib/rh7-fleet-update"
-jq '.request_id = "old-1"' "$ROOT/var/lib/rh7-fleet-update/state.json" >"$W/s" && mv "$W/s" "$ROOT/var/lib/rh7-fleet-update/state.json"
+jq '.request_id = "old-1"' "$ROOT/var/lib/rh7-fleet-update/request-result.json" >"$W/s" \
+  && mv "$W/s" "$ROOT/var/lib/rh7-fleet-update/request-result.json"
 : >"$ROOT/acks"
 STUB_GET_BODY="$(request new-3 true)" STUB_STATE="$(state no-op null channel same-as-channel)" run_dr
 check "a newer request id: runs again, acks with ITS id" "$(runs)/$(ack_n 2 | jq -r .request_id)" "2/new-3"
