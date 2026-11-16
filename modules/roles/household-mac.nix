@@ -21,6 +21,27 @@ let
   postActivation = config.system.activationScripts.postActivation.text;
   sshdDropIns = lib.filter (n: lib.hasPrefix "ssh/sshd_config.d/" n
     && config.environment.etc.${n}.enable) (lib.attrNames config.environment.etc);
+  # Owner remote maintenance (modules/darwin/remote-maintenance.nix): the ONE
+  # way Remote Login may be on here, and only in its hardened form — the lines
+  # below must all be in its drop-in, and that drop-in must sort first so sshd
+  # takes these values over any later file.
+  rm = config.services.rh7.remoteMaintenance;
+  rmDropIn = "ssh/sshd_config.d/000-rh7-remote-maintenance.conf";
+  rmRequired = [
+    "AllowUsers ${rm.user}"
+    "AuthenticationMethods publickey"
+    "PasswordAuthentication no"
+    "KbdInteractiveAuthentication no"
+    "PermitEmptyPasswords no"
+    "PermitRootLogin no"
+    "X11Forwarding no"
+    "MaxAuthTries 3"
+    "AuthorizedKeysFile none"
+  ];
+  rmLines = lib.splitString "\n" (config.environment.etc.${rmDropIn}.text or "");
+  rmAllowedDropIns = [ rmDropIn "ssh/sshd_config.d/099-host-keys.conf" ];
+  authKeyFiles = lib.filter (n: lib.hasPrefix "ssh/nix_authorized_keys.d/" n
+    && config.environment.etc.${n}.enable) (lib.attrNames config.environment.etc);
   # Homebrew belongs to homebrew.user (nix-darwin runs `brew bundle` as that
   # account, so /opt/homebrew must be its). For every OTHER account a plain
   # `brew` would fail on that prefix — or, worse, write files into it the
@@ -62,7 +83,10 @@ in
   #     hot corners, Finder list view + hidden files, key repeat, autocorrect,
   #     tap-to-click, screenshots folder) is not imported, and no Dock list;
   #   - NO Remote Login / Screen Sharing management: remote-access.nix is not
-  #     imported, so both stay as set in System Settings → General → Sharing;
+  #     imported, so both stay as set in System Settings → General → Sharing —
+  #     except owner remote maintenance (services.rh7.remoteMaintenance), the
+  #     one allowed form of Remote Login: key-only, one account, tailnet-only
+  #     (asserted below). Screen Sharing is never turned on;
   #   - NO desktop/dev/ai profiles and no role casks/MAS apps: the host file
   #     ADOPTS what is already installed (exact casks for apps already in
   #     /Applications) instead of adding anything new — apart from the
@@ -140,7 +164,11 @@ in
   #     the bundle with the Homebrew copy, owned by the brew user
   #     (rh7/dotfiles#116). Per-user app data in ~/Library is not touched.
   #   - NOT changed: Remote Login, Screen Sharing, SSH host keys and sshd
-  #     config (asserted below); no Finder / Dock relaunch.
+  #     config (asserted below); no Finder / Dock relaunch. A host that
+  #     enables services.rh7.remoteMaintenance (kassie-mbp-m1) DOES get Remote
+  #     Login on, the standard SSH host keys (generated if missing), the
+  #     hardened sshd_config.d/000-rh7-remote-maintenance.conf and
+  #     /etc/ssh/nix_authorized_keys.d/<user> — and nothing else of sshd.
   #
   # (b) PRIMARY USER (the daily user):
   #   - NO user defaults: Dock, Finder, keyboard, trackpad, screenshots stay
@@ -219,7 +247,10 @@ in
   # Remote Login is switched on later, macOS's own sshd-keygen-wrapper creates
   # the keys and sshd's built-in HostKey defaults find them. (The keys already
   # created on kassie-mbp-m1 are not removed — sshd is off, they are unused.)
-  services.openssh.hostKeys = lib.mkForce [ ];
+  # With services.rh7.remoteMaintenance on, sshd is used: nix-darwin's default
+  # host keys (+ 099-host-keys) apply and the module's own drop-in carries the
+  # AuthorizedKeysCommand that 101 would; 100/101 stay off either way.
+  services.openssh.hostKeys = lib.mkIf (!rm.enable) (lib.mkForce [ ]);
   environment.etc."ssh/sshd_config.d/100-nix-darwin.conf".enable = false;
   environment.etc."ssh/sshd_config.d/101-authorized-keys.conf".enable = false;
 
@@ -250,21 +281,44 @@ in
         + "is modules/darwin/workstation-defaults.nix (or another system.defaults "
         + "user domain) imported?";
     }
-    # Remote Login and Screen Sharing stay as the owner set them.
+    # Remote Login and Screen Sharing stay as the owner set them. The one
+    # exception is owner remote maintenance, which turns Remote Login on
+    # itself; services.openssh.enable and Screen Sharing stay off regardless.
     {
       assertion = config.services.openssh.enable != true
-        && !(lib.hasInfix "com.openssh.sshd" postActivation)
+        && (rm.enable || !(lib.hasInfix "com.openssh.sshd" postActivation))
         && !(lib.hasInfix "com.apple.screensharing" postActivation);
       message = "household-mac: Remote Login / Screen Sharing must not be enabled "
-        + "— is modules/darwin/remote-access.nix imported?";
+        + "(Remote Login only through services.rh7.remoteMaintenance) — is "
+        + "modules/darwin/remote-access.nix imported?";
     }
-    # No SSH host key generation and no sshd_config.d drop-in (see above).
+    # Without remote maintenance: no SSH host key generation and no
+    # sshd_config.d drop-in (see above).
     {
-      assertion = config.system.activationScripts.openssh.text == ""
-        && sshdDropIns == [ ];
+      assertion = rm.enable
+        || (config.system.activationScripts.openssh.text == "" && sshdDropIns == [ ]);
       message = "household-mac: nix-darwin must not generate SSH host keys or link "
         + "sshd config (got: ${lib.concatStringsSep ", " sshdDropIns}) — is "
         + "services.openssh.hostKeys set, or users.users.*.openssh.authorizedKeys?";
+    }
+    # With remote maintenance: its hardened drop-in is present, sorts FIRST
+    # (sshd keeps the first value per keyword), carries every hardened line,
+    # and is the only drop-in besides nix-darwin's host keys.
+    {
+      assertion = !rm.enable
+        || (sshdDropIns != [ ] && lib.head sshdDropIns == rmDropIn
+          && lib.all (n: lib.elem n rmAllowedDropIns) sshdDropIns
+          && lib.all (l: lib.elem l rmLines) rmRequired);
+      message = "household-mac: remote maintenance must run with its hardened sshd "
+        + "drop-in first and alone (got: ${lib.concatStringsSep ", " sshdDropIns}; "
+        + "missing: ${lib.concatStringsSep ", " (lib.filter (l: !lib.elem l rmLines) rmRequired)}).";
+    }
+    # Authorized keys exist for the remote-maintenance account only — none at
+    # all without it.
+    {
+      assertion = authKeyFiles == lib.optional rm.enable "ssh/nix_authorized_keys.d/${rm.user}";
+      message = "household-mac: SSH authorized keys only for the remote-maintenance "
+        + "account (got: ${lib.concatStringsSep ", " authKeyFiles}).";
     }
     # The daily user's own dotfiles stay: home-manager may link nothing into
     # her home beyond the empty xdg markers (mkMac homeProfile = "household").

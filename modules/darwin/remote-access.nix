@@ -5,7 +5,8 @@
   # Imported by the workstation / server / fleet-member / personal roles. NOT
   # imported by household-mac.nix: on a shared household Mac both stay exactly
   # as the owner set them in System Settings → General → Sharing (the role
-  # asserts that no module turns them on).
+  # asserts that no module turns them on — Remote Login only through the
+  # hardened services.rh7.remoteMaintenance, remote-maintenance.nix).
   #
   # mkOrder 998: just ahead of every default-priority block, i.e. the slot
   # this had when it lived in defaults.nix.

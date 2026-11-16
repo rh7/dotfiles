@@ -37,6 +37,17 @@
   # daily audit runs as her); her `brew` says "managed by rouven; ask an admin".
   homebrew.user = "rouven";
 
+  # Owner remote maintenance (modules/darwin/remote-maintenance.nix; the
+  # household role allows it only in this hardened form and asserts it): SSH
+  # over the tailnet as `rouven` ONLY — the admin maintainer account, so sudo
+  # works for a rebuild — never as kassie. Public-key only, the owner's keys
+  # accepted from tailnet addresses only. Screen Sharing stays off.
+  services.rh7.remoteMaintenance = {
+    enable = true;
+    user = "rouven";
+    authorizedKeys = import ../../keys/owner-ssh-keys.nix;
+  };
+
   homebrew.casks = [
     # ── Browsers ──
     "arc"              # DEPRECATED upstream (discontinued; not disabled yet).

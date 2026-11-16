@@ -53,6 +53,16 @@ jobs:
         # drop-ins on household hosts; every other host unchanged.
         run: bash scripts/ci/check-household-compinit-sshd.sh
 
+      - name: Remote maintenance (eval-level + sshd -T)
+        # services.rh7.remoteMaintenance only on kassie-mbp-m1 (rouven) and
+        # Kassie-M5-Air13 (kassie): hardened drop-in first, tailnet-only keys
+        # for that one account; nobody else. sshd -T proves the include order
+        # wins (openssh-server provides sshd and its privsep user/dir).
+        run: |
+          command -v sshd >/dev/null || sudo apt-get install -y --no-install-recommends openssh-server >/dev/null
+          sudo mkdir -p /run/sshd
+          bash scripts/ci/check-remote-maintenance.sh
+
       - name: Fleet audit scheduler (eval-level)
         # Household hosts audit through a system LaunchDaemon running as the
         # primary user (no home-manager LaunchAgent); every other host keeps
