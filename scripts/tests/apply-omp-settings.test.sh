@@ -53,6 +53,16 @@ defaults = {'compaction.thresholdTokens': -1, 'compaction.idleEnabled': False,
  'task.agentCompactionThresholdOverrides': {}, 'retry.fallbackOn': 'never',
  'retry.usageAwareFallback': False}
 mode = os.environ.get('FAKE_MODE', '')
+target = Path(os.environ.get('FAKE_TARGET', str(p / 'config.yml')))
+if mode == 'change-during-capture':
+    marker = Path(os.environ['FAKE_CONTROL'])
+    if not marker.exists():
+        target.write_bytes(target.read_bytes() + b'\n')
+        marker.touch()
+rollback_readback = (mode.startswith('rollback-') and
+                     target.read_bytes() == Path(os.environ['FAKE_BACKUP']).read_bytes())
+if rollback_readback and mode == 'rollback-global-mismatch':
+    values['compaction.thresholdTokens']['value'] += 1
 if a == ['config', 'list', '--scope', 'global', '--json']:
     if mode == 'bad-list':
         print('{bad')
@@ -68,6 +78,8 @@ elif len(a) == 4 and a[:2] == ['config', 'get'] and a[3] == '--json':
         if mode == 'failed-read':
             sys.exit('failed read')
     value = values.get(key, {'value': defaults[key]})['value']
+    if rollback_readback and mode == 'rollback-effective-mismatch' and key == 'compaction.thresholdTokens':
+        value += 1
     print(json.dumps({'key': key, 'value': value, 'type': 'fixture', 'description': ''}))
 elif len(a) == 4 and a[:2] == ['config', 'set']:
     key, value = a[2], json.loads(a[3])
@@ -126,6 +138,8 @@ class EntrypointTests(unittest.TestCase):
         (self.cwd / '.omp').mkdir(parents=True)
         self.env = dict(os.environ, HOME=str(self.home), PI_CODING_AGENT_DIR=str(self.agent),
                         PI_CONFIG_FILES='/secret/overlay.yml', PATH=str(self.bin) + os.pathsep + os.environ['PATH'])
+        self.env['FAKE_TARGET'] = str(self.config)
+        self.env['FAKE_CONTROL'] = str(self.base / 'capture-changed')
         self.env.pop('FAKE_MODE', None)
         self.env.pop('FAKE_STARTED', None)
 
@@ -140,7 +154,8 @@ class EntrypointTests(unittest.TestCase):
 
     def snapshot(self):
         return {str(p.relative_to(self.agent)): (stat.S_IMODE(p.lstat().st_mode),
-                p.read_bytes() if p.is_file() else None) for p in self.agent.rglob('*')}
+                p.read_bytes() if p.is_file() else None) for p in self.agent.rglob('*')
+                if p.name != '.apply-omp-settings.lock'}
 
     def backups(self):
         return sorted(self.agent.glob('config.yml.bak-*'))
@@ -160,9 +175,11 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(data, expected)
 
     def test_dry_run_diff_and_zero_target_mutation(self):
+        self.assertFalse((self.agent / '.apply-omp-settings.lock').exists())
         before = self.snapshot()
         r = self.run_entry('--dry-run')
         self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.agent / '.apply-omp-settings.lock').exists())
         self.assertIn('compaction.thresholdTokens', r.stdout)
         self.assertIn('90000', r.stdout)
         self.assertIn('120000', r.stdout)
@@ -222,6 +239,73 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(len(recovery), 1)
         self.assertEqual(recovery[0].read_bytes(), changed)
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
+
+    def test_rollback_ignores_invalid_or_missing_current_config(self):
+        backup = self.agent / 'config.yml.bak-original'
+        backup.write_bytes(self.original)
+        fractional = copy.deepcopy(self.original_data)
+        fractional['tools']['artifactSpillThreshold'] = 2.5
+        percentage = copy.deepcopy(self.original_data)
+        percentage['task']['agentCompactionThresholdOverrides']['reviewer'] = '80%'
+        for current in (json.dumps(fractional).encode(), json.dumps(percentage).encode(),
+                        b'malformed current config', None):
+            with self.subTest(current=current):
+                if current is None:
+                    self.config.unlink()
+                else:
+                    self.config.write_bytes(current)
+                old = set(self.backups())
+                result = self.run_entry('--rollback', backup)
+                self.assertEqual(self.config.read_bytes(), self.original)
+                recovery = set(self.backups()) - old
+                self.assertEqual(len(recovery), 0 if current is None else 1)
+                if recovery:
+                    self.assertEqual(recovery.pop().read_bytes(), current)
+                self.assertIn('Rollback verified.', result.stdout)
+
+    def test_lock_is_private_profile_local_and_preview_skips_it(self):
+        lock = self.agent / '.apply-omp-settings.lock'
+        self.run_entry('--dry-run')
+        self.assertFalse(lock.exists())
+        self.run_entry()
+        self.assertTrue(lock.is_file())
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
+
+    def test_config_changed_during_preparation_is_preserved(self):
+        backup = self.agent / 'config.yml.bak-original'
+        backup.write_bytes(self.original)
+        for args, operation in (((), 'apply'), (('--rollback', backup), 'rollback')):
+            with self.subTest(operation=operation):
+                self.config.write_bytes(self.original)
+                Path(self.env['FAKE_CONTROL']).unlink(missing_ok=True)
+                before = self.snapshot()
+                expected = copy.deepcopy(before)
+                mode, content = expected['config.yml']
+                expected['config.yml'] = (mode, content + b'\n')
+                old = set(self.backups())
+                result = self.run_entry(*args, success=False, FAKE_MODE='change-during-capture')
+                self.assertIn(f'Config changed while preparing {operation}', result.stderr)
+                self.assertEqual(set(self.backups()), old)
+                self.assertEqual(self.snapshot(), expected)
+
+    def test_post_rollback_readback_mismatches_fail(self):
+        backup = self.agent / 'config.yml.bak-original'
+        backup.write_bytes(self.original)
+        changed = copy.deepcopy(self.original_data)
+        changed['compaction']['thresholdTokens'] = 120000
+        current = json.dumps(changed).encode()
+        for mode in ('rollback-global-mismatch', 'rollback-effective-mismatch'):
+            with self.subTest(mode=mode):
+                self.config.write_bytes(current)
+                old = set(self.backups())
+                result = self.run_entry('--rollback', backup, success=False,
+                                        FAKE_MODE=mode, FAKE_BACKUP=str(backup))
+                self.assertIn('read-back mismatch', result.stderr)
+                self.assertNotIn('Rollback verified.', result.stdout)
+                self.assertEqual(self.config.read_bytes(), self.original)
+                recovery = set(self.backups()) - old
+                self.assertEqual(len(recovery), 1)
+                self.assertEqual(recovery.pop().read_bytes(), current)
 
     def test_readback_or_write_failures_never_report_success(self):
         for mode in ('ignore-write', 'bad-read', 'missing-read', 'failed-read', 'failed-write'):

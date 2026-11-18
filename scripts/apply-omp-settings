@@ -9,7 +9,6 @@ import argparse
 import contextlib
 from datetime import datetime, timezone
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -90,10 +89,12 @@ def load_manifest():
     return manifest
 
 
-def read_regular(path):
+def read_regular(path, missing_ok=False):
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
+    except OSError as error:
+        if missing_ok and isinstance(error, FileNotFoundError):
+            return None
         fail(f"Expected a readable regular file, not a symlink: {path}")
     with os.fdopen(fd, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
@@ -103,8 +104,7 @@ def read_regular(path):
 
 @contextlib.contextmanager
 def own_lock(config):
-    digest = hashlib.sha256(os.fsencode(config)).hexdigest()
-    path = Path("/tmp") / f"apply-omp-settings-{os.getuid()}-{digest}.lock"
+    path = config.parent / ".apply-omp-settings.lock"
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(fd)
@@ -285,22 +285,32 @@ def main():
     # discover this: even a config read may open and mutate the agent database.
     profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or "~/.omp/agent").expanduser().resolve()
     config = profile / "config.yml"
-    with own_lock(config):
-        original = read_regular(config)
-        before_global, before_readings = capture(executable, original)
+    lock = contextlib.nullcontext() if args.dry_run else own_lock(config)
+    with lock:
+        original = read_regular(config, missing_ok=bool(args.rollback))
         if args.rollback:
             restored = backup_input(args.rollback, config)
             expected_global, expected_readings = capture(executable, restored)
-            show_values("Before (managed global values):", before_global)
-            if read_regular(config) != original:
+            try:
+                if original is None:
+                    print("Before: current config is missing.", flush=True)
+                else:
+                    before_global, _ = capture(executable, original)
+                    show_values("Before (managed global values):", before_global)
+            except (SettingsError, OSError, UnicodeError):
+                print("Before: current managed values unavailable.", flush=True)
+            if read_regular(config, missing_ok=True) != original:
                 fail("Config changed while preparing rollback; quiesce other writers")
-            backup_config(config, original)
+            if original is not None:
+                backup_config(config, original)
             restore_atomic(config, restored)
             after_global, after_readings = capture(executable, read_regular(config))
             verify(expected_global, expected_readings, after_global, after_readings)
             show_values("After (managed global values):", after_global)
             print("Rollback verified.")
             return
+
+        before_global, _ = capture(executable, original)
 
         desired = dict(manifest)
         desired[RECORD] = dict(before_global.get(RECORD, {}))

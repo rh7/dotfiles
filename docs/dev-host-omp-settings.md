@@ -53,7 +53,8 @@ nonzero. A partial apply is not rolled back automatically: retain the printed
 backup path and inspect the failure. Reapplying converges the managed values.
 
 Serialize this operation with other global writers. The script serializes its
-own apply/rollback invocations; this is **not** OMP's lock. OMP locks each
+own apply/rollback invocations with `<profile>/.apply-omp-settings.lock`;
+preview skips this lock. This is **not** OMP's lock. OMP locks each
 individual setting write, not the whole multi-key operation. In particular, do
 not concurrently change `task.agentCompactionThresholdOverrides` elsewhere.
 Disjoint model-route keys are not written by this script.
@@ -68,9 +69,12 @@ PI_CODING_AGENT_DIR="$HOME/.omp/agent" \
   ./scripts/apply-omp-settings --rollback "$HOME/.omp/agent/config.yml.bak-<UTC>"
 ```
 
-Use the exact backup path printed by apply. Rollback takes a recovery backup
-of the current file, then atomically restores the supplied backup's exact
-bytes. It restores the **whole file**, not only managed keys, so it also undoes
+Use the exact backup path printed by apply. Rollback validates that backup,
+not the current configuration: the "Before" display is best-effort. An existing
+current file is backed up byte-for-byte even if malformed or outside this
+script's managed-value schema. A missing current file is allowed, with no
+recovery backup needed. Rollback then atomically restores the supplied backup's
+exact bytes. It restores the **whole file**, not only managed keys, so it also undoes
 any routing/settings changes made since that backup. This full-file restore is
 a maintenance-window operation, not an OMP per-key write. The script's own lock
 does not exclude OMP's other writers. Missing, foreign, symlinked, or malformed
