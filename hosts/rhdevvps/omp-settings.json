@@ -1,0 +1,18 @@
+{
+  "compaction.thresholdTokens": 120000,
+  "compaction.idleEnabled": true,
+  "compaction.idleThresholdTokens": 60000,
+  "compaction.idleTimeoutSeconds": 300,
+  "tools.artifactSpillThreshold": 16,
+  "tools.artifactTailLines": 150,
+  "task.agentCompactionThresholdOverrides": {
+    "reviewer-openai": 120000,
+    "reviewer-claude": 120000,
+    "reviewer-grok": 120000,
+    "gate-reviewer": 120000,
+    "reviewer": 120000,
+    "security-reviewer": 120000
+  },
+  "retry.fallbackOn": "usage-limit",
+  "retry.usageAwareFallback": true
+}

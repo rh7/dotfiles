@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Apply the rhdevvps settings manifest, or restore one full config backup.
+
+Only this entrypoint honors its flock. Quiesce OMP and other config writers
+before using full-file rollback; OMP's native settings lock is independent.
+"""
+
+import argparse
+import contextlib
+from datetime import datetime, timezone
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+REVIEWERS = frozenset(("reviewer-openai", "reviewer-claude", "reviewer-grok",
+                       "gate-reviewer", "reviewer", "security-reviewer"))
+RECORD = "task.agentCompactionThresholdOverrides"
+SCHEMA = {
+    "compaction.thresholdTokens": int,
+    "compaction.idleEnabled": bool,
+    "compaction.idleThresholdTokens": int,
+    "compaction.idleTimeoutSeconds": int,
+    "tools.artifactSpillThreshold": int,
+    "tools.artifactTailLines": int,
+    RECORD: dict,
+    "retry.fallbackOn": str,
+    "retry.usageAwareFallback": bool,
+}
+
+
+class SettingsError(Exception):
+    pass
+
+
+def fail(message):
+    raise SettingsError(message)
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail("Duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def invalid_constant(_value):
+    fail("Non-finite JSON value")
+
+
+def parse_json(text, label):
+    try:
+        return json.loads(text, object_pairs_hook=unique_object,
+                          parse_constant=invalid_constant)
+    except (ValueError, SettingsError):
+        fail(f"Malformed JSON from {label}")
+
+
+def validate_value(key, value, manifest=False):
+    if type(value) is not SCHEMA[key]:
+        fail(f"Invalid value type for {key}")
+    if manifest and type(value) is int and value <= 0:
+        fail(f"Expected a positive integer for {key}")
+    if key == RECORD:
+        if manifest and set(value) != REVIEWERS:
+            fail("Manifest must specify exactly the managed reviewers")
+        for reviewer in REVIEWERS & value.keys():
+            if type(value[reviewer]) is not int or value[reviewer] <= 0:
+                fail("Invalid managed reviewer threshold")
+    if manifest and key == "retry.fallbackOn" and value != "usage-limit":
+        fail("Unsupported retry.fallbackOn in manifest")
+
+
+def load_manifest():
+    path = Path(__file__).resolve().parent.parent / "hosts/rhdevvps/omp-settings.json"
+    manifest = parse_json(path.read_text(), "manifest")
+    if type(manifest) is not dict or set(manifest) != set(SCHEMA):
+        fail("Manifest must contain exactly the managed setting keys")
+    for key, value in manifest.items():
+        validate_value(key, value, manifest=True)
+    return manifest
+
+
+def read_regular(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        fail(f"Expected a readable regular file, not a symlink: {path}")
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            fail(f"Expected a regular file: {path}")
+        return stream.read()
+
+
+@contextlib.contextmanager
+def own_lock(config):
+    digest = hashlib.sha256(os.fsencode(config)).hexdigest()
+    path = Path("/tmp") / f"apply-omp-settings-{os.getuid()}-{digest}.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            fail("Unsafe entrypoint lock file")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("Settings entrypoint lock is held by another invocation")
+        yield
+    finally:
+        os.close(fd)
+
+
+class OmpSession:
+    """No HOME, XDG, project, overlay, or DB access outside this session.
+
+    Read sessions copy only config.yml, never the potentially large agent DB.
+    A write session points PI_CODING_AGENT_DIR at the target explicitly.
+    """
+
+    def __init__(self, executable, content=None, target=None):
+        self.executable = executable
+        self.temp = tempfile.TemporaryDirectory(prefix="apply-omp-settings-")
+        self.root = Path(self.temp.name)
+        self.profile = target if target is not None else self.root / "agent"
+        self.profile.mkdir(exist_ok=True)
+        if content is not None:
+            profile_config = self.profile / "config.yml"
+            profile_config.touch(mode=0o600)
+            profile_config.write_bytes(content)
+        self.env = dict(os.environ)
+        # Named profiles ignore PI_CODING_AGENT_DIR; never inherit a selector
+        # that could redirect a preview, write, or readback to another profile.
+        for key in ("OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR"):
+            self.env.pop(key, None)
+        self.env["PI_CODING_AGENT_DIR"] = str(self.profile)
+        self.env["PI_CONFIG_FILES"] = ""
+        for key, directory in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
+                               ("XDG_DATA_HOME", "data"), ("XDG_CACHE_HOME", "cache"),
+                               ("XDG_STATE_HOME", "state"), ("XDG_RUNTIME_DIR", "runtime")):
+            path = self.root / directory
+            path.mkdir(mode=0o700)
+            self.env[key] = str(path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.temp.cleanup()
+
+    def command(self, args, label, expect_json=True):
+        result = subprocess.run([self.executable, "config", *args], cwd=self.root,
+                                env=self.env, capture_output=True, text=True)
+        # Do not echo CLI diagnostics: they can contain unowned settings/secrets.
+        # A warning may mean OMP fell back after a config parse failure.
+        if result.returncode or result.stderr.strip():
+            fail(f"OMP {label} failed or emitted diagnostics (exit {result.returncode})")
+        if expect_json:
+            return parse_json(result.stdout, f"OMP {label}")
+        return None
+
+    def selected_list(self):
+        data = self.command(["list", "--scope", "global", "--json"], "global list")
+        if type(data) is not dict:
+            fail("Malformed OMP global list")
+        selected = {}
+        for key in SCHEMA:
+            if key not in data:
+                continue
+            item = data[key]
+            if type(item) is not dict or "value" not in item:
+                fail(f"Missing value in OMP global list for {key}")
+            validate_value(key, item["value"])
+            selected[key] = item["value"]
+        return selected
+
+    def readings(self):
+        values = {}
+        for key in SCHEMA:
+            item = self.command(["get", key, "--json"], f"get {key}")
+            if type(item) is not dict or item.get("key") != key or "value" not in item:
+                fail(f"Missing or malformed OMP reading for {key}")
+            validate_value(key, item["value"])
+            values[key] = item["value"]
+        return values
+
+    def set_value(self, key, value):
+        self.command(["set", key, json.dumps(value, separators=(",", ":"))],
+                     f"set {key}", expect_json=False)
+
+
+def capture(executable, content):
+    with OmpSession(executable, content=content) as session:
+        return session.selected_list(), session.readings()
+
+
+def display_value(key, value):
+    if key == RECORD:
+        value = {reviewer: threshold for reviewer, threshold in value.items()
+                 if reviewer in REVIEWERS}
+    return json.dumps(value, sort_keys=True)
+
+
+def show_values(title, selected):
+    print(title, flush=True)
+    for key in SCHEMA:
+        value = display_value(key, selected[key]) if key in selected else "<unset>"
+        print(f"  {key}: {value}", flush=True)
+
+
+def equal(left, right):
+    # JSON equality must distinguish true from 1, unlike Python's equality.
+    return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+
+def verify(expected_global, expected_readings, actual_global, actual_readings):
+    for key in SCHEMA:
+        if (key in expected_global) != (key in actual_global):
+            fail(f"Global read-back is missing or unexpectedly contains {key}")
+        if key in expected_global and not equal(expected_global[key], actual_global[key]):
+            fail(f"Global read-back mismatch for {key}")
+        if not equal(expected_readings[key], actual_readings[key]):
+            fail(f"Effective read-back mismatch for {key}")
+
+
+def backup_config(config, content):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    fd, name = tempfile.mkstemp(prefix=f"config.yml.bak-{stamp}-", dir=config.parent)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    print(f"Backup: {name}", flush=True)
+    return Path(name)
+
+
+def restore_atomic(config, content):
+    fd, name = tempfile.mkstemp(prefix=".config.yml.restore-", dir=config.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, config)
+        directory = os.open(config.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def backup_input(argument, config):
+    path = Path(os.path.abspath(os.path.expanduser(argument)))
+    if (path.parent.resolve() != config.parent
+            or not path.name.startswith("config.yml.bak-")
+            or path.name == "config.yml.bak-"):
+        fail("Rollback requires a backup in the target config.yml.bak-* family")
+    return read_regular(path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="show differences without target writes")
+    mode.add_argument("--rollback", metavar="BACKUP", help="restore a full target-family backup")
+    args = parser.parse_args()
+    manifest = None if args.rollback else load_manifest()
+    executable = shutil.which("omp")
+    if executable is None:
+        fail("omp must be available on PATH")
+    executable = str(Path(executable).resolve())
+    # Legacy rhdevvps OMP profile location. Never invoke a live CLI just to
+    # discover this: even a config read may open and mutate the agent database.
+    profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or "~/.omp/agent").expanduser().resolve()
+    config = profile / "config.yml"
+    with own_lock(config):
+        original = read_regular(config)
+        before_global, before_readings = capture(executable, original)
+        if args.rollback:
+            restored = backup_input(args.rollback, config)
+            expected_global, expected_readings = capture(executable, restored)
+            show_values("Before (managed global values):", before_global)
+            if read_regular(config) != original:
+                fail("Config changed while preparing rollback; quiesce other writers")
+            backup_config(config, original)
+            restore_atomic(config, restored)
+            after_global, after_readings = capture(executable, read_regular(config))
+            verify(expected_global, expected_readings, after_global, after_readings)
+            show_values("After (managed global values):", after_global)
+            print("Rollback verified.")
+            return
+
+        desired = dict(manifest)
+        desired[RECORD] = dict(before_global.get(RECORD, {}))
+        desired[RECORD].update(manifest[RECORD])
+        if args.dry_run:
+            print("Dry run (managed global differences only):")
+            changed = False
+            for key in SCHEMA:
+                if key not in before_global or not equal(before_global[key], desired[key]):
+                    old = display_value(key, before_global[key]) if key in before_global else "<unset>"
+                    print(f"  {key}: {old} -> {display_value(key, desired[key])}")
+                    changed = True
+            if not changed:
+                print("  No changes.")
+            return
+
+        show_values("Before (managed global values):", before_global)
+        if read_regular(config) != original:
+            fail("Config changed while preparing apply; quiesce other writers")
+        backup_config(config, original)
+        with OmpSession(executable, target=profile) as session:
+            for key in SCHEMA:
+                session.set_value(key, desired[key])
+        # Fresh process reads from a fresh profile copy, not a process-local cache.
+        after_global, after_readings = capture(executable, read_regular(config))
+        verify(desired, desired, after_global, after_readings)
+        show_values("After (managed global values):", after_global)
+        print("Apply verified.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (SettingsError, OSError, UnicodeError) as error:
+        print(f"apply-omp-settings: {error}", file=sys.stderr)
+        sys.exit(1)
