@@ -69,7 +69,8 @@ PI_CODING_AGENT_DIR="$HOME/.omp/agent" \
   ./scripts/apply-omp-settings --rollback "$HOME/.omp/agent/config.yml.bak-<UTC>"
 ```
 
-Use the exact backup path printed by apply. Rollback validates that backup,
+Use the exact backup path printed by apply. An empty path is refused before any
+lock or OMP invocation. Rollback validates that backup,
 not the current configuration: the "Before" display is best-effort. An existing
 current file is backed up byte-for-byte even if malformed or outside this
 script's managed-value schema. A missing current file is allowed, with no

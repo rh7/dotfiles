@@ -327,7 +327,7 @@ class EntrypointTests(unittest.TestCase):
         malformed.write_text('not valid fixture config')
         cases = [('--what',), ('--dry-run', '--rollback', foreign), ('--rollback',),
                  ('--rollback', foreign), ('--rollback', symlink), ('--rollback', malformed),
-                 ('--rollback', self.config)]
+                 ('--rollback', self.config), ('--rollback', '')]
         for args in cases:
             with self.subTest(args=args):
                 before = self.snapshot()

@@ -276,7 +276,9 @@ def main():
     mode.add_argument("--dry-run", action="store_true", help="show differences without target writes")
     mode.add_argument("--rollback", metavar="BACKUP", help="restore a full target-family backup")
     args = parser.parse_args()
-    manifest = None if args.rollback else load_manifest()
+    if args.rollback == "":
+        fail("Rollback requires a backup path")
+    manifest = None if args.rollback is not None else load_manifest()
     executable = shutil.which("omp")
     if executable is None:
         fail("omp must be available on PATH")
@@ -287,8 +289,8 @@ def main():
     config = profile / "config.yml"
     lock = contextlib.nullcontext() if args.dry_run else own_lock(config)
     with lock:
-        original = read_regular(config, missing_ok=bool(args.rollback))
-        if args.rollback:
+        original = read_regular(config, missing_ok=args.rollback is not None)
+        if args.rollback is not None:
             restored = backup_input(args.rollback, config)
             expected_global, expected_readings = capture(executable, restored)
             try:
