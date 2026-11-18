@@ -127,41 +127,118 @@ it over the live file: reasoning settings, hooks, projects, permissions and
 every other key must remain unchanged. It does not change OMP model routing.
 
 Adopt only from clean, merged `main`, with other Codex-config writers quiesced.
-The dev host uses the default `~/.codex` directory; if `CODEX_HOME` redirects
-it, stop and resolve that target first. Require an existing regular, non-symlink
-config. Record the current model and UTC, then make a private full-file backup:
+The dev host uses the default `~/.codex` directory; `CODEX_HOME` must be unset
+so nothing redirects it. Require an existing regular, non-symlink config. Record
+the current model and UTC, then make a private full-file backup:
 
 ```bash
 umask 077
-before_model=$(python3 - <<'PY'
+test -z "${CODEX_HOME:-}" || { printf '%s\n' 'CODEX_HOME must be unset'; exit 1; }
+codex_config="$HOME/.codex/config.toml"
+test -f "$codex_config" && test ! -L "$codex_config" || {
+  printf '%s\n' 'Require a regular non-symlink ~/.codex/config.toml'; exit 1;
+}
+dotfiles_root="${DOTFILES_ROOT:-$HOME/dotfiles}"
+fragment="$dotfiles_root/hosts/rhdevvps/codex-settings.toml"
+test -f "$fragment" || { printf '%s\n' 'Missing tracked Codex model fragment'; exit 1; }
+before_model=$(python3 - "$codex_config" <<'PY'
 from pathlib import Path
+import sys
 import tomllib
-model = tomllib.loads((Path.home() / ".codex/config.toml").read_text()).get("model")
+model = tomllib.loads(Path(sys.argv[1]).read_text()).get("model")
 if not isinstance(model, str) or not model:
     raise SystemExit("Expected an existing nonempty model")
 print(model)
 PY
 ) &&
 backup=$(mktemp "$HOME/.codex/config.toml.bak-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX") &&
-cp -- "$HOME/.codex/config.toml" "$backup" &&
+cp -- "$codex_config" "$backup" &&
 printf 'Before model: %s\nBackup: %s\n' "$before_model" "$backup"
 ```
 
 Change only the existing top-level `model` assignment to the tracked fragment's
-value. Parse both files with Python 3.11+ `tomllib` and verify the resulting
-configuration equals the backup with only that model replaced. Read the live
-model back and post filtered UTC before/after, merged revision and backup path
-on parent #1209; never publish the full config or backup. New Codex processes
-adopt the default; an explicit model, profile or project override may supersede
-it. Existing sessions are not migrated.
-
-Full-file rollback also requires quiescing all config writers and undoes every
-change since the backup. Set `backup` and `before_model` to their recorded values
-if using another shell. Validate the staged backup before the atomic rename,
-then parse and read back the restored model:
+value. The adoption step below rewrites that one line, then parses the backup
+and the live file with Python 3.11+ `tomllib` and refuses unless the live config
+equals the backup with only `model` replaced. Read the live model back and post
+filtered UTC before/after, merged revision and backup path on parent #1209;
+never publish the full config or backup. New Codex processes adopt the default;
+an explicit model, profile or project override may supersede it. Existing
+sessions are not migrated.
 
 ```bash
+test -z "${CODEX_HOME:-}" || { printf '%s\n' 'CODEX_HOME must be unset'; exit 1; }
+test -f "$codex_config" && test ! -L "$codex_config" || {
+  printf '%s\n' 'Require a regular non-symlink ~/.codex/config.toml'; exit 1;
+}
+test -n "${backup:-}" && test -n "${before_model:-}" || {
+  printf '%s\n' 'Run the backup snippet first'; exit 1;
+}
+python3 - "$codex_config" "$backup" "$fragment" <<'PY'
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+live_path = Path(sys.argv[1])
+backup_path = Path(sys.argv[2])
+fragment_path = Path(sys.argv[3])
+
+backup = tomllib.loads(backup_path.read_text())
+target_model = tomllib.loads(fragment_path.read_text()).get("model")
+if not isinstance(target_model, str) or not target_model:
+    raise SystemExit("Fragment must declare a nonempty model string")
+
+text = live_path.read_text()
+pattern = re.compile(r'(?m)^model\s*=\s*("[^"]*"|\'[^\']*\')\s*$')
+if pattern.search(text) is None:
+    raise SystemExit("Expected exactly one top-level model assignment")
+new_text, replacements = pattern.subn(
+    f'model = "{target_model}"',
+    text,
+    count=1,
+)
+if replacements != 1:
+    raise SystemExit("Expected exactly one top-level model assignment")
+
+actual = tomllib.loads(new_text)
+expected = dict(backup)
+expected["model"] = target_model
+if actual != expected:
+    raise SystemExit("Live config must equal backup with only model replaced")
+if actual.get("model") == backup.get("model"):
+    raise SystemExit("Model is already at the tracked value")
+
+staging = live_path.with_name(
+    f".config.adopt-{live_path.name}." + __import__("secrets").token_hex(6)
+)
+staging.write_text(new_text)
+staging.chmod(0o600)
+verified = tomllib.loads(staging.read_text())
+if verified != expected:
+    staging.unlink(missing_ok=True)
+    raise SystemExit("Staged config failed verification against backup")
+staging.replace(live_path)
+print(f"After model: {verified['model']}")
+PY
+```
+
+Full-file rollback also requires quiescing all config writers and undoes every
+change since the backup. Set `backup`, `before_model`, and `codex_config` to their
+recorded values if using another shell. Validate the staged backup before the
+atomic rename, then parse and read back the restored model. Refused validation
+removes the staging file:
+
+```bash
+test -z "${CODEX_HOME:-}" || { printf '%s\n' 'CODEX_HOME must be unset'; exit 1; }
+codex_config="${codex_config:-$HOME/.codex/config.toml}"
+test -f "$codex_config" && test ! -L "$codex_config" || {
+  printf '%s\n' 'Require a regular non-symlink ~/.codex/config.toml'; exit 1;
+}
+test -n "${backup:-}" && test -n "${before_model:-}" || {
+  printf '%s\n' 'Set backup and before_model from the recorded adoption output'; exit 1;
+}
 restore=$(mktemp "$HOME/.codex/.config.restore-XXXXXX") &&
+trap 'rm -f -- "${restore:-}"' EXIT INT TERM &&
 cp -- "$backup" "$restore" &&
 chmod 600 "$restore" &&
 python3 - "$restore" "$before_model" <<'PY' &&
@@ -172,7 +249,8 @@ config = tomllib.loads(Path(sys.argv[1]).read_text())
 if not sys.argv[2] or config.get("model") != sys.argv[2]:
     raise SystemExit("Backup model does not match the recorded pre-change model")
 PY
-mv -T -- "$restore" "$HOME/.codex/config.toml"
+mv -T -- "$restore" "$codex_config" &&
+trap - EXIT
 ```
 
 ### Lean OMP coordinator
