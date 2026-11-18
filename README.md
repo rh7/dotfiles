@@ -108,6 +108,15 @@ nix flake update --flake ~/dotfiles   # update flake inputs (the `nup` alias omi
 dots                              # open dotfiles in Zed
 ```
 
+### Dev-host OMP settings
+
+The token-plan global settings live in
+[`hosts/rhdevvps/omp-settings.json`](hosts/rhdevvps/omp-settings.json).
+[`scripts/apply-omp-settings`](scripts/apply-omp-settings) previews or applies
+only those keys through `omp config set`, with backup, readback and rollback.
+Apply only after merge; seat overlays and model routing stay separately owned.
+See [rollout, rollback and adoption evidence](docs/dev-host-omp-settings.md).
+
 ### Lean OMP coordinator
 
 `omp-coordinator` starts the coordinator role in `~/repo-management` with the
