@@ -117,6 +117,64 @@ only those keys through `omp config set`, with backup, readback and rollback.
 Apply only after merge; seat overlays and model routing stay separately owned.
 See [rollout, rollback and adoption evidence](docs/dev-host-omp-settings.md).
 
+### Dev-host Codex CLI model
+
+[`hosts/rhdevvps/codex-settings.toml`](hosts/rhdevvps/codex-settings.toml) owns
+only the default top-level Codex CLI `model`, approved under
+[the token plan](https://github.com/rh7/repo-management/issues/1209#issuecomment-6985414893).
+It is a **fragment, not a replacement** for `~/.codex/config.toml`. Do not copy
+it over the live file: reasoning settings, hooks, projects, permissions and
+every other key must remain unchanged. It does not change OMP model routing.
+
+Adopt only from clean, merged `main`, with other Codex-config writers quiesced.
+The dev host uses the default `~/.codex` directory; if `CODEX_HOME` redirects
+it, stop and resolve that target first. Require an existing regular, non-symlink
+config. Record the current model and UTC, then make a private full-file backup:
+
+```bash
+umask 077
+before_model=$(python3 - <<'PY'
+from pathlib import Path
+import tomllib
+model = tomllib.loads((Path.home() / ".codex/config.toml").read_text()).get("model")
+if not isinstance(model, str) or not model:
+    raise SystemExit("Expected an existing nonempty model")
+print(model)
+PY
+) &&
+backup=$(mktemp "$HOME/.codex/config.toml.bak-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX") &&
+cp -- "$HOME/.codex/config.toml" "$backup" &&
+printf 'Before model: %s\nBackup: %s\n' "$before_model" "$backup"
+```
+
+Change only the existing top-level `model` assignment to the tracked fragment's
+value. Parse both files with Python 3.11+ `tomllib` and verify the resulting
+configuration equals the backup with only that model replaced. Read the live
+model back and post filtered UTC before/after, merged revision and backup path
+on parent #1209; never publish the full config or backup. New Codex processes
+adopt the default; an explicit model, profile or project override may supersede
+it. Existing sessions are not migrated.
+
+Full-file rollback also requires quiescing all config writers and undoes every
+change since the backup. Set `backup` and `before_model` to their recorded values
+if using another shell. Validate the staged backup before the atomic rename,
+then parse and read back the restored model:
+
+```bash
+restore=$(mktemp "$HOME/.codex/.config.restore-XXXXXX") &&
+cp -- "$backup" "$restore" &&
+chmod 600 "$restore" &&
+python3 - "$restore" "$before_model" <<'PY' &&
+from pathlib import Path
+import sys
+import tomllib
+config = tomllib.loads(Path(sys.argv[1]).read_text())
+if not sys.argv[2] or config.get("model") != sys.argv[2]:
+    raise SystemExit("Backup model does not match the recorded pre-change model")
+PY
+mv -T -- "$restore" "$HOME/.codex/config.toml"
+```
+
 ### Lean OMP coordinator
 
 `omp-coordinator` starts the coordinator role in `~/repo-management` with the
