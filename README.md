@@ -117,6 +117,220 @@ only those keys through `omp config set`, with backup, readback and rollback.
 Apply only after merge; seat overlays and model routing stay separately owned.
 See [rollout, rollback and adoption evidence](docs/dev-host-omp-settings.md).
 
+### Dev-host Codex CLI model
+
+[`hosts/rhdevvps/codex-settings.toml`](hosts/rhdevvps/codex-settings.toml) owns
+only the default top-level Codex CLI `model`, approved under
+[the token plan](https://github.com/rh7/repo-management/issues/1209#issuecomment-6985414893).
+It is a **fragment, not a replacement** for `~/.codex/config.toml`. Do not copy
+it over the live file: reasoning settings, hooks, projects, permissions and
+every other key must remain unchanged. It does not change OMP model routing.
+
+Adopt only from clean, merged `main`, with other Codex-config writers quiesced.
+The dev host uses the default `~/.codex` directory; `CODEX_HOME` must be unset
+so nothing redirects it. Require an existing regular, non-symlink config.
+
+Each step is a shell function you can paste into an interactive session: guards
+use `return 1` instead of `exit`, so a failed check does not close the session.
+Run backup, then adopt, then rollback (if needed) in the **same shell** so these
+variables persist: `codex_config`, `dotfiles_root`, `fragment`, `dotfiles_revision`,
+`backup`, `before_model`. Alternatively wrap a step in `bash -c '…'`.
+
+Record the current model and UTC, then make a private full-file backup:
+
+```bash
+codex_model_backup() {
+  umask 077
+  if [ -n "${CODEX_HOME:-}" ]; then
+    printf '%s\n' 'CODEX_HOME must be unset' >&2
+    return 1
+  fi
+  codex_config="$HOME/.codex/config.toml"
+  if [ ! -f "$codex_config" ] || [ -L "$codex_config" ]; then
+    printf '%s\n' 'Require a regular non-symlink ~/.codex/config.toml' >&2
+    return 1
+  fi
+  dotfiles_root="${DOTFILES_ROOT:-$HOME/dotfiles}"
+  if [ ! -d "$dotfiles_root/.git" ]; then
+    printf '%s\n' 'Dotfiles checkout not found' >&2
+    return 1
+  fi
+  if ! git -C "$dotfiles_root" diff --quiet HEAD --; then
+    printf '%s\n' 'Dotfiles checkout must be clean' >&2
+    return 1
+  fi
+  branch="$(git -C "$dotfiles_root" symbolic-ref -q --short HEAD 2>/dev/null)" || {
+    printf '%s\n' 'Dotfiles checkout must be on a branch' >&2
+    return 1
+  }
+  if [ "$branch" != main ]; then
+    printf '%s\n' 'Dotfiles checkout must be on main' >&2
+    return 1
+  fi
+  dotfiles_revision="$(git -C "$dotfiles_root" rev-parse HEAD)" || return 1
+  origin_main="$(git -C "$dotfiles_root" rev-parse origin/main)" || return 1
+  if [ "$dotfiles_revision" != "$origin_main" ]; then
+    printf '%s\n' 'Dotfiles checkout must match origin/main' >&2
+    return 1
+  fi
+  fragment="$dotfiles_root/hosts/rhdevvps/codex-settings.toml"
+  if [ ! -f "$fragment" ]; then
+    printf '%s\n' 'Missing tracked Codex model fragment' >&2
+    return 1
+  fi
+  before_model="$(python3 - "$codex_config" <<'PY'
+from pathlib import Path
+import sys
+import tomllib
+model = tomllib.loads(Path(sys.argv[1]).read_text()).get("model")
+if not isinstance(model, str) or not model:
+    raise SystemExit("Expected an existing nonempty model")
+print(model)
+PY
+)" || return 1
+  backup="$(mktemp "$HOME/.codex/config.toml.bak-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")" || return 1
+  cp -- "$codex_config" "$backup" || return 1
+  printf 'Dotfiles revision: %s\nBefore model: %s\nBackup: %s\n' \
+    "$dotfiles_revision" "$before_model" "$backup"
+}
+codex_model_backup
+```
+
+Change only the existing top-level `model` assignment to the tracked fragment's
+value. The adoption step below rewrites that one line, then parses the backup
+and the live file with Python 3.11+ `tomllib` and refuses unless the live config
+equals the backup with only `model` replaced. Read the live model back and post
+filtered UTC before/after, `dotfiles_revision` and backup path on parent #1209;
+never publish the full config or backup. New Codex processes adopt the default;
+an explicit model, profile or project override may supersede it. Existing
+sessions are not migrated.
+
+```bash
+codex_model_adopt() {
+  if [ -n "${CODEX_HOME:-}" ]; then
+    printf '%s\n' 'CODEX_HOME must be unset' >&2
+    return 1
+  fi
+  if [ -z "${codex_config:-}" ] || [ ! -f "$codex_config" ] || [ -L "$codex_config" ]; then
+    printf '%s\n' 'Require a regular non-symlink codex_config' >&2
+    return 1
+  fi
+  if [ -z "${fragment:-}" ] || [ ! -f "$fragment" ]; then
+    printf '%s\n' 'Missing fragment; run codex_model_backup first' >&2
+    return 1
+  fi
+  if [ -z "${backup:-}" ] || [ -z "${before_model:-}" ]; then
+    printf '%s\n' 'Run codex_model_backup first' >&2
+    return 1
+  fi
+  python3 - "$codex_config" "$backup" "$fragment" <<'PY'
+import os
+import re
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+live_path = Path(sys.argv[1])
+backup_path = Path(sys.argv[2])
+fragment_path = Path(sys.argv[3])
+
+backup = tomllib.loads(backup_path.read_text())
+target_model = tomllib.loads(fragment_path.read_text()).get("model")
+if not isinstance(target_model, str) or not target_model:
+    raise SystemExit("Fragment must declare a nonempty model string")
+
+text = live_path.read_text()
+pattern = re.compile(r'(?m)^model[ \t]*=[ \t]*("[^"]*"|\'[^\']*\')[ \t]*$')
+if pattern.search(text) is None:
+    raise SystemExit("Expected exactly one top-level model assignment")
+new_text, replacements = pattern.subn(
+    f'model = "{target_model}"',
+    text,
+    count=1,
+)
+if replacements != 1:
+    raise SystemExit("Expected exactly one top-level model assignment")
+
+actual = tomllib.loads(new_text)
+expected = dict(backup)
+expected["model"] = target_model
+if actual != expected:
+    raise SystemExit("Live config must equal backup with only model replaced")
+if actual.get("model") == backup.get("model"):
+    raise SystemExit("Model is already at the tracked value")
+
+staging_path = ""
+fd = -1
+try:
+    fd, staging_path = tempfile.mkstemp(
+        prefix=f".config.adopt-{live_path.name}.",
+        dir=live_path.parent,
+        text=True,
+    )
+    os.chmod(staging_path, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        fd = -1
+        handle.write(new_text)
+    verified = tomllib.loads(Path(staging_path).read_text())
+    if verified != expected:
+        raise SystemExit("Staged config failed verification against backup")
+    Path(staging_path).replace(live_path)
+    staging_path = ""
+    print(f"After model: {verified['model']}")
+except BaseException:
+    if fd != -1:
+        os.close(fd)
+    if staging_path:
+        Path(staging_path).unlink(missing_ok=True)
+    raise
+PY
+}
+codex_model_adopt
+```
+
+Full-file rollback also requires quiescing all config writers and undoes every
+change since the backup. Set `backup`, `before_model`, and `codex_config` to their
+recorded values if using another shell. Validate the staged backup before the
+atomic rename, then parse and read back the restored model. Refused validation
+removes the staging file:
+
+```bash
+codex_model_rollback() {
+  if [ -n "${CODEX_HOME:-}" ]; then
+    printf '%s\n' 'CODEX_HOME must be unset' >&2
+    return 1
+  fi
+  codex_config="${codex_config:-$HOME/.codex/config.toml}"
+  if [ ! -f "$codex_config" ] || [ -L "$codex_config" ]; then
+    printf '%s\n' 'Require a regular non-symlink ~/.codex/config.toml' >&2
+    return 1
+  fi
+  if [ -z "${backup:-}" ] || [ -z "${before_model:-}" ]; then
+    printf '%s\n' 'Set backup and before_model from the recorded adoption output' >&2
+    return 1
+  fi
+  restore="$(mktemp "$HOME/.codex/.config.restore-XXXXXX")" || return 1
+  (
+    trap 'rm -f -- "$restore"; trap - EXIT INT TERM' EXIT INT TERM
+    set -e
+    cp -- "$backup" "$restore"
+    chmod 600 "$restore"
+    python3 - "$restore" "$before_model" <<'PY'
+from pathlib import Path
+import sys
+import tomllib
+config = tomllib.loads(Path(sys.argv[1]).read_text())
+if not sys.argv[2] or config.get("model") != sys.argv[2]:
+    raise SystemExit("Backup model does not match the recorded pre-change model")
+PY
+    mv -T -- "$restore" "$codex_config"
+    trap - EXIT INT TERM
+  )
+}
+codex_model_rollback
+```
+
 ### Lean OMP coordinator
 
 `omp-coordinator` starts the coordinator role in `~/repo-management` with the
