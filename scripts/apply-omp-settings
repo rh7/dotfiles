@@ -32,6 +32,7 @@ SCHEMA = {
     RECORD: dict,
     "retry.fallbackOn": str,
     "retry.usageAwareFallback": bool,
+    "composer.predictions": bool,
 }
 
 
