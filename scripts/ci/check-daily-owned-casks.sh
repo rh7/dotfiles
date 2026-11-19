@@ -28,14 +28,19 @@ fail=0
 bad() { echo "::error::$*"; fail=1; }
 
 cfg() { printf '.#darwinConfigurations."%s".config.%s' "$1" "$2"; }
+# text <host> <option> — a script text option as plain text. Its string
+# context is dropped first: on the Linux runner `nix eval --raw` of
+# postActivation refuses its context ("experimental Nix feature
+# 'dynamic-derivations' is disabled"); only the words are checked here.
+text() { nix eval --raw "$(cfg "$1" "$2")" --apply builtins.unsafeDiscardStringContext; }
 
 hosts=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.attrNames' | jq -r '.[]')
 [[ -n "$hosts" ]] || { bad "no darwinConfigurations found"; exit 1; }
 
 for h in $hosts; do
   got=$(nix eval --json "$(cfg "$h" dotfiles.homebrew.dailyUserOwnedCasks)" | jq -cS .)
-  post=$(nix eval --raw "$(cfg "$h" system.activationScripts.postActivation.text)")
-  defs=$(nix eval --raw "$(cfg "$h" system.activationScripts.defaults.text)")
+  post=$(text "$h" system.activationScripts.postActivation.text)
+  defs=$(text "$h" system.activationScripts.defaults.text)
   squirrel=$(awk '/^defaults write \/Library\/Preferences\/com.anthropic.claudefordesktop SquirrelMacEnableDirectContentsWrite /{ on = 1 } on && /<true\/>/ { print "true"; exit }' <<<"$defs")
   if [[ "$post" == *"Claude.app"* ]]; then
     bad "$h: an activation script touches Claude.app — App Management blocks it from launchd; rebuild.sh owns the hand-over"
