@@ -7,6 +7,10 @@
 #   - kassie-mbp-m1 lists exactly claude → Claude.app, with homebrew.user
 #     (rouven) ≠ primaryUser (kassie);
 #   - every other darwinConfiguration lists nothing;
+#   - kassie-mbp-m1 (only) writes SquirrelMacEnableDirectContentsWrite = true
+#     to /Library/Preferences/com.anthropic.claudefordesktop: without it
+#     Claude's Squirrel updater needs /Applications writable too, and owning
+#     the bundle alone would not spare Kassie the admin prompt;
 #   - no activation script chowns an app bundle: macOS App Management blocks
 #     that from the launchd-run activations (fleet-update, Deploy now), so
 #     the hand-over lives in rebuild.sh (run in Terminal at the Mac);
@@ -31,6 +35,8 @@ hosts=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.attrNames' | 
 for h in $hosts; do
   got=$(nix eval --json "$(cfg "$h" dotfiles.homebrew.dailyUserOwnedCasks)" | jq -cS .)
   post=$(nix eval --raw "$(cfg "$h" system.activationScripts.postActivation.text)")
+  defs=$(nix eval --raw "$(cfg "$h" system.activationScripts.defaults.text)")
+  squirrel=$(awk '/^defaults write \/Library\/Preferences\/com.anthropic.claudefordesktop SquirrelMacEnableDirectContentsWrite /{ on = 1 } on && /<true\/>/ { print "true"; exit }' <<<"$defs")
   if [[ "$post" == *"Claude.app"* ]]; then
     bad "$h: an activation script touches Claude.app — App Management blocks it from launchd; rebuild.sh owns the hand-over"
   fi
@@ -40,9 +46,12 @@ for h in $hosts; do
     pu=$(nix eval --raw "$(cfg "$h" system.primaryUser)")
     [[ "$bu" == rouven && "$pu" == kassie ]] || bad "$h: homebrew.user=$bu primaryUser=$pu, expected rouven/kassie"
     echo "$h: dailyUserOwnedCasks $got (homebrew.user=$bu, primaryUser=$pu)"
+    [[ "$squirrel" == true ]] \
+      || bad "$h: activation does not write SquirrelMacEnableDirectContentsWrite = true to /Library/Preferences/com.anthropic.claudefordesktop"
   else
     [[ "$got" == "{}" ]] || bad "$h: dailyUserOwnedCasks = $got, expected none"
     echo "$h: no daily-user-owned casks"
+    [[ "$defs" != *SquirrelMacEnableDirectContentsWrite* ]] || bad "$h: writes the Claude Squirrel default but is not $EXPECTED_HOST"
   fi
 done
 

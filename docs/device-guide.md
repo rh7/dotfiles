@@ -681,13 +681,19 @@ is declared and that `homebrew.user` is not already the daily user. If
 **rouven** runs Claude's updater from his own account, macOS asks him for an
 admin password — fine, he is admin.
 
-Claude's updater is Squirrel.Mac. By default it installs unprivileged only
-when it can write both the bundle **and** its parent folder (`/Applications`,
-which a standard user cannot); with the user default
-`SquirrelMacEnableDirectContentsWrite` it swaps `Contents/` inside the bundle
-and needs the bundle only ([source](https://github.com/Squirrel/Squirrel.Mac/blob/main/Squirrel/SQRLUpdater.m)).
-Owning the bundle is therefore necessary but only sufficient when Claude
-uses that mode.
+Owning the bundle is necessary but not enough on its own. Claude's updater is
+Squirrel.Mac, which by default installs unprivileged only when it can write
+both the bundle **and** its parent folder (`/Applications`, which a standard
+user cannot). With the user default `SquirrelMacEnableDirectContentsWrite` it
+swaps `Claude.app/Contents` instead and needs the bundle only
+([SQRLUpdater.m](https://github.com/Squirrel/Squirrel.Mac/blob/main/Squirrel/SQRLUpdater.m),
+[SQRLInstaller.m](https://github.com/Squirrel/Squirrel.Mac/blob/main/Squirrel/SQRLInstaller.m)).
+So `kassie-mbp-m1` also sets it, system-wide, through
+`system.defaults.CustomSystemPreferences."/Library/Preferences/com.anthropic.claudefordesktop"`
+(written by activation as root, read by every account's Claude; no per-user
+defaults). Check on the Mac: `defaults read
+/Library/Preferences/com.anthropic.claudefordesktop SquirrelMacEnableDirectContentsWrite`
+→ `1`. A `false` in Kassie's own domain would override it.
 
 **macOS App Management.** Since macOS 13 changing, replacing or deleting an
 **existing** signed app bundle is blocked, even for root, unless the

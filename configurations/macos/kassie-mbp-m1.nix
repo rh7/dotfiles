@@ -52,6 +52,17 @@
   # account, macOS asks him for an admin password — fine, he is admin.
   dotfiles.homebrew.dailyUserOwnedCasks.claude = "Claude.app";
 
+  # Owning the bundle is not enough on its own: Claude's updater (Squirrel.Mac)
+  # by default swaps the WHOLE Claude.app, which needs write access to
+  # /Applications too — which Kassie (standard) does not have, so it would
+  # still escalate. With SquirrelMacEnableDirectContentsWrite it swaps
+  # Claude.app/Contents instead and needs only the bundle (Squirrel/SQRLUpdater.m,
+  # SQRLInstaller.m). Set in /Library/Preferences (the any-user domain, read
+  # by every account's Claude and its ShipIt; written by activation as root;
+  # the absolute path matters — a bare domain would land in root's own
+  # prefs): no per-user defaults on this role.
+  system.defaults.CustomSystemPreferences."/Library/Preferences/com.anthropic.claudefordesktop".SquirrelMacEnableDirectContentsWrite = true;
+
   # Owner remote maintenance (modules/darwin/remote-maintenance.nix; the
   # household role allows it only in this hardened form and asserts it): SSH
   # over the tailnet as `rouven` ONLY — the admin maintainer account, so sudo
