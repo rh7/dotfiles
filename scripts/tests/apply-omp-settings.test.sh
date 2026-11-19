@@ -51,7 +51,7 @@ defaults = {'compaction.thresholdTokens': -1, 'compaction.idleEnabled': False,
  'compaction.idleThresholdTokens': 50000, 'compaction.idleTimeoutSeconds': 600,
  'tools.artifactSpillThreshold': 20, 'tools.artifactTailLines': 100,
  'task.agentCompactionThresholdOverrides': {}, 'retry.fallbackOn': 'never',
- 'retry.usageAwareFallback': False}
+ 'retry.usageAwareFallback': False, 'composer.predictions': True}
 mode = os.environ.get('FAKE_MODE', '')
 target = Path(os.environ.get('FAKE_TARGET', str(p / 'config.yml')))
 if mode == 'change-during-capture':
@@ -125,6 +125,7 @@ class EntrypointTests(unittest.TestCase):
             'retry': {'fallbackChains': {'default': ['SECRET-CHAIN']}, 'custom': 42},
             'task': {'agentAccountPools': {'reviewer': ['SECRET-POOL']},
                      'custom': 'keep', 'agentCompactionThresholdOverrides': {'custom-reviewer': 55555}},
+            'composer': {'shape': 'box', 'predictions': True},
             'tools': {'custom': 'keep'}}
         self.original = (json.dumps(self.original_data, indent=3) + '\n').encode()
         self.config.write_bytes(self.original)
@@ -173,6 +174,19 @@ class EntrypointTests(unittest.TestCase):
             else:
                 node[parts[-1]] = value
         self.assertEqual(data, expected)
+
+    def test_composer_predictions_managed_false(self):
+        self.assertIs(self.wanted['composer.predictions'], False)
+        self.original_data['composer'] = {'shape': 'box', 'predictions': True}
+        self.config.write_text(json.dumps(self.original_data, indent=3) + '\n')
+        preview = self.run_entry('--dry-run')
+        self.assertIn('composer.predictions', preview.stdout)
+        self.assertIn('true', preview.stdout.lower())
+        self.assertIn('false', preview.stdout.lower())
+        self.run_entry()
+        self.assert_applied()
+        self.assertIs(json.loads(self.config.read_text())['composer']['predictions'],
+                      False)
 
     def test_dry_run_diff_and_zero_target_mutation(self):
         self.assertFalse((self.agent / '.apply-omp-settings.lock').exists())
@@ -354,6 +368,7 @@ class EntrypointTests(unittest.TestCase):
         for key, value in [('modelRoles.default', 'forbidden'),
                            ('retry.fallbackChains', {}), ('task.agentAccountPools', {}),
                            ('compaction.thresholdTokens', True), ('compaction.idleEnabled', 1),
+                           ('composer.predictions', 1),
                            ('retry.fallbackOn', 'unsupported'),
                            ('task.agentCompactionThresholdOverrides', {'rogue-reviewer': 1})]:
             bad = json.loads(original_manifest)

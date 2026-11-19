@@ -14,5 +14,6 @@
     "security-reviewer": 120000
   },
   "retry.fallbackOn": "usage-limit",
-  "retry.usageAwareFallback": true
+  "retry.usageAwareFallback": true,
+  "composer.predictions": false
 }

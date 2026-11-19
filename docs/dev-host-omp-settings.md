@@ -15,6 +15,7 @@ startup overlay. JSON avoids an additional YAML parser dependency. It manages:
 - Reviewer compaction: 120,000 tokens for `reviewer-openai`, `reviewer-claude`,
   `reviewer-grok`, `gate-reviewer`, `reviewer`, and `security-reviewer`.
 - Retry: `fallbackOn: usage-limit`, `usageAwareFallback: true`.
+- Composer: `predictions: false` (no post-turn ghost text in an empty composer).
 
 No `modelRoles`, `retry.fallbackChains`, credentials, account-pool settings, or
 seat overlays are managed. Model routing remains with repo-management's
