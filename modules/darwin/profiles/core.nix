@@ -1,4 +1,4 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 
 {
   # ── Core macOS apps (every Mac gets these) ───────────────────────────────
@@ -16,7 +16,7 @@
     #             # brew bundle — provisioned from the App Store instead, in
     #             # productivity.nix. Keep it undeclared; see the note there.
     "tailscale-app"
-    "herdr-app"       # herdr desktop app (terminals + coding agents); CLI `herdr` comes from common.nix
+    "herdr-app"       # herdr desktop app (terminals + coding agents); its runtime herdr-core is installed in postActivation below; CLI `herdr` comes from common.nix
     # dia — no Homebrew cask / not on App Store; auto-installed from the official DMG in postActivation below
     # speedtest — Mac App Store only, not in Homebrew
   ];
@@ -69,5 +69,29 @@
     # `|| true` suspends set -e inside the function so a failure here can never
     # abort activation (postActivation runs under set -e).
     install_dia || true
+
+    # herdr-core (`hc`) is the runtime Herdr.app connects to — it runs the
+    # terminals and agents; without it the app has nothing to show. It's
+    # unrelated to the `herdr` CLI from common.nix, and there is no Homebrew or
+    # nixpkgs package. Run the official installer once per machine, as the
+    # user (it installs into ~/.local/bin + a signed Herdr Core.app bundle and
+    # verifies checksum and code signature). From then on Herdr.app updates
+    # the core itself, so we only install when it's missing.
+    install_herdr_core() {
+      local user=${config.system.primaryUser}
+      [ -x "/Users/$user/.local/bin/herdr-core" ] && return 0
+      echo "[INFO] Installing herdr-core for Herdr.app from releases.herdr.dev…"
+      # Fetch the whole script before running it so a truncated download can't
+      # half-run. BSD tools first on PATH (the installer shells out to tar,
+      # shasum, mktemp); bounded so an unattended activation can't hang on it.
+      if (cd / && ${pkgs.coreutils}/bin/timeout --kill-after=30 300 /usr/bin/sudo -u "$user" -H \
+            /usr/bin/env PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c \
+            'installer=$(/usr/bin/curl -fsSL --max-time 60 https://releases.herdr.dev/core/install.sh) && printf "%s\n" "$installer" | /bin/sh'); then
+        echo "[OK]   herdr-core installed. Restart Herdr.app to connect."
+      else
+        echo "[WARN] herdr-core install failed — run once: curl -fsSL https://releases.herdr.dev/core/install.sh | sh"
+      fi
+    }
+    install_herdr_core || true
   '';
 }
