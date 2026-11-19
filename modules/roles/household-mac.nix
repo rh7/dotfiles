@@ -163,6 +163,15 @@ in
   #     are unless the host declares their cask — then rebuild.sh replaces
   #     the bundle with the Homebrew copy, owned by the brew user
   #     (rh7/dotfiles#116). Per-user app data in ~/Library is not touched.
+  #     App Management (macOS 13+): modifying, replacing or deleting an
+  #     EXISTING signed app bundle — even as root — is allowed only when the
+  #     responsible process holds App Management (or Full Disk Access). An
+  #     SSH session does not (kassie-mbp-m1, 2026-11-19: `sudo chown` of
+  #     Claude.app got EPERM on every path); the fleet-update/deploy
+  #     LaunchDaemons should be assumed not to either. Terminal on the Mac
+  #     usually does. So cask upgrades, adoptions, retirements and bundle
+  #     ownership changes need rebuild.sh in Terminal AT the Mac; a NEW cask
+  #     (a new bundle in /Applications) is not a modification of an app.
   #   - NOT changed: Remote Login, Screen Sharing, SSH host keys and sshd
   #     config (asserted below); no Finder / Dock relaunch. A host that
   #     enables services.rh7.remoteMaintenance (kassie-mbp-m1) DOES get Remote
@@ -183,7 +192,10 @@ in
   #     ~/.local/state/{home-manager,nix} and /etc/profiles/per-user/<user>
   #     (no tools on PATH);
   #   - declared casks' bundles are owned by homebrew.user, which is her only
-  #     when the host leaves homebrew.user at its default.
+  #     when the host leaves homebrew.user at its default — except the casks
+  #     in dotfiles.homebrew.dailyUserOwnedCasks (modules/darwin/homebrew.nix):
+  #     apps that update themselves as her, whose bundles rebuild.sh hands to
+  #     her (kassie-mbp-m1: Claude.app).
   #
   # (c) OTHER ACCOUNTS (e.g. the maintainer): no per-user change. They see the
   #   system-wide effects above only (including the `brew` function, unless

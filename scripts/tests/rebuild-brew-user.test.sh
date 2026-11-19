@@ -47,7 +47,8 @@ FNS="setup_brew_user host_flake_ref eval_failed eval_user homebrew_enable_failed
      brew_user_writes_applications require_applications_writable
      authenticate_once ensure_jq ensure_declared_lib homebrew_plan cask_lifecycle_plan
      cask_app_targets app_bundle_modifiable declared_outdated_mas select_by_mode
-     load_critical_names replace_hand_installed"
+     load_critical_names replace_hand_installed
+     load_daily_owned daily_owned_listed daily_owned_foreign hand_daily_owned"
 for f in $FNS; do
   body=$(sed -n "/^$f() {/,/^}/p" "$SCRIPT")
   if [[ -z "$body" ]]; then echo "FATAL: could not extract $f from $SCRIPT" >&2; exit 1; fi
@@ -69,7 +70,8 @@ case "$1 ${2:-}" in
   "--prefix ") echo "$STUB_PFX" ;;
   "list --cask") printf '%s\n' vlc ;;
   "list --installed-on-request") : ;;
-  "outdated --formula"|"outdated --cask") : ;;
+  "outdated --formula") : ;;
+  "outdated --cask") if [[ -n "${STUB_OUTDATED_CASKS:-}" ]]; then printf '%s\n' $STUB_OUTDATED_CASKS; fi ;;
   "info --cask")
     printf '{"casks":[{"token":"zen","artifacts":[{"app":["Zen.app"],"target":"%s/Zen.app"}]}]}\n' "$STUB_APPS" ;;
 esac
@@ -83,7 +85,21 @@ case "$1" in
   true|-v) exit "${STUB_SUDO_RC:-0}" ;;
   -u) user="$2"; shift 2; [[ "$1" == -H ]] && shift
       exec env STUB_RUN_AS="$user" "$@" ;;
-  chown) exit 0 ;;
+  chown)
+    shift
+    if [[ -n "${STUB_CHOWN_EPERM:-}" ]]; then
+      echo "chown: ${*: -1}: Operation not permitted" >&2; exit 1
+    fi
+    # STUB_CHOWN_APPLY: record the new owner, so a re-check sees the result.
+    if [[ -n "${STUB_CHOWN_APPLY:-}" ]]; then
+      while [[ "$1" == -* ]]; do shift; done
+      owner="${1%%:*}"; shift
+      for p in "$@"; do
+        { grep -v "^$p " "$STUB_OWNERS" || true; echo "$p $owner"; } >"$STUB_OWNERS.new"
+        mv "$STUB_OWNERS.new" "$STUB_OWNERS"
+      done
+    fi
+    exit 0 ;;
 esac
 exit 0
 EOF
@@ -123,7 +139,10 @@ case "$*" in
   *config.homebrew.enable*)
     if [[ "${STUB_HB_ENABLE:-true}" == fail ]]; then echo "error: homebrew eval exploded" >&2; exit 1; fi
     echo "${STUB_HB_ENABLE:-true}" ;;
-  *config.homebrew.casks*) echo '[{"name":"zen"},{"name":"vlc"}]' ;;
+  *dailyUserOwnedCasks*) printf '%b' "${STUB_DAILY:-}" ;;
+  *config.homebrew.casks*)
+    casks='[{"name":"zen"},{"name":"vlc"}]'
+    echo "${STUB_CASKS_JSON:-$casks}" ;;
   *config.homebrew.brews*) echo '[]' ;;
   *retiredCasks*|*criticalUpgrades*) echo '[]' ;;
   *) exit 1 ;;
@@ -159,7 +178,7 @@ PRIMARY_USER=""; BREW_USER=""; BREW_AS_USER=false; BREW_BIN=""; SUDO_AUTHENTICAT
 APPLICATIONS_DIR="${APPS_DIR:-$APPS}"
 DECLARED_LIB_SOURCED=false; CRITICAL_LOADED=false; CRITICAL_KNOWN=false; CRITICAL_NAMES=""
 ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
-BREW_UPGRADE_FORMULAE=""; BREW_UPGRADE_CASKS=""
+BREW_UPGRADE_FORMULAE=""; BREW_UPGRADE_CASKS=""; DAILY_OWNED=""
 source "$W/fns.sh"
 $1
 EOF
@@ -168,6 +187,8 @@ EOF
       STUB_PRIMARY="${PRIMARY-kassie}" STUB_PRIMARY_FAIL="${PRIMARY_FAIL:-}" STUB_BREW_USER="${BREW_USER_NAME:-}" \
       STUB_HB_ENABLE="${HB_ENABLE:-true}" STUB_JQ_DIR="${JQ_DIR:-}" \
       STUB_NOCMD="${NOCMD:-}" STUB_FEATURES="${FEATURES:-}" \
+      STUB_DAILY="${DAILY:-}" STUB_CASKS_JSON="${CASKS_JSON:-}" STUB_OUTDATED_CASKS="${OUTDATED_CASKS:-}" \
+      STUB_CHOWN_EPERM="${CHOWN_EPERM:-}" STUB_CHOWN_APPLY="${CHOWN_APPLY:-}" \
       bash "$W/case.sh" >"$W/out" 2>&1 )
   echo $? >"$W/rc"
 }
@@ -425,6 +446,76 @@ has "--plan-only: says a full run stops" "A full run stops here, before activati
 run_case 'setup_brew_user >/dev/null; homebrew_plan; echo "REACHED NEW=$NEW_CASKS"'
 has "writable /Applications: the install goes ahead" "REACHED NEW=zen"
 mv "$W/Zen.app.away" "$APPS/Zen.app"
+
+echo ""
+echo "dotfiles.homebrew.dailyUserOwnedCasks (kassie-mbp-m1: claude → Claude.app, kassie's)"
+# Brew user = you, primaryUser kassie. Claude (listed) self-updates as kassie
+# and must stay hers; Zen (not listed) is still offered to the brew user.
+mkdir -p "$PFX/Caskroom/zen/1.0" "$PFX/Caskroom/claude/2.0" "$APPS/Claude.app"
+ln -s "$APPS/Zen.app" "$PFX/Caskroom/zen/1.0/Zen.app"
+ln -s "$APPS/Claude.app" "$PFX/Caskroom/claude/2.0/Claude.app"
+DAILY_CLAUDE='claude\tClaude.app\n'
+printf '%s kassie\n' "$APPS/Zen.app" "$APPS/Claude.app" >"$W/owners"
+DAILY="$DAILY_CLAUDE" BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo REACHED'
+check "unlisted Zen.app not the brew user's: still stops (rc 1)" "$(cat "$W/rc")" 1
+has "unlisted cask bundle: still offered to the brew user" "sudo chown -R $ME '$APPS/Zen.app'"
+hasnt "listed Claude.app (kassie's): never offered to the brew user" "chown -R $ME '$APPS/Claude.app'"
+hasnt "listed Claude.app (kassie's): not reported at all" "Claude.app"
+
+DAILY="" BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo REACHED'
+has "control — the same Claude.app UNlisted is offered to the brew user" "sudo chown -R $ME '$APPS/Claude.app'"
+
+# Listed bundle owned by the brew user (as Homebrew installed it): offered to
+# kassie; declining that alone does not stop the build.
+printf '%s %s\n' "$APPS/Zen.app" "$ME" "$APPS/Claude.app" "$ME" >"$W/owners"
+DAILY="$DAILY_CLAUDE" BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo "REACHED AS=$BREW_AS_USER"'
+check "listed bundle the brew user's, declined: build goes on (rc 0)" "$(cat "$W/rc")" 0
+has "listed bundle: reported with its owner" "$APPS/Claude.app ($ME)"
+has "listed bundle: offered to kassie" "self-updating app bundle(s) to kassie (chown -R kassie:staff)"
+has "declined: prints the Terminal fix" "sudo chown -R kassie:staff '$APPS/Claude.app'"
+has "declined: continues" "REACHED AS=false"
+hasnt "listed bundle: never offered to the brew user" "chown -R $ME '$APPS/Claude.app'"
+grep -q chown "$W/log" && bad "declined: nothing chowned" "$(cat "$W/log")" || good "declined: nothing chowned"
+
+echo "y" >"$W/yes"
+DAILY="$DAILY_CLAUDE" CHOWN_APPLY=1 BREW_USER_NAME="$ME" OWNER="$ME" \
+  run_case "PROMPT_TTY='$W/yes'; setup_brew_user; echo REACHED"
+check "accepted: rc 0" "$(cat "$W/rc")" 0
+grep -qF "sudo -n chown -R -h kassie:staff $APPS/Claude.app" "$W/log" \
+  && good "accepted: chown -R -h kassie:staff, inside the run's authentication" \
+  || bad "accepted: chown -R -h kassie:staff" "$(cat "$W/log")"
+has "accepted: confirmed" "$APPS/Claude.app now belongs to kassie"
+hasnt "accepted: nothing left over" "Still not kassie's"
+
+printf '%s %s\n' "$APPS/Zen.app" "$ME" "$APPS/Claude.app" "$ME" >"$W/owners"
+DAILY="$DAILY_CLAUDE" CHOWN_EPERM=1 BREW_USER_NAME="$ME" OWNER="$ME" \
+  run_case "PROMPT_TTY='$W/yes'; setup_brew_user; echo REACHED"
+check "App Management EPERM (over SSH): not fatal (rc 0)" "$(cat "$W/rc")" 0
+has "EPERM: names App Management" "macOS App Management blocked chown of $APPS/Claude.app"
+has "EPERM: prints the command to run in Terminal" "sudo chown -R kassie:staff '$APPS/Claude.app'"
+has "EPERM: the build goes on" "REACHED"
+
+# Mixed: an unlisted foreign bundle AND a listed one, declined → stops, and
+# both fixes are printed.
+printf '%s kassie\n%s %s\n' "$APPS/Zen.app" "$APPS/Claude.app" "$ME" >"$W/owners"
+DAILY="$DAILY_CLAUDE" BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user; echo REACHED'
+check "brew-user bundle + listed bundle, declined: stops (rc 1)" "$(cat "$W/rc")" 1
+has "mixed: brew-user fix" "sudo chown -R $ME '$APPS/Zen.app'"
+has "mixed: daily-user fix" "sudo chown -R kassie:staff '$APPS/Claude.app'"
+has "mixed: one question covers both" "Hand Homebrew to $ME now (the 1 app bundle(s) above), and the 1 self-updating app bundle(s) to kassie"
+
+# Never upgraded by Homebrew, even when `brew outdated` lists it (greedy).
+printf '%s %s\n' "$APPS/Zen.app" "$ME" "$APPS/Claude.app" kassie >"$W/owners"
+DAILY="$DAILY_CLAUDE" CASKS_JSON='[{"name":"zen"},{"name":"claude"}]' OUTDATED_CASKS="zen claude" \
+  BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user >/dev/null; homebrew_plan; echo "UPGRADE=[$BREW_UPGRADE_CASKS]"'
+has "--upgrade=all: an unlisted outdated cask is upgraded" "UPGRADE=[zen]"
+has "--upgrade=all: the plan says why claude is not" "they update themselves as kassie"
+printf '%s %s\n' "$APPS/Zen.app" "$ME" "$APPS/Claude.app" "$ME" >"$W/owners"
+DAILY="" CASKS_JSON='[{"name":"zen"},{"name":"claude"}]' OUTDATED_CASKS="zen claude" \
+  BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user >/dev/null; homebrew_plan; echo "UPGRADE=[$BREW_UPGRADE_CASKS]"'
+has "control — unlisted, claude would be upgraded" "UPGRADE=[claude zen]"
+rm -rf "$PFX/Caskroom/zen" "$PFX/Caskroom/claude" "$APPS/Claude.app"
+: >"$W/owners"
 
 echo ""
 echo "every Homebrew call site goes through \`brew\`"

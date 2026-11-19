@@ -655,6 +655,60 @@ channel reaches that commit; then it applies normally.
 - **Her `brew`:** Homebrew is not hers — in her shells `brew` answers
   "Homebrew on this Mac is managed by rouven; ask an admin".
 
+### Apps that update themselves (Claude on `kassie-mbp-m1`)
+
+With `homebrew.user = "rouven"` every Homebrew bundle is rouven's — fine for
+apps Homebrew upgrades, wrong for an app that updates **itself** in-app: its
+updater runs as whoever uses it, so Kassie (standard) cannot replace a bundle
+she does not own and macOS asks her for an admin password ("install
+helper"). The owner decided (2026-11-19) that she keeps Claude and can let it
+update without one.
+
+`dotfiles.homebrew.dailyUserOwnedCasks` (`modules/darwin/homebrew.nix`) maps
+such casks to their bundle — `kassie-mbp-m1`: `claude = "Claude.app"`. For
+these, `rebuild.sh`
+
+- offers `chown -R kassie:staff /Applications/Claude.app` in its one
+  ownership question (shown in the plan, inside the run's single
+  authentication) and never offers the bundle back to rouven;
+- never upgrades them through Homebrew (they are `auto_updates` casks, which
+  `brew outdated` skips anyway, but they are also removed explicitly from the
+  upgrade selection); the plan lists them as "update themselves as kassie".
+
+Homebrew still installs the cask when it is missing (as rouven); the next
+`rebuild.sh` offers the bundle to Kassie. The build asserts each listed cask
+is declared and that `homebrew.user` is not already the daily user. If
+**rouven** runs Claude's updater from his own account, macOS asks him for an
+admin password — fine, he is admin.
+
+Claude's updater is Squirrel.Mac. By default it installs unprivileged only
+when it can write both the bundle **and** its parent folder (`/Applications`,
+which a standard user cannot); with the user default
+`SquirrelMacEnableDirectContentsWrite` it swaps `Contents/` inside the bundle
+and needs the bundle only ([source](https://github.com/Squirrel/Squirrel.Mac/blob/main/Squirrel/SQRLUpdater.m)).
+Owning the bundle is therefore necessary but only sufficient when Claude
+uses that mode.
+
+**macOS App Management.** Since macOS 13 changing, replacing or deleting an
+**existing** signed app bundle is blocked, even for root, unless the
+responsible process (the app that started the command) has *App Management*
+or *Full Disk Access* in System Settings → Privacy & Security
+([Apple, WWDC22 "What's new in privacy"](https://developer.apple.com/videos/play/wwdc2022/10096/);
+[details](https://lapcatsoftware.com/articles/AppManagement.html)). Observed
+on `kassie-mbp-m1` 2026-11-19: `sudo chown -R kassie:staff
+/Applications/Claude.app` over SSH got "Operation not permitted" on every
+path; earlier bundle chowns by `rebuild.sh` from Terminal worked. So:
+
+- the ownership hand-over (and cask upgrades, adoptions, retirements) need
+  `rebuild.sh` run **in Terminal at the Mac**. Over SSH `rebuild.sh` reports
+  the block and prints the one command to run there; the build goes on;
+- nothing does this from activation — the nightly fleet-update and Deploy
+  now run from LaunchDaemons, which should be assumed not to hold App
+  Management;
+- installing a **new** cask writes a new bundle into `/Applications` rather
+  than modifying an existing app, so it is not what App Management guards —
+  our reading of the sources above, not yet observed from a LaunchDaemon.
+
 ### Deploy now (remote, household)
 
 For "add an app for Kassie and have it on her Mac within half an hour" —

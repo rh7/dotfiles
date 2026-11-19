@@ -68,3 +68,9 @@ jobs:
         # primary user (no home-manager LaunchAgent); every other host keeps
         # home-manager's gui LaunchAgent, unchanged.
         run: bash scripts/ci/check-fleet-audit-scheduler.sh
+
+      - name: Daily-user-owned casks (eval-level)
+        # dotfiles.homebrew.dailyUserOwnedCasks: only kassie-mbp-m1 (claude →
+        # Claude.app, hers); no activation chowns an app bundle (App
+        # Management blocks it from launchd); its assertions fire.
+        run: bash scripts/ci/check-daily-owned-casks.sh

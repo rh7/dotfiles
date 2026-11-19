@@ -271,6 +271,11 @@ PRIMARY_USER=""
 BREW_USER=""
 BREW_AS_USER=false
 BREW_BIN=""
+# dotfiles.homebrew.dailyUserOwnedCasks as "<cask>\t<bundle name>" lines
+# (load_daily_owned): casks that update themselves in-app as PRIMARY_USER, so
+# their bundles are hers — never offered to the brew user, never upgraded by
+# Homebrew, and offered to her instead.
+DAILY_OWNED=""
 # The directory casks install into; brew_user_writes_applications checks it.
 APPLICATIONS_DIR=/Applications
 
@@ -525,14 +530,20 @@ brew_prefix_foreign() {
 # when Homebrew's Ruby run as the wrong account cannot be trusted. Only
 # bundles directly in APPLICATIONS_DIR count, so an app Homebrew did not
 # install is never listed (and never chowned).
+#
+# DAILY_OWNED casks are left out: their bundles belong to the primary user
+# (dotfiles.homebrew.dailyUserOwnedCasks), so offering them to the brew user
+# would undo that on every run. Matched by cask token AND by bundle name.
 cask_app_bundles() {
-  local link target
+  local link target cask
   [[ -d "$1/Caskroom" ]] || return 0
   { find "$1/Caskroom" -mindepth 3 -maxdepth 3 -type l -name '*.app' 2>/dev/null || true; } \
     | while IFS= read -r link; do
         target=$(readlink "$link") || continue
         [[ "$target" == "$APPLICATIONS_DIR"/*.app && "$target" != "$APPLICATIONS_DIR"/*/* \
            && -d "$target" && ! -L "$target" ]] || continue
+        cask=${link#"$1"/Caskroom/}; cask=${cask%%/*}
+        if daily_owned_listed "$cask" "$target"; then continue; fi
         printf '%s\n' "$target"
       done | sort -u
 }
@@ -549,6 +560,88 @@ cask_bundles_foreign() {
       | awk -v u="$BREW_USER" '$0 != u && !s[$0]++ { o = o (o == "" ? "" : ", ") $0 } END { print o }')
     if [[ -n "$owners" ]]; then printf '%s (%s)\n' "$app" "$owners"; fi
   done < <(cask_app_bundles "$1")
+}
+
+# load_daily_owned — sets DAILY_OWNED from the configuration. Fatal on an eval
+# error: guessing "none" would offer those bundles back to the brew user.
+load_daily_owned() {
+  local ref dir host errf rc=0
+  ref=$(host_flake_ref); dir="${ref%#*}"; host="${ref##*#}"
+  errf=$(mktemp)
+  DAILY_OWNED=$(nix eval --raw "${dir}#darwinConfigurations.\"${host}\".config.dotfiles.homebrew.dailyUserOwnedCasks" \
+    --apply 'm: builtins.concatStringsSep "" (builtins.concatLists (builtins.attrValues
+      (builtins.mapAttrs (c: bs: map (b: c + "\t" + b + "\n") bs) m)))' 2>"$errf") || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    eval_failed dotfiles.homebrew.dailyUserOwnedCasks "$errf"
+    rm -f "$errf"
+    exit 1
+  fi
+  rm -f "$errf"
+}
+
+# daily_owned_listed <cask> <bundle path> — 0 when the cask, or the bundle,
+# is one of DAILY_OWNED's.
+daily_owned_listed() {
+  local c b
+  while IFS=$'\t' read -r c b; do
+    [[ -n "$c" ]] || continue
+    if [[ "$c" == "$1" || "$APPLICATIONS_DIR/$b" == "$2" ]]; then return 0; fi
+  done <<<"$DAILY_OWNED"
+  return 1
+}
+
+# daily_owned_foreign — "<bundle> (<owners>)" for each DAILY_OWNED bundle in
+# APPLICATIONS_DIR holding any path not owned by PRIMARY_USER: her app's own
+# updater cannot replace it and asks HER for an admin password. A missing
+# bundle is skipped (activation installs it as the brew user; the next run
+# offers it to her).
+daily_owned_foreign() {
+  local c b app owners
+  while IFS=$'\t' read -r c b; do
+    [[ -n "$b" ]] || continue
+    app="$APPLICATIONS_DIR/$b"
+    [[ -d "$app" && ! -L "$app" ]] || continue
+    owners=$({ find "$app" -xdev -exec stat -f '%Su' {} + 2>/dev/null || true; } \
+      | awk -v u="$PRIMARY_USER" '$0 != u && !s[$0]++ { o = o (o == "" ? "" : ", ") $0 } END { print o }')
+    if [[ -n "$owners" ]]; then printf '%s (%s)\n' "$app" "$owners"; fi
+  done <<<"$DAILY_OWNED"
+}
+
+# hand_daily_owned <lines> — chown each "<bundle> (<owners>)" to
+# PRIMARY_USER:staff, inside the run's authentication. NEVER fatal: these
+# bundles do not affect the build. macOS App Management (13+) refuses to let
+# even root modify an existing signed app bundle unless the RESPONSIBLE
+# process (the terminal app) holds App Management or Full Disk Access — over
+# SSH, or from Terminal without it, chown gets EPERM on every path. That is
+# reported with the fix instead of failing the run.
+hand_daily_owned() {
+  local b app out blocked=false
+  while IFS= read -r b; do
+    [[ -n "$b" ]] || continue
+    app="${b% (*}"
+    if out=$(sudo -n chown -R -h "$PRIMARY_USER:staff" "$app" 2>&1); then
+      ok "$app now belongs to $PRIMARY_USER (it updates itself as $PRIMARY_USER)"
+    elif grep -q 'Operation not permitted' <<<"$out"; then
+      blocked=true
+      warn "macOS App Management blocked chown of $app (Operation not permitted)."
+    else
+      warn "chown of $app failed:"
+      head -5 <<<"$out" | sed 's/^/          /'
+    fi
+  done <<<"$1"
+  if $blocked; then
+    warn "  Modifying an existing app bundle needs a process that holds App Management —"
+    warn "  not an SSH session. Run this ONCE in Terminal on the Mac itself (if it is"
+    warn "  refused there too: System Settings → Privacy & Security → App Management → Terminal):"
+  fi
+  b=$(daily_owned_foreign)
+  if [[ -n "$b" ]]; then
+    warn "Still not $PRIMARY_USER's (the build goes on; her in-app update keeps asking for an admin):"
+    while IFS= read -r app; do
+      if [[ -n "$app" ]]; then echo "    sudo chown -R $PRIMARY_USER:staff '${app% (*}'"; fi
+    done <<<"$b"
+  fi
+  echo ""
 }
 
 # brew_as_user <args...> — Homebrew as BREW_USER. `sudo -n`: it runs only
@@ -568,10 +661,12 @@ brew_as_user() {
 # that is the invoker, else via brew_as_user. Unless Homebrew is simply the
 # invoker's own (homebrew.user = primaryUser = you), a prefix or an installed
 # cask's app bundle the brew user does not own is offered a chown (one
-# question); declined, the run stops before anything is built.
+# question); declined, the run stops before anything is built. A
+# dotfiles.homebrew.dailyUserOwnedCasks bundle not wholly the PRIMARY user's
+# is offered to her in the same question; that part never stops the run.
 setup_brew_user() {
   [[ "$OS" == Darwin ]] || return 0
-  local invoker prefix foreign bundles b count owners dirs managed_rc=0
+  local invoker prefix foreign bundles daily q b count owners dirs managed_rc=0
   invoker=$(id -un)
   if ! PRIMARY_USER=$(eval_user system.primaryUser); then
     exit 1
@@ -591,9 +686,11 @@ setup_brew_user() {
   if ! prefix=$(brew_prefix) || [[ -z "$prefix" ]]; then
     return 0   # no Homebrew yet: nothing to own or to run as the brew user
   fi
+  load_daily_owned
   foreign=$(brew_prefix_foreign "$prefix")
   bundles=$(cask_bundles_foreign "$prefix")
-  if [[ -n "$foreign$bundles" ]]; then
+  daily=$(daily_owned_foreign)
+  if [[ -n "$foreign$bundles$daily" ]]; then
     dirs=$(brew_owned_dirs "$prefix" | xargs)
     warn "This configuration's homebrew.user is '$BREW_USER' (system.primaryUser '$PRIMARY_USER', you are '$invoker')."
     if [[ -n "$foreign" ]]; then
@@ -609,12 +706,26 @@ setup_brew_user() {
       sed 's/^/          /' <<<"$bundles"
       echo "    Fix (as root): chown -R $BREW_USER <each bundle above> (only these; no other app is touched)"
     fi
-    echo "    Afterwards Homebrew belongs to $BREW_USER: every other account runs it as"
-    echo "    'sudo -u $BREW_USER brew …' — a plain 'brew' from another account fails."
+    if [[ -n "$daily" ]]; then
+      warn "$(wc -l <<<"$daily" | tr -d ' ') app bundle(s) that update themselves as $PRIMARY_USER (dotfiles.homebrew.dailyUserOwnedCasks)"
+      warn "are not (wholly) $PRIMARY_USER's — their in-app update would ask her for an admin password:"
+      sed 's/^/          /' <<<"$daily"
+      echo "    Fix (as root, in Terminal on this Mac): chown -R $PRIMARY_USER:staff <each bundle above>"
+    fi
+    if [[ -n "$foreign$bundles" ]]; then
+      echo "    Afterwards Homebrew belongs to $BREW_USER: every other account runs it as"
+      echo "    'sudo -u $BREW_USER brew …' — a plain 'brew' from another account fails."
+    fi
+    q="${foreign:+chown -R $BREW_USER:admin $dirs}${foreign:+${bundles:+, plus }}${bundles:+the $(wc -l <<<"$bundles" | tr -d ' ') app bundle(s) above}"
+    q="${q:+Hand Homebrew to $BREW_USER now ($q)}"
+    if [[ -n "$daily" ]]; then
+      b="the $(wc -l <<<"$daily" | tr -d ' ') self-updating app bundle(s) to $PRIMARY_USER (chown -R $PRIMARY_USER:staff)"
+      if [[ -n "$q" ]]; then q+=", and $b"; else q="Hand $b"; fi
+    fi
     if $PLAN_ONLY || $BUILD_ONLY; then
       info "  will fix: rebuild.sh offers this chown before the plan of a full run."
       echo ""
-    elif ask_fix "Hand Homebrew to $BREW_USER now (${foreign:+chown -R $BREW_USER:admin $dirs}${foreign:+${bundles:+, plus }}${bundles:+the $(wc -l <<<"$bundles" | tr -d ' ') app bundle(s) above})?"; then
+    elif ask_fix "$q?"; then
       authenticate_once "Nothing was built or changed."
       # shellcheck disable=SC2086  # $dirs: one or more prefix trees, no spaces
       if [[ -n "$foreign" ]] && ! sudo -n chown -R "$BREW_USER:admin" $dirs; then
@@ -628,25 +739,39 @@ setup_brew_user() {
           exit 1
         fi
       done <<<"$bundles"
-      foreign=$(brew_prefix_foreign "$prefix")
-      bundles=$(cask_bundles_foreign "$prefix")
       if [[ -n "$foreign$bundles" ]]; then
-        err "Still not owned by $BREW_USER after the chown:"
-        { tail -n +2 <<<"$foreign"; printf '%s\n' "$bundles"; } | sed '/^$/d; s/^/          /' >&2
-        err "Nothing was built or changed."
-        exit 1
+        foreign=$(brew_prefix_foreign "$prefix")
+        bundles=$(cask_bundles_foreign "$prefix")
+        if [[ -n "$foreign$bundles" ]]; then
+          err "Still not owned by $BREW_USER after the chown:"
+          { tail -n +2 <<<"$foreign"; printf '%s\n' "$bundles"; } | sed '/^$/d; s/^/          /' >&2
+          err "Nothing was built or changed."
+          exit 1
+        fi
+        ok "Homebrew under $prefix and the app bundles it installed now belong to $BREW_USER"
+        echo ""
       fi
-      ok "Homebrew under $prefix and the app bundles it installed now belong to $BREW_USER"
-      echo ""
-    else
+      if [[ -n "$daily" ]]; then hand_daily_owned "$daily"; fi
+    elif [[ -n "$foreign$bundles" ]]; then
       err "Nothing was built or changed. Fix, then re-run:"
       if [[ -n "$foreign" ]]; then err "    sudo chown -R $BREW_USER:admin $dirs"; fi
       while IFS= read -r b; do
         if [[ -n "$b" ]]; then err "    sudo chown -R $BREW_USER '${b% (*}'"; fi
       done <<<"$bundles"
+      while IFS= read -r b; do
+        if [[ -n "$b" ]]; then err "    sudo chown -R $PRIMARY_USER:staff '${b% (*}'"; fi
+      done <<<"$daily"
       err "Afterwards other accounts run Homebrew as $BREW_USER:"
       err "    sudo -u $BREW_USER brew …"
       exit 1
+    else
+      # Only the self-updating bundles: declining costs her an admin prompt on
+      # the app's next update, not this build.
+      warn "Left as is (the build goes on). To hand them over later, in Terminal on this Mac:"
+      while IFS= read -r b; do
+        if [[ -n "$b" ]]; then echo "    sudo chown -R $PRIMARY_USER:staff '${b% (*}'"; fi
+      done <<<"$daily"
+      echo ""
     fi
   fi
   BREW_BIN="$prefix/bin/brew"
@@ -1420,6 +1545,19 @@ homebrew_plan() {
   else
     intersect_lines "$PLAN_TMP/outdated_formulae" "$PLAN_TMP/declared_formulae" >"$PLAN_TMP/will_formulae"
     intersect_lines "$PLAN_TMP/outdated_casks" "$PLAN_TMP/declared_casks" >"$PLAN_TMP/will_casks"
+    # dotfiles.homebrew.dailyUserOwnedCasks are never upgraded by Homebrew:
+    # their app updates itself as the primary user, who owns the bundle, and a
+    # Homebrew upgrade would rewrite her bundle as the brew user. They are
+    # auto_updates casks, which a plain `brew outdated` omits anyway — but not
+    # with HOMEBREW_UPGRADE_GREEDY in the brew user's environment, nor if a
+    # cask ever drops auto_updates. So they are removed here explicitly.
+    self_casks=""
+    if [[ -n "$DAILY_OWNED" ]]; then
+      cut -f1 <<<"$DAILY_OWNED" | sed '/^$/d' >"$PLAN_TMP/daily_casks"
+      self_casks=$(intersect_lines "$PLAN_TMP/will_casks" "$PLAN_TMP/daily_casks" | tr '\n' ' ' | sed 's/ $//')
+      subtract_lines "$PLAN_TMP/will_casks" "$PLAN_TMP/daily_casks" >"$PLAN_TMP/will_casks.kept"
+      mv "$PLAN_TMP/will_casks.kept" "$PLAN_TMP/will_casks"
+    fi
     # Declared + outdated, then narrowed by --upgrade. What is not selected is
     # DEFERRED and listed, so "why is X still old?" always has an answer.
     # Critical names are loaded up front, NOT lazily inside select_by_mode:
@@ -1466,6 +1604,11 @@ homebrew_plan() {
       if [[ -n "$defer_formulae" ]]; then echo "    formulae: $defer_formulae"; fi
       if [[ -n "$defer_casks" ]]; then echo "    casks:    $defer_casks"; fi
       echo "    (run 'rebuild.sh --upgrade=all' to include them)"
+    fi
+    if [[ -n "$self_casks" ]]; then
+      echo ""
+      info "Outdated, but NOT upgraded by Homebrew — they update themselves as $PRIMARY_USER"
+      info "  (dotfiles.homebrew.dailyUserOwnedCasks): $self_casks"
     fi
 
     # Not a warning: undeclared packages are yours to manage by hand, and
