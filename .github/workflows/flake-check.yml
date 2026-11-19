@@ -73,4 +73,4 @@ jobs:
         # dotfiles.homebrew.dailyUserOwnedCasks: only kassie-mbp-m1 (claude →
         # Claude.app, hers); no activation chowns an app bundle (App
         # Management blocks it from launchd); its assertions fire.
-        run: bash scripts/ci/check-daily-owned-casks.sh
+        run: bash -x scripts/ci/check-daily-owned-casks.sh
