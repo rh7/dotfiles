@@ -276,6 +276,10 @@ BREW_BIN=""
 # their bundles are hers — never offered to the brew user, never upgraded by
 # Homebrew, and offered to her instead.
 DAILY_OWNED=""
+# Set when the ownership question's self-updating part was declined, or its
+# hand-over left something behind (e.g. App Management EPERM over SSH): the
+# post-activation hand-over (Step 6d) then does not ask or try again.
+DAILY_SKIP=false
 # The directory casks install into; brew_user_writes_applications checks it.
 APPLICATIONS_DIR=/Applications
 
@@ -636,6 +640,7 @@ hand_daily_owned() {
   fi
   b=$(daily_owned_foreign)
   if [[ -n "$b" ]]; then
+    DAILY_SKIP=true
     warn "Still not $PRIMARY_USER's (the build goes on; her in-app update keeps asking for an admin):"
     while IFS= read -r app; do
       if [[ -n "$app" ]]; then echo "    sudo chown -R $PRIMARY_USER:staff '${app% (*}'"; fi
@@ -767,6 +772,7 @@ setup_brew_user() {
     else
       # Only the self-updating bundles: declining costs her an admin prompt on
       # the app's next update, not this build.
+      DAILY_SKIP=true
       warn "Left as is (the build goes on). To hand them over later, in Terminal on this Mac:"
       while IFS= read -r b; do
         if [[ -n "$b" ]]; then echo "    sudo chown -R $PRIMARY_USER:staff '${b% (*}'"; fi
@@ -2166,6 +2172,21 @@ if [[ "$OS" == "Darwin" && -n "$RETIRE_CASKS" ]]; then
     warn "  $(brew list --cask -1 2>/dev/null | grep -Fx -f <(tr ' ' '\n' <<<"$RETIRE_CASKS") | xargs || true)"
   fi
   echo ""
+fi
+
+# ── Step 6d: Self-updating bundles back to the daily user ──
+# A dotfiles.homebrew.dailyUserOwnedCasks app that THIS run installed (new
+# cask, as the brew user) or adopted (replace_hand_installed hands the old
+# bundle to the brew user before `brew install --force`) now belongs to the
+# brew user. Hand it to the primary user here, so one run ends in the state
+# the configuration declares — unless the ownership question was declined.
+if [[ "$OS" == "Darwin" && -n "$DAILY_OWNED" ]] && ! $DAILY_SKIP; then
+  daily_left=$(daily_owned_foreign)
+  if [[ -n "$daily_left" ]]; then
+    echo -e "${BOLD}━━━ Self-updating apps → $PRIMARY_USER ━━━${NC}"
+    echo ""
+    hand_daily_owned "$daily_left"
+  fi
 fi
 
 # ── Step 6a: Upgrade the Homebrew packages the plan selected ──

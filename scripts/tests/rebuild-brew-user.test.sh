@@ -178,7 +178,7 @@ PRIMARY_USER=""; BREW_USER=""; BREW_AS_USER=false; BREW_BIN=""; SUDO_AUTHENTICAT
 APPLICATIONS_DIR="${APPS_DIR:-$APPS}"
 DECLARED_LIB_SOURCED=false; CRITICAL_LOADED=false; CRITICAL_KNOWN=false; CRITICAL_NAMES=""
 ADOPT_CASKS=""; ADOPT_APPS=""; ADOPT_BLOCKED=""; RETIRE_CASKS=""; NEW_CASKS=""
-BREW_UPGRADE_FORMULAE=""; BREW_UPGRADE_CASKS=""; DAILY_OWNED=""
+BREW_UPGRADE_FORMULAE=""; BREW_UPGRADE_CASKS=""; DAILY_OWNED=""; DAILY_SKIP=false
 source "$W/fns.sh"
 $1
 EOF
@@ -474,6 +474,8 @@ has "listed bundle: reported with its owner" "$APPS/Claude.app ($ME)"
 has "listed bundle: offered to kassie" "self-updating app bundle(s) to kassie (chown -R kassie:staff)"
 has "declined: prints the Terminal fix" "sudo chown -R kassie:staff '$APPS/Claude.app'"
 has "declined: continues" "REACHED AS=false"
+DAILY="$DAILY_CLAUDE" BREW_USER_NAME="$ME" OWNER="$ME" run_case 'setup_brew_user >/dev/null; echo "SKIP=$DAILY_SKIP"'
+has "declined: no second hand-over after activation (DAILY_SKIP)" "SKIP=true"
 hasnt "listed bundle: never offered to the brew user" "chown -R $ME '$APPS/Claude.app'"
 grep -q chown "$W/log" && bad "declined: nothing chowned" "$(cat "$W/log")" || good "declined: nothing chowned"
 
@@ -494,6 +496,30 @@ check "App Management EPERM (over SSH): not fatal (rc 0)" "$(cat "$W/rc")" 0
 has "EPERM: names App Management" "macOS App Management blocked chown of $APPS/Claude.app"
 has "EPERM: prints the command to run in Terminal" "sudo chown -R kassie:staff '$APPS/Claude.app'"
 has "EPERM: the build goes on" "REACHED"
+DAILY="$DAILY_CLAUDE" CHOWN_EPERM=1 BREW_USER_NAME="$ME" OWNER="$ME" \
+  run_case "PROMPT_TTY='$W/yes'; setup_brew_user >/dev/null; echo \"SKIP=\$DAILY_SKIP\""
+has "EPERM: not retried after activation (DAILY_SKIP)" "SKIP=true"
+
+# Step 6d (top-level, so pinned structurally): after the activation-failure
+# exit, guarded by DAILY_SKIP, handing over what daily_owned_foreign reports.
+l_fail=$(grep -n '^if \[\[ \$ACTIVATION_RC -ne 0 \]\]; then' "$SCRIPT" | cut -d: -f1)
+l_6d=$(grep -n '^# ── Step 6d: Self-updating bundles back to the daily user' "$SCRIPT" | cut -d: -f1)
+l_6a=$(grep -n '^# ── Step 6a:' "$SCRIPT" | cut -d: -f1)
+if [[ -n "$l_fail" && -n "$l_6d" && -n "$l_6a" && $l_fail -lt $l_6d && $l_6d -lt $l_6a ]]; then
+  good "Step 6d runs after activation succeeded, before the Homebrew upgrades"
+else
+  bad "Step 6d placement" "activation-fail=$l_fail 6d=$l_6d 6a=$l_6a"
+fi
+step6d=$(sed -n "${l_6d:-1},${l_6a:-1}p" "$SCRIPT")
+[[ "$step6d" == *'! $DAILY_SKIP'* && "$step6d" == *'daily_left=$(daily_owned_foreign)'* \
+   && "$step6d" == *'hand_daily_owned "$daily_left"'* ]] \
+  && good "Step 6d: skips when declined/blocked, else hands over what is left" \
+  || bad "Step 6d body" "$step6d"
+DAILY="$DAILY_CLAUDE" CHOWN_APPLY=1 BREW_USER_NAME="$ME" OWNER="$ME" \
+  run_case 'setup_brew_user >/dev/null 2>&1 </dev/null; DAILY_SKIP=false; hand_daily_owned "$(daily_owned_foreign)"'
+grep -qF "sudo -n chown -R -h kassie:staff $APPS/Claude.app" "$W/log" \
+  && good "post-activation hand-over: a bundle installed/adopted as the brew user goes to kassie" \
+  || bad "post-activation hand-over" "$(cat "$W/log")"
 
 # Mixed: an unlisted foreign bundle AND a listed one, declined → stops, and
 # both fixes are printed.

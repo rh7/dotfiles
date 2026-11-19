@@ -39,7 +39,9 @@
   # but from then on the bundle belongs to the daily user, so the app's own
   # updater can write it without an admin:
   #   - scripts/rebuild.sh offers `chown -R <primaryUser>:staff <bundle>` in
-  #     its one ownership question (and never offers it back to the brew user);
+  #     its one ownership question (and never offers it back to the brew user),
+  #     and hands over again after activation a bundle that same run
+  #     installed or adopted as the brew user;
   #   - rebuild.sh never upgrades a listed cask through Homebrew, which would
   #     have to rewrite the daily user's bundle.
   # There is deliberately no activation script for this: macOS App Management

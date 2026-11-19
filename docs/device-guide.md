@@ -675,8 +675,10 @@ these, `rebuild.sh`
   `brew outdated` skips anyway, but they are also removed explicitly from the
   upgrade selection); the plan lists them as "update themselves as kassie".
 
-Homebrew still installs the cask when it is missing (as rouven); the next
-`rebuild.sh` offers the bundle to Kassie. The build asserts each listed cask
+Homebrew still installs the cask when it is missing (as rouven), and
+`rebuild.sh` adoption replaces a hand-installed copy as rouven; either way the
+same `rebuild.sh` run hands the bundle to Kassie after activation (unless the
+question was declined or the hand-over was blocked). The build asserts each listed cask
 is declared and that `homebrew.user` is not already the daily user. If
 **rouven** runs Claude's updater from his own account, macOS asks him for an
 admin password — fine, he is admin.
