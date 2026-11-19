@@ -27,36 +27,46 @@ EXPECTED='{"claude":["Claude.app"]}'
 fail=0
 bad() { echo "::error::$*"; fail=1; }
 
-cfg() { printf '.#darwinConfigurations."%s".config.%s' "$1" "$2"; }
-# text <host> <option> — a script text option as plain text. Its string
-# context is dropped first: on the Linux runner `nix eval --raw` of
-# postActivation refuses its context ("experimental Nix feature
-# 'dynamic-derivations' is disabled"); only the words are checked here.
-text() { nix eval --raw "$(cfg "$1" "$2")" --apply builtins.unsafeDiscardStringContext; }
+# Per host, as JSON booleans/values only — like check-fleet-audit-scheduler.sh.
+# Printing activation TEXT (`nix eval --raw …postActivation.text`) fails on
+# the Linux runner ("experimental Nix feature 'dynamic-derivations' is
+# disabled"), so the text is searched inside the evaluation instead.
+# CustomSystemPreferences keys are written verbatim (`defaults write <key>`),
+# so the absolute /Library/Preferences key is what makes it system-wide.
+SQUIRREL_DOMAIN="/Library/Preferences/com.anthropic.claudefordesktop"
+SUMMARY="c: {
+  daily = c.dotfiles.homebrew.dailyUserOwnedCasks;
+  brewUser = c.homebrew.user;
+  primaryUser = c.system.primaryUser;
+  postTouchesClaude = builtins.length (builtins.split \"Claude[.]app\"
+    (builtins.unsafeDiscardStringContext c.system.activationScripts.postActivation.text)) > 1;
+  squirrel = (c.system.defaults.CustomSystemPreferences.\"$SQUIRREL_DOMAIN\" or { })
+    .SquirrelMacEnableDirectContentsWrite or null;
+  squirrelAnywhere = builtins.any (d: (c.system.defaults.CustomSystemPreferences.\${d})
+    ? SquirrelMacEnableDirectContentsWrite) (builtins.attrNames c.system.defaults.CustomSystemPreferences);
+}"
 
 hosts=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.attrNames' | jq -r '.[]')
 [[ -n "$hosts" ]] || { bad "no darwinConfigurations found"; exit 1; }
 
 for h in $hosts; do
-  got=$(nix eval --json "$(cfg "$h" dotfiles.homebrew.dailyUserOwnedCasks)" | jq -cS .)
-  post=$(text "$h" system.activationScripts.postActivation.text)
-  defs=$(text "$h" system.activationScripts.defaults.text)
-  squirrel=$(awk '/^defaults write \/Library\/Preferences\/com.anthropic.claudefordesktop SquirrelMacEnableDirectContentsWrite /{ on = 1 } on && /<true\/>/ { print "true"; exit }' <<<"$defs")
-  if [[ "$post" == *"Claude.app"* ]]; then
+  s=$(nix eval --json ".#darwinConfigurations.\"$h\".config" --apply "$SUMMARY")
+  got=$(jq -cS .daily <<<"$s")
+  if [[ "$(jq -r .postTouchesClaude <<<"$s")" != false ]]; then
     bad "$h: an activation script touches Claude.app — App Management blocks it from launchd; rebuild.sh owns the hand-over"
   fi
   if [[ "$h" == "$EXPECTED_HOST" ]]; then
     [[ "$got" == "$EXPECTED" ]] || bad "$h: dailyUserOwnedCasks = $got, expected $EXPECTED"
-    bu=$(nix eval --raw "$(cfg "$h" homebrew.user)")
-    pu=$(nix eval --raw "$(cfg "$h" system.primaryUser)")
+    bu=$(jq -r .brewUser <<<"$s"); pu=$(jq -r .primaryUser <<<"$s")
     [[ "$bu" == rouven && "$pu" == kassie ]] || bad "$h: homebrew.user=$bu primaryUser=$pu, expected rouven/kassie"
-    echo "$h: dailyUserOwnedCasks $got (homebrew.user=$bu, primaryUser=$pu)"
-    [[ "$squirrel" == true ]] \
-      || bad "$h: activation does not write SquirrelMacEnableDirectContentsWrite = true to /Library/Preferences/com.anthropic.claudefordesktop"
+    [[ "$(jq -r .squirrel <<<"$s")" == true ]] \
+      || bad "$h: SquirrelMacEnableDirectContentsWrite is not true in CustomSystemPreferences.\"$SQUIRREL_DOMAIN\""
+    echo "$h: dailyUserOwnedCasks $got (homebrew.user=$bu, primaryUser=$pu), Squirrel direct-contents on"
   else
     [[ "$got" == "{}" ]] || bad "$h: dailyUserOwnedCasks = $got, expected none"
+    [[ "$(jq -r .squirrelAnywhere <<<"$s")" == false ]] \
+      || bad "$h: sets the Claude Squirrel default but is not $EXPECTED_HOST"
     echo "$h: no daily-user-owned casks"
-    [[ "$defs" != *SquirrelMacEnableDirectContentsWrite* ]] || bad "$h: writes the Claude Squirrel default but is not $EXPECTED_HOST"
   fi
 done
 
