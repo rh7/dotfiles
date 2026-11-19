@@ -84,7 +84,7 @@
       # Fetch the whole script before running it so a truncated download can't
       # half-run. BSD tools first on PATH (the installer shells out to tar,
       # shasum, mktemp); bounded so an unattended activation can't hang on it.
-      if (cd / && ${pkgs.coreutils}/bin/timeout 600 /usr/bin/sudo -u "$user" -H \
+      if (cd / && ${pkgs.coreutils}/bin/timeout --kill-after=30 300 /usr/bin/sudo -u "$user" -H \
             /usr/bin/env PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c \
             'installer=$(/usr/bin/curl -fsSL --max-time 60 https://releases.herdr.dev/core/install.sh) && printf "%s\n" "$installer" | /bin/sh'); then
         echo "[OK]   herdr-core installed. Restart Herdr.app to connect."
