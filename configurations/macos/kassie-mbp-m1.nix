@@ -25,6 +25,8 @@
   # /Applications (an admin) and owns the existing bundle. Otherwise Homebrew
   # falls back to its own `sudo cp` and asks for the brew user's password —
   # which an unattended nightly fleet-update cannot answer at all.
+  # The one exception is Claude.app, deliberately Kassie's and never upgraded
+  # by Homebrew (dotfiles.homebrew.dailyUserOwnedCasks, below).
 
   # Homebrew belongs to the ADMIN maintainer account, not to the daily user.
   # kassie is a standard user: she cannot write /Applications, so installing
@@ -36,6 +38,30 @@
   # casks' app bundles to him. Kassie stays primaryUser (home-manager; the
   # daily audit runs as her); her `brew` says "managed by rouven; ask an admin".
   homebrew.user = "rouven";
+
+  # …except Claude, which Kassie uses and which updates ITSELF in-app (the
+  # `claude` cask is auto_updates). Its updater runs as Kassie, so with the
+  # bundle rouven's it could not replace it and macOS asked her for an admin
+  # password ("install helper"; owner decision 2026-11-19: she must be able
+  # to let it update without one). So /Applications/Claude.app belongs to
+  # her: rebuild.sh — run in Terminal ON this Mac, where it may modify an
+  # existing app bundle (macOS App Management; over SSH it cannot) — offers
+  # `chown -R kassie:staff` once, never hands it back to rouven and never
+  # upgrades `claude` through Homebrew. Homebrew still installs it if it is
+  # missing. Adds no software. If rouven runs Claude's updater from HIS
+  # account, macOS asks him for an admin password — fine, he is admin.
+  dotfiles.homebrew.dailyUserOwnedCasks.claude = "Claude.app";
+
+  # Owning the bundle is not enough on its own: Claude's updater (Squirrel.Mac)
+  # by default swaps the WHOLE Claude.app, which needs write access to
+  # /Applications too — which Kassie (standard) does not have, so it would
+  # still escalate. With SquirrelMacEnableDirectContentsWrite it swaps
+  # Claude.app/Contents instead and needs only the bundle (Squirrel/SQRLUpdater.m,
+  # SQRLInstaller.m). Set in /Library/Preferences (the any-user domain, read
+  # by every account's Claude and its ShipIt; written by activation as root;
+  # the absolute path matters — a bare domain would land in root's own
+  # prefs): no per-user defaults on this role.
+  system.defaults.CustomSystemPreferences."/Library/Preferences/com.anthropic.claudefordesktop".SquirrelMacEnableDirectContentsWrite = true;
 
   # Owner remote maintenance (modules/darwin/remote-maintenance.nix; the
   # household role allows it only in this hardened form and asserts it): SSH
@@ -95,7 +121,8 @@
     # /Applications is shared, so Kassie sees them too. No per-user config:
     # the household role links nothing into rouven's home.
     "ghostty"
-    "claude"           # Claude desktop app (self-updating)
+    "claude"           # Claude desktop app (self-updating; bundle owned by
+                       # kassie — dailyUserOwnedCasks above)
     "claude-code"      # Claude Code CLI → /opt/homebrew/bin/claude
   ];
 

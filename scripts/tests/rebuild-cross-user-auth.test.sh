@@ -89,6 +89,7 @@ case "$a" in
   "config show experimental-features") echo "nix-command flakes" ;;
   *"config.system.primaryUser"*) printf kassie ;;
   *"config.homebrew.user"*) printf kassie ;;
+  *"dailyUserOwnedCasks"*) : ;;
   *"config.homebrew.enable"*) echo true ;;
   *"config.homebrew.masApps"*) echo '{}' ;;
   *"config.homebrew."*|*criticalUpgrades*|*retiredCasks*) echo '[]' ;;

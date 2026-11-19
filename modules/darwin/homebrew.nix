@@ -29,6 +29,34 @@
     description = "Casks rebuild.sh uninstalls if installed. Must not also be declared.";
   };
 
+  # Casks whose app updates ITSELF in-app as the daily user (system.primaryUser),
+  # on a Mac where Homebrew belongs to someone else (homebrew.user, an admin —
+  # kassie-mbp-m1). Maps each cask token to the app bundle name(s) it puts in
+  # /Applications, e.g. { claude = "Claude.app"; } — explicit, so nothing has
+  # to ask brew which bundle a cask owns.
+  #
+  # Homebrew still INSTALLS a listed cask when it is missing (as homebrew.user),
+  # but from then on the bundle belongs to the daily user, so the app's own
+  # updater can write it without an admin:
+  #   - scripts/rebuild.sh offers `chown -R <primaryUser>:staff <bundle>` in
+  #     its one ownership question (and never offers it back to the brew user),
+  #     and hands over again after activation a bundle that same run
+  #     installed or adopted as the brew user;
+  #   - rebuild.sh never upgrades a listed cask through Homebrew, which would
+  #     have to rewrite the daily user's bundle.
+  # There is deliberately no activation script for this: macOS App Management
+  # (13+) blocks even root from modifying an existing signed app bundle unless
+  # the RESPONSIBLE process holds App Management / Full Disk Access — the
+  # nightly fleet-update daemon and an SSH session do not; Terminal on the Mac
+  # usually does. See docs/device-guide.md ("Household Macs").
+  options.dotfiles.homebrew.dailyUserOwnedCasks = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.coercedTo lib.types.str (b: [ b ])
+      (lib.types.nonEmptyListOf lib.types.str));
+    default = { };
+    example = { claude = "Claude.app"; };
+    description = "Declared casks (token -> app bundle name(s)) whose bundles the primary user owns, so they self-update without admin.";
+  };
+
   config = {
     dotfiles.homebrew.criticalUpgrades = [
       # Browsers
@@ -54,10 +82,35 @@
       let
         declared = map (c: c.name) config.homebrew.casks;
         both = lib.filter (c: lib.elem c declared) config.dotfiles.homebrew.retiredCasks;
-      in [{
-        assertion = both == [ ];
-        message = "dotfiles.homebrew.retiredCasks also declared in homebrew.casks: ${lib.concatStringsSep ", " both}";
-      }];
+        daily = config.dotfiles.homebrew.dailyUserOwnedCasks;
+        dailyUndeclared = lib.filter (c: !lib.elem c declared) (lib.attrNames daily);
+        # A bare bundle name directly in /Applications: no path, no `..`.
+        badBundles = lib.filter (b: builtins.match "[^/]+\\.app" b == null || lib.hasPrefix "." b)
+          (lib.concatLists (lib.attrValues daily));
+      in [
+        {
+          assertion = both == [ ];
+          message = "dotfiles.homebrew.retiredCasks also declared in homebrew.casks: ${lib.concatStringsSep ", " both}";
+        }
+        # Ownership by the daily user only means something when Homebrew is
+        # NOT already hers; otherwise the bundles are hers anyway and the entry
+        # is a misleading no-op.
+        {
+          assertion = daily == { } || config.homebrew.user != config.system.primaryUser;
+          message = "dotfiles.homebrew.dailyUserOwnedCasks is set, but homebrew.user is system.primaryUser "
+            + "(${config.system.primaryUser}): those casks are already hers — drop the option.";
+        }
+        {
+          assertion = dailyUndeclared == [ ];
+          message = "dotfiles.homebrew.dailyUserOwnedCasks lists casks not declared in homebrew.casks: "
+            + lib.concatStringsSep ", " dailyUndeclared;
+        }
+        {
+          assertion = badBundles == [ ];
+          message = "dotfiles.homebrew.dailyUserOwnedCasks: each value must be an app bundle name in "
+            + "/Applications such as \"Claude.app\" (got: ${lib.concatStringsSep ", " badBundles})";
+        }
+      ];
 
     # ── Homebrew scaffold (managed declaratively by nix-darwin) ──────────────
     # App lists have been moved to modules/darwin/profiles/ and modules/roles/.

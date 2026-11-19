@@ -42,6 +42,7 @@ FNS="cleanup ask_fix nix_missing_features restart_nix_daemon nix_conf_append req
      authenticate_once host_flake_ref eval_failed eval_user homebrew_enable_failed
      ensure_declared_lib brew_prefix brew_owned_dirs brew_prefix_foreign cask_app_bundles
      cask_bundles_foreign brew_as_user setup_brew_user
+     load_daily_owned daily_owned_listed daily_owned_foreign hand_daily_owned
      etc_managed_targets sha256_of nix_block_stripped etc_stock_with_nix_block etc_body
      etc_unexpected_lines etc_restore_hint etc_config_service_pin etc_preflight etc_apply_renames"
 for f in $FNS; do
@@ -104,6 +105,7 @@ case "$*" in
   *config.system.primaryUser*) printf '%s' "$STUB_PRIMARY" ;;
   *config.homebrew.user*) printf '%s' "${STUB_BREW_USER:-$STUB_PRIMARY}" ;;
   *config.homebrew.enable*) echo true ;;
+  *dailyUserOwnedCasks*) : ;;
   *config.environment.etc*)
     if [[ -n "${STUB_ETC_FAIL:-}" ]]; then echo "error: etc eval exploded" >&2; exit 1; fi
     cat "$STUB_ETC_TARGETS" ;;
