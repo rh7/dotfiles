@@ -7,12 +7,15 @@ before using full-file rollback; OMP's native settings lock is independent.
 
 import argparse
 import contextlib
+import copy
 from datetime import datetime, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -23,7 +26,10 @@ REVIEWERS = frozenset(("reviewer-openai", "reviewer-claude", "reviewer-grok",
                        "gate-reviewer", "reviewer", "security-reviewer"))
 RECORD = "task.agentCompactionThresholdOverrides"
 POLICIES = "auth.accountPolicies"
-POLICY_FIELDS = frozenset(("provider", "account", "reservePct"))
+RESERVE_POLICY = "retry.usageReservePolicy"
+RESERVE_POLICIES = ("confirm", "auto", "fail-closed")
+RULE_FIELDS = frozenset(("provider", "account", "priority", "reservePct", "reclaimAbovePct"))
+MANIFEST_RULE_FIELDS = frozenset(("provider", "account", "reservePct"))
 SELECTOR_FIELDS = ("email", "accountId", "projectId", "orgId")
 SCHEMA = {
     "compaction.thresholdTokens": int,
@@ -35,9 +41,25 @@ SCHEMA = {
     RECORD: dict,
     "retry.fallbackOn": str,
     "retry.usageAwareFallback": bool,
+    RESERVE_POLICY: str,
     "composer.predictions": bool,
     POLICIES: list,
 }
+# `omp config list` hides a scalar or list parent such as `auth: 5`, and
+# `omp config set auth.x` silently replaces it. OMP parses config.yml with
+# Bun.YAML; its bundled Bun runtime reports each parent's kind, never values.
+PARENTS = sorted({".".join(key.split(".")[:depth]) for key in SCHEMA
+                  for depth in range(1, key.count(".") + 1)})
+SHAPE_SCRIPT = """
+const kind = (v) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const data = Bun.YAML.parse(await Bun.stdin.text());
+const kinds = {"": kind(data)};
+for (const path of JSON.parse(process.env.APPLY_OMP_PARENTS)) {
+  kinds[path] = kind(path.split(".").reduce((node, part) => object(node) ? node[part] : undefined, data));
+}
+console.log(JSON.stringify(kinds));
+"""
 
 
 class SettingsError(Exception):
@@ -82,30 +104,49 @@ def validate_value(key, value, manifest=False):
                 fail("Invalid managed reviewer threshold")
     if manifest and key == "retry.fallbackOn" and value != "usage-limit":
         fail("Unsupported retry.fallbackOn in manifest")
+    if key == RESERVE_POLICY and value not in (("auto",) if manifest else RESERVE_POLICIES):
+        fail(f"Unsupported {RESERVE_POLICY}")
     if key == POLICIES:
         validate_policies(value, manifest)
 
 
+def number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def validate_rule(rule, global_reserve=0):
+    # Mirrors OMP 19.1.1's auth.accountPolicies parser: `omp config set` stores
+    # any array, and a bad rule only fails later, at credential selection.
+    if type(rule) is not dict or not set(rule) <= RULE_FIELDS:
+        fail(f"Invalid {POLICIES} entry")
+    provider, account = rule.get("provider"), rule.get("account")
+    if type(provider) is not str or not provider or provider.strip() != provider:
+        fail(f"Invalid {POLICIES} provider")
+    if (type(account) is not dict or not set(account) <= set(SELECTOR_FIELDS)
+            or not set(account) - {"orgId"}
+            or any(type(v) is not str or not v for v in account.values())):
+        fail(f"Invalid {POLICIES} account selector")
+    if "priority" in rule and not number(rule["priority"]):
+        fail(f"Invalid {POLICIES} priority")
+    reserve = rule.get("reservePct", global_reserve)
+    if not (number(reserve) and 0 <= reserve <= 100):
+        fail(f"Invalid {POLICIES} reservePct")
+    # OMP compares reclaimAbovePct with the rule's reserve, or the global
+    # retry.usageReservePct when the rule has none.
+    if "reclaimAbovePct" in rule and not (number(rule["reclaimAbovePct"])
+                                          and reserve < rule["reclaimAbovePct"] <= 100):
+        fail(f"Invalid {POLICIES} reclaimAbovePct")
+
+
 def validate_policies(rules, manifest):
-    # Live rules only need a provider: apply keeps other providers' rules as-is.
-    # Manifest rules mirror OMP's own parser, because `omp config set` stores
-    # any array and a bad rule only fails later, at credential selection.
     seen = set()
     for rule in rules:
-        if type(rule) is not dict or type(rule.get("provider")) is not str:
-            fail(f"Invalid {POLICIES} entry")
+        validate_rule(rule)
         if not manifest:
             continue
-        provider, account = rule["provider"], rule.get("account")
-        if set(rule) != POLICY_FIELDS or not provider or provider.strip() != provider:
-            fail(f"Manifest {POLICIES} entries need exactly provider, account, reservePct")
-        if (type(account) is not dict or not set(account) <= set(SELECTOR_FIELDS)
-                or not account or not set(account) - {"orgId"}
-                or any(type(v) is not str or not v for v in account.values())):
-            fail(f"Manifest {POLICIES} entry has an invalid account selector")
-        if type(rule["reservePct"]) is not int or not 0 <= rule["reservePct"] <= 100:
-            fail(f"Manifest {POLICIES} reservePct must be an integer from 0 to 100")
-        identity = json.dumps([provider, account], sort_keys=True)
+        if set(rule) != MANIFEST_RULE_FIELDS or type(rule["reservePct"]) is not int:
+            fail(f"Manifest {POLICIES} entries need exactly provider, account, integer reservePct")
+        identity = json.dumps([rule["provider"], rule["account"]], sort_keys=True)
         if identity in seen:
             fail(f"Manifest {POLICIES} repeats an account rule")
         seen.add(identity)
@@ -227,9 +268,41 @@ class OmpSession:
             values[key] = item["value"]
         return values
 
+    def global_reserve(self):
+        # Effective retry.usageReservePct (unmanaged): OMP checks a rule's
+        # reclaimAbovePct against it when the rule has no reservePct.
+        item = self.command(["get", "retry.usageReservePct", "--json"], "get retry.usageReservePct")
+        value = item.get("value") if type(item) is dict else None
+        if not (number(value) and 0 <= value <= 100):
+            fail("Missing or malformed OMP reading for retry.usageReservePct")
+        return value
+
+    def check_local_accounts(self):
+        # With an auth broker, OMP selects among accounts the local DB lacks.
+        item = self.command(["get", "auth.broker.url", "--json"], "get auth.broker.url")
+        if os.environ.get("OMP_AUTH_BROKER_URL") or type(item) is not dict or item.get("value"):
+            fail("An OMP auth broker is configured; its accounts are not in the local agent database")
+
     def set_value(self, key, value):
         self.command(["set", key, json.dumps(value, separators=(",", ":"))],
                      f"set {key}", expect_json=False)
+
+    def check_parents(self, content):
+        env = dict(self.env, BUN_BE_BUN="1", APPLY_OMP_PARENTS=json.dumps(PARENTS))
+        result = subprocess.run([self.executable, "-e", SHAPE_SCRIPT], input=content,
+                                cwd=self.root, env=env, capture_output=True)
+        if result.returncode or result.stderr.strip():
+            fail(f"OMP config shape check failed (exit {result.returncode})")
+        kinds = parse_json(result.stdout.decode(), "OMP config shape check")
+        if type(kinds) is not dict:
+            fail("Malformed OMP config shape check")
+        for path in ("", *PARENTS):
+            # An absent parent, or an empty document, becomes a mapping
+            # without losing data; an explicit `auth: null` is refused too.
+            if kinds.get(path) not in (("object", "null", "undefined") if path == ""
+                                       else ("object", "undefined")):
+                fail(f"{path or 'The config root'} in config.yml is not a mapping;"
+                     " omp config set would replace it")
 
 
 def capture(executable, content):
@@ -243,19 +316,136 @@ def display_value(key, value):
                  if reviewer in REVIEWERS}
     if key == POLICIES:
         # Show which selector fields a rule uses, never their values.
-        value = [{"provider": rule["provider"],
-                  "account": sorted(rule["account"]) if type(rule.get("account")) is dict else "<invalid>",
+        value = [{"provider": rule["provider"], "account": sorted(rule["account"]),
                   **{field: rule[field] for field in ("priority", "reservePct", "reclaimAbovePct")
-                     if type(rule.get(field)) in (int, float)}}
+                     if field in rule}}
                  for rule in value]
     return json.dumps(value, sort_keys=True)
 
 
-def merge_policies(current, managed):
-    # The manifest owns every rule of its providers: a second rule matching the
-    # same stored account makes OMP refuse credential selection for it.
-    providers = {rule["provider"] for rule in managed}
-    return [rule for rule in current if rule["provider"] not in providers] + managed
+def database_state(database):
+    info = os.lstat(database)
+    return (info.st_ino, info.st_size, info.st_mtime_ns, os.path.lexists(f"{database}-wal"))
+
+
+def stored_accounts(profile, providers):
+    """Selector fields of each active stored OAuth account, per provider.
+
+    Reads the agent DB read-only and selects only email/accountId/projectId/orgId
+    in SQL; token fields never leave SQLite, and errors never echo stored values.
+    """
+    accounts = {provider: [] for provider in providers}
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if data_home and os.path.lexists(os.path.join(data_home, "omp")):
+        # OMP then keeps the default profile's agent.db under XDG_DATA_HOME.
+        fail("OMP data under XDG_DATA_HOME is not supported; the account store is elsewhere")
+    database = profile / "agent.db"
+    fields = ", ".join(f"json_extract(data, '$.{field}')" for field in SELECTOR_FIELDS)
+    marks = ", ".join("?" for _ in providers)
+    sql = (f"SELECT id, provider, identity_key, json_type(data), {fields} FROM auth_credentials"
+           f" WHERE credential_type = 'oauth' AND disabled_cause IS NULL AND provider IN ({marks})"
+           " ORDER BY id DESC")
+
+    def read(query):
+        with contextlib.closing(sqlite3.connect(database.as_uri() + query,
+                                                uri=True, timeout=10)) as db:
+            return db.execute(sql, sorted(providers)).fetchall()
+
+    try:
+        if not stat.S_ISREG(os.lstat(database).st_mode):
+            fail("Expected a regular agent database")
+        with open(database, "rb") as handle:
+            wal_mode = handle.read(20)[18:19] == b"\x02"
+        # A read-only open of a WAL database creates -wal/-shm sidecars when no
+        # connection holds them. Any open OMP connection keeps a -wal file, so
+        # without one every committed row is in the main file: read it
+        # immutable. If that read fails or the file or its -wal changed
+        # meanwhile, read again with locking.
+        state = database_state(database)
+        rows = None
+        if wal_mode and not state[3]:
+            with contextlib.suppress(sqlite3.Error):
+                rows = read("?immutable=1")
+            if database_state(database) != state:
+                rows = None
+        if rows is None:
+            rows = read("?mode=ro")
+    except (OSError, sqlite3.Error):
+        fail("Cannot read stored OAuth accounts from the agent database")
+    seen = set()
+    # OMP prunes rows sharing an identity before it matches policies, keeping
+    # the newest; it stores that identity in identity_key.
+    for row, provider, identity, kind, *values in rows:
+        if kind != "object":
+            fail("Malformed stored OAuth credential")
+        key = (provider, identity.strip() if type(identity) is str and identity.strip() else row)
+        if key in seen:
+            continue
+        seen.add(key)
+        accounts[provider].append({field: value for field, value in zip(SELECTOR_FIELDS, values)
+                                   if type(value) is str})
+    for stored in accounts.values():
+        stored.reverse()
+    return accounts
+
+
+def selects(selector, credential):
+    # OMP's matcher: every selector field equals the stored credential's field.
+    return all(credential.get(field) == value for field, value in selector.items())
+
+
+def check_unique(rules, accounts):
+    # OMP refuses credential selection for a provider when one rule matches
+    # several stored accounts or two rules match one. Report indices only.
+    for provider, stored in accounts.items():
+        owners = {}
+        for index, rule in enumerate(rules):
+            if rule["provider"] != provider:
+                continue
+            hits = [n for n, credential in enumerate(stored) if selects(rule["account"], credential)]
+            if len(hits) > 1:
+                fail(f"{POLICIES}[{index}] matches {len(hits)} stored {provider} accounts")
+            if hits and hits[0] in owners:
+                fail(f"{POLICIES}[{owners[hits[0]]}] and [{index}] match the same"
+                     f" stored {provider} account")
+            if hits:
+                owners[hits[0]] = index
+
+
+def merge_policies(current, managed, accounts, global_reserve):
+    """Set reservePct on the one rule that selects each manifest account.
+
+    That rule keeps its selector and other fields; every other rule is kept
+    as-is. Without such a rule, the manifest rule is appended.
+    """
+    for rule in current:
+        # The live rule as OMP reads it now, before any reservePct is set.
+        validate_rule(rule, global_reserve)
+    desired = copy.deepcopy(current)
+    targets = set()
+    for index, rule in enumerate(managed):
+        provider, label = rule["provider"], f"Manifest {POLICIES}[{index}]"
+        stored = accounts[provider]
+        hits = [n for n, credential in enumerate(stored) if selects(rule["account"], credential)]
+        if len(hits) != 1:
+            fail(f"{label} must match exactly one stored {provider} OAuth account,"
+                 f" matches {len(hits)}")
+        if (provider, hits[0]) in targets:
+            fail(f"{label} selects an account another manifest rule selects")
+        targets.add((provider, hits[0]))
+        owners = [existing for existing in desired if existing["provider"] == provider
+                  and selects(existing["account"], stored[hits[0]])]
+        if len(owners) > 1:
+            fail(f"{label}: {len(owners)} existing rules select its account;"
+                 " resolve them by hand")
+        if owners:
+            owners[0]["reservePct"] = rule["reservePct"]
+        else:
+            desired.append(copy.deepcopy(rule))
+    for rule in desired:
+        validate_rule(rule, global_reserve)
+    check_unique(desired, accounts)
+    return desired
 
 
 def show_values(title, selected):
@@ -360,12 +550,20 @@ def main():
             print("Rollback verified.")
             return
 
+        with OmpSession(executable, content=original) as session:
+            session.check_parents(original)
+            global_reserve = session.global_reserve()
+            session.check_local_accounts()
         before_global, _ = capture(executable, original)
+        current = before_global.get(POLICIES, [])
+        # Every provider with a rule: OMP checks uniqueness for each of them.
+        providers = {rule["provider"] for rule in manifest[POLICIES] + current}
+        accounts = stored_accounts(profile, providers)
 
         desired = dict(manifest)
         desired[RECORD] = dict(before_global.get(RECORD, {}))
         desired[RECORD].update(manifest[RECORD])
-        desired[POLICIES] = merge_policies(before_global.get(POLICIES, []), manifest[POLICIES])
+        desired[POLICIES] = merge_policies(current, manifest[POLICIES], accounts, global_reserve)
         if args.dry_run:
             print("Dry run (managed global differences only):")
             changed = False
@@ -388,6 +586,9 @@ def main():
         # Fresh process reads from a fresh profile copy, not a process-local cache.
         after_global, after_readings = capture(executable, read_regular(config))
         verify(desired, desired, after_global, after_readings)
+        if stored_accounts(profile, providers) != accounts:
+            fail("Stored OAuth accounts changed during apply; quiesce logins, "
+                 "re-run --dry-run, then apply or roll back to the printed backup")
         show_values("After (managed global values):", after_global)
         print("Apply verified.")
 

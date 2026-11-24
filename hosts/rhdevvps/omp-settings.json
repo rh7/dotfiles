@@ -15,6 +15,7 @@
   },
   "retry.fallbackOn": "usage-limit",
   "retry.usageAwareFallback": true,
+  "retry.usageReservePolicy": "auto",
   "composer.predictions": false,
   "auth.accountPolicies": [
     {

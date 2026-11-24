@@ -14,7 +14,8 @@ startup overlay. JSON avoids an additional YAML parser dependency. It manages:
 - Tool artifacts: spill threshold 16 KB; tail 150 lines.
 - Reviewer compaction: 120,000 tokens for `reviewer-openai`, `reviewer-claude`,
   `reviewer-grok`, `gate-reviewer`, `reviewer`, and `security-reviewer`.
-- Retry: `fallbackOn: usage-limit`, `usageAwareFallback: true`.
+- Retry: `fallbackOn: usage-limit`, `usageAwareFallback: true`,
+  `usageReservePolicy: auto`.
 - Composer: `predictions: false` (no post-turn ghost text in an empty composer).
 - Account usage reserve: `auth.accountPolicies` rules with `reservePct: 0` for
   the logged-in `xai-oauth` and `cursor` accounts. See
@@ -32,17 +33,18 @@ tokens with `idleEnabled: false`. Do not change them to adopt this manifest.
 ## Account usage reserve
 
 Owns [dotfiles#153](https://github.com/rh7/dotfiles/issues/153). OMP keeps a
-global `retry.usageReservePct` (10 on this host) and, with
-`retry.usageReservePolicy: confirm`, stops a lane at the "Coding-plan reserve
-reached" menu once an account's remaining quota falls to that reserve. A
-per-account `auth.accountPolicies[].reservePct` overrides the global value for
-the matching stored OAuth account. With 0, the account stays eligible until it
-is depleted; `retry.fallbackOn: usage-limit` then applies.
+global `retry.usageReservePct` (10 on this host). Once an account's remaining
+quota falls to that reserve, `retry.usageReservePolicy` decides what happens:
+`confirm` stops an interactive lane at the "Coding-plan reserve reached" menu;
+`auto` applies an eligible fallback without asking. Every lane is interactive,
+so the manifest manages `usageReservePolicy: auto` (owner decision on #153,
+2026-11-24). `retry.usageReservePct` itself is not managed.
 
-The manifest sets `reservePct: 0` for the xAI and Cursor accounts only.
-Anthropic and OpenAI Codex accounts get no rule and keep the global 10%.
-Neither `retry.usageReservePct` nor `retry.usageReservePolicy` is managed or
-changed here.
+A per-account `auth.accountPolicies[].reservePct` overrides the global value
+for the matching stored OAuth account. With 0, the account stays eligible until
+it is depleted; `retry.fallbackOn: usage-limit` then applies. The manifest sets
+`reservePct: 0` for the xAI and Cursor accounts only. Anthropic and OpenAI
+Codex accounts get no rule and keep the global 10%.
 
 Each rule selects one account by an identity field of its stored credential.
 OMP compares the field exactly; it does not use the `account:` identity key from
@@ -57,36 +59,72 @@ OMP compares the field exactly; it does not use the `account:` identity key from
 These selectors are account labels, not credentials. Never add tokens or other
 credential fields.
 
-Merge rules: the manifest owns **every** rule of each provider it names. Apply
-drops other existing rules for `xai-oauth` and `cursor`, because two rules
-matching the same stored account make OMP refuse credential selection for that
-provider. Rules for other providers are kept unchanged. Before/after output
-shows each rule's provider, selector field names and numbers, never the
-selector values.
+Merge rules, per manifest rule:
 
-The manifest check mirrors OMP's rule parser (exact fields, at least one of
-`email`/`accountId`/`projectId`, `reservePct` 0–100), because `omp config set`
-stores any array and a bad rule only fails at credential selection.
+1. The rule must match exactly one active stored OAuth account of its
+   provider. Apply reads the target `agent.db` read-only; SQLite returns only
+   the selector fields (`email`, `accountId`, `projectId`, `orgId`) and the
+   stored identity key of active OAuth credentials, so tokens never leave the
+   database. Like OMP, rows sharing an identity key count once, as the newest.
+   Apply refuses when `XDG_DATA_HOME/omp` exists, since OMP then keeps the
+   default profile's `agent.db` there, and when an auth broker is configured
+   (`OMP_AUTH_BROKER_URL` or `auth.broker.url`), since OMP then selects among
+   the broker's accounts, not the local ones. After the writes, apply reads
+   the stored accounts again; if a login changed them meanwhile, it fails
+   instead of reporting success.
+2. If one existing rule already selects that account, possibly by another
+   field, apply sets only its `reservePct`. The selector, `priority` and
+   `reclaimAbovePct` stay. With two or more such rules, apply refuses.
+3. Otherwise apply appends the manifest rule.
 
-A rule that matches no stored account is ignored by OMP. After a new login
-replaces an xAI or Cursor account, update its selector and reapply; until then
-that account falls back to the global reserve.
+Every other rule is kept as-is. Afterwards no rule, for any provider that has
+one, may match several stored accounts, and no two rules may match one,
+because OMP refuses credential selection for that provider. Refusals name rule
+indices, never selector values. Before/after output shows each rule's provider,
+selector field names and numbers, never the selector values.
+
+Before any backup or write, apply validates the live config the way OMP 19.1.1
+parses it:
+
+- Every live rule, as OMP reads it now, matches OMP's rule schema: known
+  fields only, an `account` with at least one of `email`/`accountId`/
+  `projectId`, a finite `priority`, `reservePct` 0–100, and `reclaimAbovePct`
+  above the rule's reserve and at most 100. For a rule without `reservePct`,
+  that reserve is the effective global `retry.usageReservePct`, which apply
+  reads but does not manage. An invalid rule is refused even when apply would
+  set its `reservePct`.
+- `retry.usageReservePolicy` is `confirm`, `auto` or `fail-closed`.
+- Each managed key's parent (`auth`, `retry`, …) is a mapping or absent; an
+  explicit `auth: null` is refused too. `omp config list` hides a scalar or
+  list parent and `omp config set` silently replaces it. The check runs OMP's
+  own YAML parser through its bundled Bun runtime (`BUN_BE_BUN=1 omp -e …`)
+  and prints only kinds, never values.
+
+The manifest check is stricter: exactly `provider`, `account` and an integer
+`reservePct`, because `omp config set` stores any array and a bad rule only
+fails at credential selection.
+
+After a new login replaces an xAI or Cursor account, the old selector matches
+nothing and apply refuses until the manifest selector is updated.
 
 Post-apply evidence is OMP's own view, not the file:
 
 ```bash
 omp usage --redact | grep -E '^[A-Z].* — |policy:'
 omp config get retry.usageReservePct
+omp config get retry.usageReservePolicy
 ```
 
 Expect `policy: … reserve 0% (override)` under Xai Oauth and Cursor, no policy
-line under Anthropic and Openai Codex, and `retry.usageReservePct` 10. Post only
-these filtered lines; `--redact` still prints partial identities.
+line under Anthropic and Openai Codex, `retry.usageReservePct` 10 and
+`retry.usageReservePolicy` auto. Post only these filtered lines; `--redact`
+still prints partial identities.
 
 ## Preview and apply
 
-Requirements: Linux dev host, Python 3, and OMP with `config list --scope global
---json` support (verified with OMP 18.22.2). This entrypoint targets the existing
+Requirements: Linux dev host, Python 3 with `sqlite3`, and OMP with `config list
+--scope global --json` and bundled-Bun `BUN_BE_BUN=1 omp -e` support (verified
+with OMP 19.1.1). This entrypoint targets the existing
 regular `config.yml` in `PI_CODING_AGENT_DIR`, or `~/.omp/agent` when unset. It
 is not a profile migration tool; use an explicit agent directory for a relocated
 configuration.
@@ -98,11 +136,18 @@ PI_CODING_AGENT_DIR="$HOME/.omp/agent" ./scripts/apply-omp-settings --dry-run
 PI_CODING_AGENT_DIR="$HOME/.omp/agent" ./scripts/apply-omp-settings
 ```
 
-Preview reads a temporary copy with isolated profile/home/project settings. It
-prints only the managed-key diff and does not create a DB, lock, backup, or
-configuration in the target profile. Apply takes a private
-`config.yml.bak-<UTC>` backup before the first write. Keep this backup outside
-Git: it contains the **whole original config**, which may contain private data.
+Preview reads a temporary copy with isolated profile/home/project settings,
+plus the target `agent.db` read-only for stored account selectors. Without a
+`-wal` file, which any open OMP connection keeps, every committed row is in the
+main file, so it is read immutable and no SQLite sidecar is created; if that
+read fails or the file or its `-wal` changed meanwhile, it is read again with
+locking.
+With a `-wal` file it is read with locking (`mode=ro`), which may create a
+missing `-shm`, as any OMP reader would. Preview prints only the managed-key
+diff and does not create a DB, lock, backup, or configuration in the target
+profile. Apply takes a private `config.yml.bak-<UTC>` backup before the first
+write. Keep this backup outside Git: it contains the **whole original config**,
+which may contain private data.
 
 Writes use `omp config set <key> <value>` and OMP's settings lock, not a YAML
 rewrite. Before/after output is limited to the managed keys from `omp config
