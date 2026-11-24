@@ -16,15 +16,72 @@ startup overlay. JSON avoids an additional YAML parser dependency. It manages:
   `reviewer-grok`, `gate-reviewer`, `reviewer`, and `security-reviewer`.
 - Retry: `fallbackOn: usage-limit`, `usageAwareFallback: true`.
 - Composer: `predictions: false` (no post-turn ghost text in an empty composer).
+- Account usage reserve: `auth.accountPolicies` rules with `reservePct: 0` for
+  the logged-in `xai-oauth` and `cursor` accounts. See
+  [Account usage reserve](#account-usage-reserve).
 
-No `modelRoles`, `retry.fallbackChains`, credentials, account-pool settings, or
-seat overlays are managed. Model routing remains with repo-management's
+No `modelRoles`, `retry.fallbackChains`, credentials, `task.agentAccountPools`,
+or seat overlays are managed. Model routing remains with repo-management's
 `scripts/portfolio model-route`. Other `task`/`retry` keys and custom reviewer
 threshold entries survive apply. The six managed reviewer names override their
 old values; they do not replace unrelated reviewer names.
 
 Repo-management's existing coordinator/planner/lead overlays remain at 400,000
 tokens with `idleEnabled: false`. Do not change them to adopt this manifest.
+
+## Account usage reserve
+
+Owns [dotfiles#153](https://github.com/rh7/dotfiles/issues/153). OMP keeps a
+global `retry.usageReservePct` (10 on this host) and, with
+`retry.usageReservePolicy: confirm`, stops a lane at the "Coding-plan reserve
+reached" menu once an account's remaining quota falls to that reserve. A
+per-account `auth.accountPolicies[].reservePct` overrides the global value for
+the matching stored OAuth account. With 0, the account stays eligible until it
+is depleted; `retry.fallbackOn: usage-limit` then applies.
+
+The manifest sets `reservePct: 0` for the xAI and Cursor accounts only.
+Anthropic and OpenAI Codex accounts get no rule and keep the global 10%.
+Neither `retry.usageReservePct` nor `retry.usageReservePolicy` is managed or
+changed here.
+
+Each rule selects one account by an identity field of its stored credential.
+OMP compares the field exactly; it does not use the `account:` identity key from
+`omp usage accounts`.
+
+- `xai-oauth`: `accountId` (the stored credential carries one).
+- `cursor`: `email`. The stored Cursor credential has no `accountId` or
+  `projectId`, so its identity key comes from token claims and an `accountId`
+  selector matches nothing. This address is already public as a commit author
+  in this repository.
+
+These selectors are account labels, not credentials. Never add tokens or other
+credential fields.
+
+Merge rules: the manifest owns **every** rule of each provider it names. Apply
+drops other existing rules for `xai-oauth` and `cursor`, because two rules
+matching the same stored account make OMP refuse credential selection for that
+provider. Rules for other providers are kept unchanged. Before/after output
+shows each rule's provider, selector field names and numbers, never the
+selector values.
+
+The manifest check mirrors OMP's rule parser (exact fields, at least one of
+`email`/`accountId`/`projectId`, `reservePct` 0–100), because `omp config set`
+stores any array and a bad rule only fails at credential selection.
+
+A rule that matches no stored account is ignored by OMP. After a new login
+replaces an xAI or Cursor account, update its selector and reapply; until then
+that account falls back to the global reserve.
+
+Post-apply evidence is OMP's own view, not the file:
+
+```bash
+omp usage --redact | grep -E '^[A-Z].* — |policy:'
+omp config get retry.usageReservePct
+```
+
+Expect `policy: … reserve 0% (override)` under Xai Oauth and Cursor, no policy
+line under Anthropic and Openai Codex, and `retry.usageReservePct` 10. Post only
+these filtered lines; `--redact` still prints partial identities.
 
 ## Preview and apply
 

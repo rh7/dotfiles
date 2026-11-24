@@ -22,6 +22,9 @@ import tempfile
 REVIEWERS = frozenset(("reviewer-openai", "reviewer-claude", "reviewer-grok",
                        "gate-reviewer", "reviewer", "security-reviewer"))
 RECORD = "task.agentCompactionThresholdOverrides"
+POLICIES = "auth.accountPolicies"
+POLICY_FIELDS = frozenset(("provider", "account", "reservePct"))
+SELECTOR_FIELDS = ("email", "accountId", "projectId", "orgId")
 SCHEMA = {
     "compaction.thresholdTokens": int,
     "compaction.idleEnabled": bool,
@@ -33,6 +36,7 @@ SCHEMA = {
     "retry.fallbackOn": str,
     "retry.usageAwareFallback": bool,
     "composer.predictions": bool,
+    POLICIES: list,
 }
 
 
@@ -78,6 +82,35 @@ def validate_value(key, value, manifest=False):
                 fail("Invalid managed reviewer threshold")
     if manifest and key == "retry.fallbackOn" and value != "usage-limit":
         fail("Unsupported retry.fallbackOn in manifest")
+    if key == POLICIES:
+        validate_policies(value, manifest)
+
+
+def validate_policies(rules, manifest):
+    # Live rules only need a provider: apply keeps other providers' rules as-is.
+    # Manifest rules mirror OMP's own parser, because `omp config set` stores
+    # any array and a bad rule only fails later, at credential selection.
+    seen = set()
+    for rule in rules:
+        if type(rule) is not dict or type(rule.get("provider")) is not str:
+            fail(f"Invalid {POLICIES} entry")
+        if not manifest:
+            continue
+        provider, account = rule["provider"], rule.get("account")
+        if set(rule) != POLICY_FIELDS or not provider or provider.strip() != provider:
+            fail(f"Manifest {POLICIES} entries need exactly provider, account, reservePct")
+        if (type(account) is not dict or not set(account) <= set(SELECTOR_FIELDS)
+                or not account or not set(account) - {"orgId"}
+                or any(type(v) is not str or not v for v in account.values())):
+            fail(f"Manifest {POLICIES} entry has an invalid account selector")
+        if type(rule["reservePct"]) is not int or not 0 <= rule["reservePct"] <= 100:
+            fail(f"Manifest {POLICIES} reservePct must be an integer from 0 to 100")
+        identity = json.dumps([provider, account], sort_keys=True)
+        if identity in seen:
+            fail(f"Manifest {POLICIES} repeats an account rule")
+        seen.add(identity)
+    if manifest and not rules:
+        fail(f"Manifest {POLICIES} must not be empty")
 
 
 def load_manifest():
@@ -208,7 +241,21 @@ def display_value(key, value):
     if key == RECORD:
         value = {reviewer: threshold for reviewer, threshold in value.items()
                  if reviewer in REVIEWERS}
+    if key == POLICIES:
+        # Show which selector fields a rule uses, never their values.
+        value = [{"provider": rule["provider"],
+                  "account": sorted(rule["account"]) if type(rule.get("account")) is dict else "<invalid>",
+                  **{field: rule[field] for field in ("priority", "reservePct", "reclaimAbovePct")
+                     if type(rule.get(field)) in (int, float)}}
+                 for rule in value]
     return json.dumps(value, sort_keys=True)
+
+
+def merge_policies(current, managed):
+    # The manifest owns every rule of its providers: a second rule matching the
+    # same stored account makes OMP refuse credential selection for it.
+    providers = {rule["provider"] for rule in managed}
+    return [rule for rule in current if rule["provider"] not in providers] + managed
 
 
 def show_values(title, selected):
@@ -318,6 +365,7 @@ def main():
         desired = dict(manifest)
         desired[RECORD] = dict(before_global.get(RECORD, {}))
         desired[RECORD].update(manifest[RECORD])
+        desired[POLICIES] = merge_policies(before_global.get(POLICIES, []), manifest[POLICIES])
         if args.dry_run:
             print("Dry run (managed global differences only):")
             changed = False

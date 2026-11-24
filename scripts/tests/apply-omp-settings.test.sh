@@ -51,7 +51,8 @@ defaults = {'compaction.thresholdTokens': -1, 'compaction.idleEnabled': False,
  'compaction.idleThresholdTokens': 50000, 'compaction.idleTimeoutSeconds': 600,
  'tools.artifactSpillThreshold': 20, 'tools.artifactTailLines': 100,
  'task.agentCompactionThresholdOverrides': {}, 'retry.fallbackOn': 'never',
- 'retry.usageAwareFallback': False, 'composer.predictions': True}
+ 'retry.usageAwareFallback': False, 'composer.predictions': True,
+ 'auth.accountPolicies': []}
 mode = os.environ.get('FAKE_MODE', '')
 target = Path(os.environ.get('FAKE_TARGET', str(p / 'config.yml')))
 if mode == 'change-during-capture':
@@ -126,6 +127,9 @@ class EntrypointTests(unittest.TestCase):
             'task': {'agentAccountPools': {'reviewer': ['SECRET-POOL']},
                      'custom': 'keep', 'agentCompactionThresholdOverrides': {'custom-reviewer': 55555}},
             'composer': {'shape': 'box', 'predictions': True},
+            'auth': {'accountPolicies': [
+                {'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'}, 'priority': 2},
+                {'provider': 'xai-oauth', 'account': {'email': 'SECRET-STALE-XAI'}, 'reservePct': 5}]},
             'tools': {'custom': 'keep'}}
         self.original = (json.dumps(self.original_data, indent=3) + '\n').encode()
         self.config.write_bytes(self.original)
@@ -171,9 +175,43 @@ class EntrypointTests(unittest.TestCase):
                 node = node.setdefault(part, {})
             if key == 'task.agentCompactionThresholdOverrides':
                 node[parts[-1]].update(value)
+            elif key == 'auth.accountPolicies':
+                node[parts[-1]] = [rule for rule in node.get(parts[-1], [])
+                                   if rule['provider'] not in {r['provider'] for r in value}] + value
             else:
                 node[parts[-1]] = value
         self.assertEqual(data, expected)
+
+    def test_account_policies_zero_reserve_only_for_manifest_providers(self):
+        providers = {rule['provider'] for rule in self.wanted['auth.accountPolicies']}
+        result = self.run_entry()
+        self.assert_applied()
+        rules = json.loads(self.config.read_text())['auth']['accountPolicies']
+        self.assertIn({'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'},
+                       'priority': 2}, rules)
+        self.assertNotIn('SECRET-STALE-XAI', json.dumps(rules))
+        for rule in rules:
+            if rule['provider'] in providers:
+                self.assertEqual(rule['reservePct'], 0)
+            else:
+                self.assertNotIn('reservePct', rule)
+        selectors = [v for rule in self.wanted['auth.accountPolicies']
+                     for v in rule['account'].values()]
+        for value in selectors + ['SECRET-ANTHROPIC', 'SECRET-STALE-XAI']:
+            self.assertNotIn(value, result.stdout + result.stderr)
+        self.assertIn('"reservePct": 0', result.stdout)
+
+    def test_malformed_live_account_policies_fail_before_backup(self):
+        for policies in (['junk'], [{'account': {'email': 'x'}}], 'junk'):
+            with self.subTest(policies=policies):
+                data = copy.deepcopy(self.original_data)
+                data['auth']['accountPolicies'] = policies
+                self.config.write_text(json.dumps(data))
+                before = self.snapshot()
+                result = self.run_entry(success=False)
+                self.assertIn('auth.accountPolicies', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertEqual(before, self.snapshot())
 
     def test_composer_predictions_managed_false(self):
         self.assertIs(self.wanted['composer.predictions'], False)
@@ -373,6 +411,18 @@ class EntrypointTests(unittest.TestCase):
                            ('task.agentCompactionThresholdOverrides', {'rogue-reviewer': 1})]:
             bad = json.loads(original_manifest)
             bad[key] = value
+            variants.append(json.dumps(bad))
+        rule = {'provider': 'xai-oauth', 'account': {'accountId': 'a'}, 'reservePct': 0}
+        for policies in ([], {}, [dict(rule, account={})], [dict(rule, account={'orgId': 'o'})],
+                         [dict(rule, account={'accountId': ''})], [dict(rule, account={'user': 'u'})],
+                         [dict(rule, account='a')], [dict(rule, provider='')],
+                         [dict(rule, provider=' xai-oauth')], [dict(rule, reservePct=101)],
+                         [dict(rule, reservePct=-1)], [dict(rule, reservePct=True)],
+                         [dict(rule, reservePct='0')], [dict(rule, reservePct=0.5)],
+                         [dict(rule, priority=1)], [{'provider': 'xai-oauth', 'reservePct': 0}],
+                         [rule, dict(rule)]):
+            bad = json.loads(original_manifest)
+            bad['auth.accountPolicies'] = policies
             variants.append(json.dumps(bad))
         missing = json.loads(original_manifest)
         del missing['tools.artifactTailLines']

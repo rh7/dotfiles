@@ -15,5 +15,17 @@
   },
   "retry.fallbackOn": "usage-limit",
   "retry.usageAwareFallback": true,
-  "composer.predictions": false
+  "composer.predictions": false,
+  "auth.accountPolicies": [
+    {
+      "provider": "xai-oauth",
+      "account": { "accountId": "7a1f1196-3d4a-4f5a-a671-75408976b318" },
+      "reservePct": 0
+    },
+    {
+      "provider": "cursor",
+      "account": { "email": "rouven.heck@gmail.com" },
+      "reservePct": 0
+    }
+  ]
 }
