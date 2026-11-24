@@ -122,33 +122,6 @@ elif len(a) == 4 and a[:2] == ['config', 'set']:
         staged.write_text(json.dumps(data, indent=2) + '\n')
         staged.chmod(0o600)
         os.replace(staged, p / 'config.yml')
-elif a == ['usage', '--redact', '--json']:
-    # Credentials resolve from the caller's HOME/XDG_DATA_HOME, like a normal run.
-    if (os.environ.get('HOME') != os.environ['FAKE_HOME']
-            or os.environ.get('XDG_DATA_HOME') != os.environ['FAKE_XDG_DATA']):
-        sys.exit('usage ran with an isolated credential location')
-    if mode == 'usage-unparsable':
-        print('Usage · fetched 1s ago')
-        sys.exit()
-    if mode == 'usage-undecodable':
-        sys.stdout.buffer.write(b'{"reports": "\xff"}')
-        sys.exit()
-    reports, unreported = [], []
-    for provider, fields, label, *kind in json.loads(os.environ['FAKE_ACCOUNTS']):
-        if kind == ['unreported']:
-            # Real OMP lists these inline, without a policy.
-            unreported.append({'provider': provider, 'type': 'oauth', 'email': label})
-            continue
-        rules = [r for r in data.get('auth', {}).get('accountPolicies', []) if r['provider'] == provider
-                 and all(fields.get(k) == v for k, v in r['account'].items())]
-        policy = rules and {'priority': rules[0].get('priority', 0),
-                            'reservePct': rules[0].get('reservePct', 10),
-                            'reserveSource': 'override' if 'reservePct' in rules[0] else 'global',
-                            'state': 'eligible'} or None
-        reports.append({'provider': provider, 'fetchedAt': 1, 'limits': [],
-                        'metadata': {'email': label}, 'policy': policy})
-    print(json.dumps({'generatedAt': 1, 'reports': reports, 'accountsWithoutUsage': unreported,
-                      'disabledCredentials': [], 'capacity': {}}))
 else:
     sys.exit('unexpected fake omp invocation: ' + repr(a))
 '''
@@ -193,7 +166,7 @@ class EntrypointTests(unittest.TestCase):
             'tools': {'custom': 'keep'}}
         self.expected_policies = self.wanted['auth.accountPolicies']
         self.secrets = ['SECRET-MODEL', 'SECRET-CHAIN', 'SECRET-POOL', 'SECRET-ANTHROPIC',
-                        'SECRET-XAI-B', 'SECRET-CURSOR-A', self.xai_id, self.cursor_email]
+                        'SECRET-CURSOR-A', self.xai_id, self.cursor_email]
         self.original = (json.dumps(self.original_data, indent=3) + '\n').encode()
         self.config.write_bytes(self.original)
         self.config.chmod(0o600)
@@ -207,16 +180,9 @@ class EntrypointTests(unittest.TestCase):
                         PI_CONFIG_FILES='/secret/overlay.yml',
                         PATH=str(self.bin) + os.pathsep + os.environ['PATH'])
         self.env['FAKE_TARGET'] = str(self.config)
-        self.env['FAKE_HOME'] = str(self.home)
-        self.env['XDG_DATA_HOME'] = self.env['FAKE_XDG_DATA'] = str(self.base / 'data')
         self.env['FAKE_CONTROL'] = str(self.base / 'capture-changed')
         self.env.pop('FAKE_MODE', None)
         self.env.pop('FAKE_STARTED', None)
-        # Accounts the fake `omp usage` lists: provider, selector fields, redacted label.
-        self.env['FAKE_ACCOUNTS'] = json.dumps([
-            ['xai-oauth', {'accountId': self.xai_id}, 'xa*'],
-            ['cursor', {'email': self.cursor_email}, 'cu*'],
-            ['anthropic', {'email': 'SECRET-ANTHROPIC'}, 'an*']])
 
     def run_entry(self, *args, success=True, **env):
         result = subprocess.run([str(self.script), *map(str, args)], cwd=self.cwd,
@@ -327,33 +293,57 @@ class EntrypointTests(unittest.TestCase):
                         # The preview lists every live rule, without selector values.
                         self.assertIn(f'"provider": "{provider}"', result.stdout)
 
-    def test_usage_without_manifest_override_rolls_back(self):
-        accounts = json.loads(self.env['FAKE_ACCOUNTS'])
-        second_xai = accounts + [['xai-oauth', {'accountId': 'SECRET-XAI-B'}, 'xb*']]
-        cases = {'second xAI account': ({'FAKE_ACCOUNTS': json.dumps(second_xai)},
-                                        'xai-oauth account xb*'),
-                 'unreported xAI account': ({'FAKE_ACCOUNTS': json.dumps(
-                     accounts + [['xai-oauth', {}, 'xu*', 'unreported']])},
-                     'xai-oauth account xu*'),
-                 'unparsable output': ({'FAKE_MODE': 'usage-unparsable'}, 'omp usage'),
-                 'undecodable output': ({'FAKE_MODE': 'usage-undecodable'}, 'utf-8'),
-                 'no cursor account': ({'FAKE_ACCOUNTS': json.dumps(accounts[:1])},
-                                       'no cursor account')}
+    def test_duplicate_or_globally_invalid_live_rules_refused_before_backup(self):
+        covered = self.original_data['auth']['accountPolicies'][0]
+        data = copy.deepcopy(self.original_data)
+        data['auth']['accountPolicies'].append(dict(covered))
+        self.config.write_text(json.dumps(data))
+        for args in (('--dry-run',), ()):
+            before = self.snapshot()
+            result = self.run_entry(*args, success=False)
+            self.assertIn('auth.accountPolicies[1] (xai-oauth) claims the same account as'
+                          ' auth.accountPolicies[0]', result.stderr)
+            self.assert_refused(result, before)
+        # Without its own reservePct, OMP checks reclaimAbovePct against the
+        # effective global retry.usageReservePct.
+        manifest = json.loads(self.manifest.read_text())
+        manifest['auth.accountPolicies'][0]['reclaimAbovePct'] = 5
+        self.manifest.write_text(json.dumps(manifest))
+        live = {key: value for key, value in covered.items() if key != 'reservePct'}
+        for reserve, refused in ((10, True), (2, False)):
+            with self.subTest(global_reserve=reserve):
+                data = copy.deepcopy(self.original_data)
+                data['auth']['accountPolicies'] = [dict(live, reclaimAbovePct=5)]
+                data['retry']['usageReservePct'] = reserve
+                self.config.write_text(json.dumps(data))
+                before = self.snapshot()
+                result = self.run_entry('--dry-run', success=not refused)
+                if refused:
+                    self.assertIn('auth.accountPolicies[0] (xai-oauth): Invalid'
+                                  ' auth.accountPolicies reclaimAbovePct under the global reserve',
+                                  result.stderr)
+                    self.assert_refused(result, before)
+
+    def test_unkeepable_group_refused_before_backup(self):
+        groups = [g for g in os.getgroups() if g != os.getegid()]
+        namespace = [shutil.which('unshare') or 'unshare', '--user', '--map-current-user']
+        try:
+            usable = subprocess.run([*namespace, 'true'], capture_output=True).returncode == 0
+        except OSError:
+            usable = False
+        if not groups or not usable:
+            self.skipTest('needs a secondary group and unprivileged user namespaces')
+        os.chown(self.config, -1, groups[0])
         self.config.chmod(0o640)
-        for name, (env, message) in cases.items():
-            with self.subTest(case=name):
-                old = set(self.backups())
-                result = self.run_entry(success=False, **env)
-                self.assertIn(message, result.stderr)
-                self.assertIn('restored config.yml from the backup', result.stderr)
-                self.assertNotIn('Apply verified', result.stdout)
-                self.assertNotIn('Traceback', result.stderr)
-                for secret in self.secrets:
-                    self.assertNotIn(secret, result.stdout + result.stderr)
-                self.assertEqual(self.config.read_bytes(), self.original)
-                self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o640)
-                self.assertEqual([p.read_bytes() for p in set(self.backups()) - old],
-                                 [self.original])
+        before = self.snapshot()
+        # Inside a user namespace the secondary group is unmapped, as a
+        # provisioning group the user is not in would be.
+        result = subprocess.run([*namespace, str(self.script)], cwd=self.cwd, env=self.env,
+                                text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('group cannot be set', result.stderr)
+        self.assert_refused(result, before)
+        self.assertEqual(self.config.stat().st_gid, groups[0])
 
     def test_malformed_live_settings_fail_before_backup(self):
         rule = {'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'}}
@@ -551,15 +541,17 @@ class EntrypointTests(unittest.TestCase):
                 self.assertEqual(len(recovery), 1)
                 self.assertEqual(recovery.pop().read_bytes(), current)
 
-    def test_readback_or_write_failures_never_report_success(self):
+    def test_readback_or_write_failures_restore_the_backup(self):
         for mode in ('ignore-write', 'bad-read', 'missing-read', 'failed-read', 'failed-write'):
             with self.subTest(mode=mode):
                 self.config.write_bytes(self.original)
                 self.config.chmod(0o640)
                 (self.agent / '.fake-set').unlink(missing_ok=True)
                 old = set(self.backups())
-                self.run_entry(success=False, FAKE_MODE=mode)
-                # failed-write fails after an earlier set republished the file.
+                result = self.run_entry(success=False, FAKE_MODE=mode)
+                self.assertIn('restored config.yml from the backup', result.stderr)
+                self.assertNotIn('Apply verified', result.stdout)
+                self.assertEqual(self.config.read_bytes(), self.original)
                 self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o640)
                 new = set(self.backups()) - old
                 self.assertEqual(len(new), 1)

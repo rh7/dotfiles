@@ -115,7 +115,7 @@ def number(value):
     return type(value) is float and math.isfinite(value)
 
 
-def validate_rule(rule):
+def validate_rule(rule, global_reserve=0):
     # Mirrors OMP 19.1.1's auth.accountPolicies parser: `omp config set` stores
     # any array, and a bad rule only fails later, at credential selection.
     if type(rule) is not dict or not set(rule) <= RULE_FIELDS:
@@ -129,9 +129,9 @@ def validate_rule(rule):
         fail(f"Invalid {POLICIES} account selector")
     if "priority" in rule and not number(rule["priority"]):
         fail(f"Invalid {POLICIES} priority")
-    # A live rule without reservePct is checked against 0, not the global
-    # reserve: apply replaces it with its manifest rule or refuses it.
-    reserve = rule.get("reservePct", 0)
+    # OMP compares reclaimAbovePct with the rule's reserve, or the effective
+    # global retry.usageReservePct when the rule has none.
+    reserve = rule.get("reservePct", global_reserve)
     if not (number(reserve) and 0 <= reserve <= 100):
         fail(f"Invalid {POLICIES} reservePct")
     if "reclaimAbovePct" in rule and not (number(rule["reclaimAbovePct"])
@@ -204,7 +204,7 @@ class OmpSession:
     """No HOME, XDG, project, overlay, or DB access outside this session.
 
     Read sessions copy only config.yml, never the potentially large agent DB.
-    Write and usage sessions point PI_CODING_AGENT_DIR at the target explicitly.
+    Write sessions point PI_CODING_AGENT_DIR at the target explicitly.
     """
 
     def __init__(self, executable, content=None, target=None):
@@ -273,26 +273,18 @@ class OmpSession:
             values[key] = item["value"]
         return values
 
+    def global_reserve(self):
+        # Effective retry.usageReservePct (unmanaged): OMP checks a rule's
+        # reclaimAbovePct against it when the rule has no reservePct.
+        item = self.command(["get", "retry.usageReservePct", "--json"], "get retry.usageReservePct")
+        value = item.get("value") if type(item) is dict else None
+        if not (number(value) and 0 <= value <= 100):
+            fail("Missing or malformed OMP reading for retry.usageReservePct")
+        return value
+
     def set_value(self, key, value):
         self.command(["set", key, json.dumps(value, separators=(",", ":"))],
                      f"set {key}", expect_json=False)
-
-    def usage(self):
-        # OMP's own account view; --redact shortens account labels. Credentials
-        # resolve as in a normal run: HOME and XDG_DATA_HOME locate a migrated
-        # agent.db and the broker token. Overlays (PI_CONFIG_FILES,
-        # XDG_CONFIG_HOME) and the project layer (cwd) stay isolated.
-        env = dict(self.env)
-        for key in ("HOME", "XDG_DATA_HOME"):
-            if key in os.environ:
-                env[key] = os.environ[key]
-            else:
-                env.pop(key, None)
-        result = subprocess.run([self.executable, "usage", "--redact", "--json"], cwd=self.root,
-                                env=env, capture_output=True)
-        if result.returncode:
-            fail(f"omp usage failed (exit {result.returncode})")
-        return parse_json(result.stdout.decode(), "omp usage")
 
     def check_parents(self, content):
         env = dict(self.env, BUN_BE_BUN="1", APPLY_OMP_PARENTS=json.dumps(PARENTS))
@@ -330,47 +322,39 @@ def display_value(key, value):
     return json.dumps(value, sort_keys=True)
 
 
-def unmanaged_rules(current, managed):
-    """Live rules the manifest lacks, as (index, provider); reservePct may differ."""
+def live_rule_problems(current, managed, global_reserve):
+    """Why the manifest cannot own the live rule list as one value.
+
+    A live rule is managed when a manifest rule equals it except for
+    reservePct. Any other live rule, or a second copy of a managed one, is
+    refused: replacing the list would drop it silently.
+    """
     def shape(rule):
         return {field: value for field, value in rule.items() if field != "reservePct"}
-    return [(index, rule["provider"]) for index, rule in enumerate(current)
-            if not any(equal(shape(rule), shape(wanted)) for wanted in managed)]
-
-
-def refuse_unmanaged(unmanaged):
-    if unmanaged:
-        fail("; ".join(f"Live {POLICIES}[{index}] ({provider})" for index, provider in unmanaged)
-             + " not in the manifest; add it to hosts/rhdevvps/omp-settings.json in a reviewed PR")
-
-
-def check_usage(report, rules):
-    """Every account OMP lists for a manifest provider shows its manifest override."""
-    expected = {}
-    for rule in rules:
-        expected.setdefault(rule["provider"], set()).add(rule["reservePct"])
-    if (type(report) is not dict or type(report.get("reports")) is not list
-            or type(report.get("accountsWithoutUsage")) is not list):
-        fail("Unparsable omp usage output")
-    listed = set()
-    for item in report["reports"] + report["accountsWithoutUsage"]:
-        if type(item) is not dict or type(item.get("provider")) is not str:
-            fail("Unparsable omp usage output")
-        provider = item["provider"]
-        if provider not in expected:
+    problems, owners = [], {}
+    for index, rule in enumerate(current):
+        label = f"Live {POLICIES}[{index}] ({rule['provider']})"
+        try:
+            validate_rule(rule, global_reserve)
+        except SettingsError as error:
+            problems.append(f"{label}: {error} under the global reserve")
             continue
-        listed.add(provider)
-        # Reports carry the account under metadata, unreported accounts inline.
-        label = next((source[field] for source in (item.get("metadata"), item)
-                      if type(source) is dict for field in ("email", "accountId")
-                      if type(source.get(field)) is str and source[field]), "<unlabelled>")
-        policy = item.get("policy")
-        if (type(policy) is not dict or policy.get("reserveSource") != "override"
-                or type(policy.get("reservePct")) not in (int, float)
-                or policy["reservePct"] not in expected[provider]):
-            fail(f"omp usage shows no manifest reserve override for {provider} account {label}")
-    for provider in sorted(expected.keys() - listed):
-        fail(f"omp usage lists no {provider} account")
+        owner = next((n for n, wanted in enumerate(managed)
+                      if equal(shape(rule), shape(wanted))), None)
+        if owner is None:
+            problems.append(f"{label} not in the manifest; add it to"
+                            " hosts/rhdevvps/omp-settings.json in a reviewed PR")
+        elif owner in owners:
+            problems.append(f"{label} claims the same account as {POLICIES}[{owners[owner]}];"
+                            " remove one of them from config.yml")
+        else:
+            owners[owner] = index
+    return problems
+
+
+def refuse_live(problems):
+    if problems:
+        fail("; ".join(problems))
 
 
 def show_values(title, selected):
@@ -406,6 +390,21 @@ def set_access(fd, access):
     if os.fstat(fd).st_gid != gid:
         os.fchown(fd, -1, gid)
     os.fchmod(fd, mode)
+
+
+def check_group_kept(config, gid):
+    # omp config set republishes config.yml with the default group. Before any
+    # write, prove a new file in that directory can take config.yml's group.
+    fd, name = tempfile.mkstemp(prefix=".config.yml.probe-", dir=config.parent)
+    try:
+        if os.fstat(fd).st_gid != gid:
+            os.fchown(fd, -1, gid)
+    except OSError:
+        fail("config.yml's group cannot be set on the file omp config set republishes;"
+             " change its group or apply as a user in that group")
+    finally:
+        os.close(fd)
+        os.unlink(name)
 
 
 def restore_access(config, access):
@@ -502,9 +501,11 @@ def main():
 
         with OmpSession(executable, content=original) as session:
             session.check_parents(original)
+            global_reserve = session.global_reserve()
         before_global, _ = capture(executable, original)
         # The manifest owns the whole rule list; a live rule it lacks is refused.
-        unmanaged = unmanaged_rules(before_global.get(POLICIES, []), manifest[POLICIES])
+        problems = live_rule_problems(before_global.get(POLICIES, []), manifest[POLICIES],
+                                      global_reserve)
         desired = dict(manifest)
         desired[RECORD] = dict(before_global.get(RECORD, {}))
         desired[RECORD].update(manifest[RECORD])
@@ -520,28 +521,27 @@ def main():
                 print("  No changes.")
             # Every live rule, also when the manifest already matches it.
             print(f"  Live {POLICIES}: {display_value(POLICIES, before_global.get(POLICIES, []))}")
-            refuse_unmanaged(unmanaged)
+            refuse_live(problems)
             return
 
-        refuse_unmanaged(unmanaged)
+        refuse_live(problems)
         show_values("Before (managed global values):", before_global)
         if read_regular(config) != original:
             fail("Config changed while preparing apply; quiesce other writers")
         access = config_access(config)
+        check_group_kept(config, access[1])
         backup_config(config, original)
         try:
-            with OmpSession(executable, target=profile) as session:
-                for key in SCHEMA:
-                    session.set_value(key, desired[key])
-        finally:
-            # omp config set republishes config.yml at 0600, also before a failure.
-            restore_access(config, access)
-        # Fresh process reads from a fresh profile copy, not a process-local cache.
-        after_global, after_readings = capture(executable, read_regular(config))
-        verify(desired, desired, after_global, after_readings)
-        try:
-            with OmpSession(executable, target=profile) as session:
-                check_usage(session.usage(), manifest[POLICIES])
+            try:
+                with OmpSession(executable, target=profile) as session:
+                    for key in SCHEMA:
+                        session.set_value(key, desired[key])
+            finally:
+                # omp config set republishes config.yml at 0600, also before a failure.
+                restore_access(config, access)
+            # Fresh process reads from a fresh profile copy, not a process-local cache.
+            after_global, after_readings = capture(executable, read_regular(config))
+            verify(desired, desired, after_global, after_readings)
         except (SettingsError, OSError, UnicodeError) as error:
             restore_atomic(config, original, access)
             fail(f"{error}; restored config.yml from the backup")

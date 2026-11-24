@@ -66,11 +66,10 @@ database or matches selectors against stored accounts:
 - Preview always lists the live rules and shows the manifest rules on change,
   as provider, selector field names and numbers, never selector values.
 - A live rule is managed when a manifest rule equals it except for
-  `reservePct`. Any other live rule makes dry-run and apply refuse before the
-  backup, naming the rule's index and provider. Add it to the manifest in a
-  reviewed PR (or remove it through OMP), then preview again. No rule is
-  dropped silently.
-- A second xAI or Cursor account needs its own manifest rule.
+  `reservePct`. Any other live rule, or a second live copy of a managed rule,
+  makes dry-run and apply refuse before the backup, naming the rule's index and
+  provider. Add the rule to the manifest in a reviewed PR (or remove it through
+  OMP), then preview again. No rule is dropped silently.
 
 Before any backup or write, apply validates the live config the way OMP 19.1.1
 parses it:
@@ -78,7 +77,8 @@ parses it:
 - Every live rule matches OMP's rule schema: known fields only, an `account`
   with at least one of `email`/`accountId`/`projectId`, a finite `priority`,
   `reservePct` 0–100, and `reclaimAbovePct` above the rule's reserve and at
-  most 100.
+  most 100. A rule without `reservePct` is checked against the effective
+  global `retry.usageReservePct`, as OMP does.
 - `retry.usageReservePolicy` is one of `RESERVE_POLICIES` in
   `scripts/apply-omp-settings`.
 - Each managed key's parent (`auth`, `retry`, …) is a mapping or absent; an
@@ -93,30 +93,64 @@ numbers are integers (OMP writes `1.0` back as `1`), and no two rules share a
 selector, because `omp config set` stores any array and a bad rule only fails
 at credential selection.
 
-After the writes and the read-back, apply asks OMP itself: `omp usage --redact
---json` on the target profile. Credentials resolve as in a normal run, from
-the caller's `HOME` and `XDG_DATA_HOME` (a migrated `agent.db`, a broker
-token); config overlays and the project layer stay isolated. Every account it
-lists for a manifest provider (Xai Oauth, Cursor)
-must show that provider's manifest reserve as an override, which the text view
-prints as `reserve 0% (override)`, and each manifest provider must list at
-least one account. Otherwise, or when `omp usage` fails or its output is
-unparsable, apply restores the backup and exits nonzero, naming the provider
-and the redacted account label. After a new login replaces an xAI or Cursor
-account, apply therefore fails until the manifest selector is updated.
+Apply proves the stored settings, not OMP's routing: it reads every managed key
+back with `omp config get`. Whether a rule selects the intended account is the
+one-time live acceptance check below. Limits:
 
-Post-apply evidence is OMP's own view, not the file:
+- A config overlay (`PI_CONFIG_FILES`) or a project `.omp` settings file that
+  sets `auth.accountPolicies` shadows the global list for the lanes that load
+  it.
+- Each rule selects one stored credential. A second xAI or Cursor login, or a
+  new login that replaces the account, needs its own reviewed manifest rule;
+  until then that account keeps the global 10%.
+
+### One-time live acceptance check
+
+After the merge and before the live apply, confirm read-only, from the merged
+checkout's root, that the stored credentials carry the selector fields routing
+compares. This prints counts, never values:
 
 ```bash
-omp usage --redact | grep -E '^[A-Z].* — |policy:'
+python3 - <<'PY'
+import json, pathlib, sqlite3
+rules = json.loads(pathlib.Path('hosts/rhdevvps/omp-settings.json').read_text())['auth.accountPolicies']
+db = pathlib.Path.home() / '.omp/agent/agent.db'
+conn = sqlite3.connect(db.as_uri() + '?mode=ro', uri=True)
+for rule in rules:
+    (field, value), = rule['account'].items()
+    total, with_field, matching = conn.execute(
+        "SELECT count(*), count(json_extract(data, '$.' || ?)),"
+        " coalesce(sum(json_extract(data, '$.' || ?) = ?), 0) FROM auth_credentials"
+        " WHERE provider = ? AND credential_type = 'oauth' AND disabled_cause IS NULL",
+        (field, field, value, rule['provider'])).fetchone()
+    print(f"{rule['provider']} {field}: accounts={total} with_field={with_field} matching={matching}")
+conn.close()
+PY
+```
+
+Expect `accounts=1 with_field=1 matching=1` for `xai-oauth accountId` and
+`cursor email`. Otherwise stop and report on #153; do not apply. The check reads
+the local `~/.omp/agent/agent.db` only. If lanes take credentials from a broker
+instead, it proves nothing: stop and report.
+
+After the apply, run from a real lane's launch context (its working directory
+and environment, so its overlays and project settings load), with `DOTFILES`
+pointing at the merged checkout:
+
+```bash
+out=$(mktemp)
+omp usage --redact | grep -E '^[A-Z].* — |policy:' > "$out"
+jq -r '."auth.accountPolicies"[].account[]' \
+  "$DOTFILES/hosts/rhdevvps/omp-settings.json" | grep -cFf - "$out"  # must print 0
 omp config get retry.usageReservePct
 omp config get retry.usageReservePolicy
 ```
 
 Expect `policy: … reserve 0% (override)` under Xai Oauth and Cursor, no policy
 line under Anthropic and Openai Codex, `retry.usageReservePct` 10 and
-`retry.usageReservePolicy` auto. Post only these filtered lines; `--redact`
-still prints partial identities.
+`retry.usageReservePolicy` auto. Post only the lines in `"$out"`, and only when
+the selector count is 0: `--redact` still prints partial identities, and a
+provider note can contain `policy:` too. Then delete `"$out"`.
 
 ## Preview and apply
 
@@ -143,11 +177,12 @@ Git: it contains the **whole original config**, which may contain private data.
 Writes use `omp config set <key> <value>` and OMP's settings lock, not a YAML
 rewrite. `omp config set` republishes `config.yml` at 0600 with the default
 group, so apply restores the mode and group it recorded before the backup, also
-after a failed write; rollback does the same. Before/after output is limited to
-the managed keys from `omp config list`; every managed value is read back. A
-failed write/read or mismatch exits nonzero without an automatic rollback:
-retain the printed backup path and inspect the failure. Reapplying converges the
-managed values. Only a failed `omp usage` check restores the backup itself.
+after a failed write; rollback does the same. Before the backup, apply checks
+that a new file in the profile directory can take `config.yml`'s group, and
+refuses otherwise. Before/after output is limited to the managed keys from
+`omp config list`; every managed value is read back with `omp config get`. A
+failed write or read, or a read-back mismatch, restores the backup and exits
+nonzero.
 
 Quiesce OMP and every other global-config writer (`model-route`, interactive
 `/settings`, logins, other apply processes) for the whole apply. The script
@@ -156,9 +191,9 @@ serializes its own apply/rollback invocations with
 OMP's lock. OMP locks each individual setting write, not the whole multi-key
 operation. Apply compares `config.yml` with its first read only once, just
 before the backup: that catches a change while preparing, not one between that
-check and the last write. A change made during the writes or the usage check is
-not detected, and the usage-check rollback restores the backup over it.
-Disjoint model-route keys are not written by this script.
+check and the last write. A change made during the writes is not detected, and
+a failed read-back restores the backup over it. Disjoint model-route keys are
+not written by this script.
 
 ## Rollback
 
