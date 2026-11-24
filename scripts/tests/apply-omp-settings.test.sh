@@ -3,13 +3,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 exec python3 - "$@" "$ROOT" <<'PY'
-import contextlib
 import copy
 import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -113,18 +111,44 @@ elif len(a) == 4 and a[:2] == ['config', 'set']:
         time.sleep(0.3)
     if mode == 'failed-write' and key == 'compaction.idleEnabled':
         sys.exit('failed write')
-    if mode == 'login-during-apply' and key == 'auth.accountPolicies':
-        import sqlite3
-        with sqlite3.connect(p / 'agent.db') as db:
-            db.execute("UPDATE auth_credentials SET data = json_set(data, '$.email', 'SECRET-NEW')"
-                       " WHERE provider = 'cursor'")
     if not (mode == 'ignore-write' and key == 'compaction.thresholdTokens'):
         node = data
         parts = key.split('.')
         for part in parts[:-1]:
             node = node.setdefault(part, {})
         node[parts[-1]] = value
-        (p / 'config.yml').write_text(json.dumps(data, indent=2) + '\n')
+        # Like OMP: an atomic replace that publishes config.yml at 0600.
+        staged = p / '.config.yml.fake-set'
+        staged.write_text(json.dumps(data, indent=2) + '\n')
+        staged.chmod(0o600)
+        os.replace(staged, p / 'config.yml')
+elif a == ['usage', '--redact', '--json']:
+    # Credentials resolve from the caller's HOME/XDG_DATA_HOME, like a normal run.
+    if (os.environ.get('HOME') != os.environ['FAKE_HOME']
+            or os.environ.get('XDG_DATA_HOME') != os.environ['FAKE_XDG_DATA']):
+        sys.exit('usage ran with an isolated credential location')
+    if mode == 'usage-unparsable':
+        print('Usage · fetched 1s ago')
+        sys.exit()
+    if mode == 'usage-undecodable':
+        sys.stdout.buffer.write(b'{"reports": "\xff"}')
+        sys.exit()
+    reports, unreported = [], []
+    for provider, fields, label, *kind in json.loads(os.environ['FAKE_ACCOUNTS']):
+        if kind == ['unreported']:
+            # Real OMP lists these inline, without a policy.
+            unreported.append({'provider': provider, 'type': 'oauth', 'email': label})
+            continue
+        rules = [r for r in data.get('auth', {}).get('accountPolicies', []) if r['provider'] == provider
+                 and all(fields.get(k) == v for k, v in r['account'].items())]
+        policy = rules and {'priority': rules[0].get('priority', 0),
+                            'reservePct': rules[0].get('reservePct', 10),
+                            'reserveSource': 'override' if 'reservePct' in rules[0] else 'global',
+                            'state': 'eligible'} or None
+        reports.append({'provider': provider, 'fetchedAt': 1, 'limits': [],
+                        'metadata': {'email': label}, 'policy': policy})
+    print(json.dumps({'generatedAt': 1, 'reports': reports, 'accountsWithoutUsage': unreported,
+                      'disabledCredentials': [], 'capacity': {}}))
 else:
     sys.exit('unexpected fake omp invocation: ' + repr(a))
 '''
@@ -155,17 +179,6 @@ class EntrypointTests(unittest.TestCase):
         self.agent = self.home / '.omp/agent'
         self.agent.mkdir(parents=True)
         self.config = self.agent / 'config.yml'
-        # OMP keeps the newest of two rows with one identity: the older xai-a
-        # row's stale email must not decide which rule selects the account.
-        self.accounts = [
-            ('xai-oauth', 'oauth', 'xai-a', None, {'accountId': self.xai_id, 'email': 'SECRET-XAI-OLD'}),
-            ('xai-oauth', 'oauth', 'xai-a', None,
-             {'accountId': self.xai_id, 'email': 'SECRET-XAI-A', 'access': 'SECRET-TOKEN'}),
-            ('xai-oauth', 'oauth', 'xai-b', None, {'accountId': 'SECRET-XAI-B', 'email': 'SECRET-XAI-B'}),
-            ('cursor', 'oauth', 'cursor', None, {'email': self.cursor_email, 'access': 'SECRET-TOKEN'}),
-            ('cursor', 'oauth', 'cursor-old', 'revoked', {'email': self.cursor_email}),
-            ('cursor', 'api_key', 'cursor-key', None, {'email': self.cursor_email}),
-            ('anthropic', 'oauth', 'anthropic', None, {'email': 'SECRET-ANTHROPIC'})]
         self.original_data = {
             'compaction': {'thresholdTokens': 90000, 'idleEnabled': False, 'custom': 7},
             'modelRoles': {'default': 'SECRET-MODEL'},
@@ -174,26 +187,16 @@ class EntrypointTests(unittest.TestCase):
             'task': {'agentAccountPools': {'reviewer': ['SECRET-POOL']},
                      'custom': 'keep', 'agentCompactionThresholdOverrides': {'custom-reviewer': 55555}},
             'composer': {'shape': 'box', 'predictions': True},
+            # Covered by the manifest's xAI rule; only reservePct differs.
             'auth': {'custom': 'keep-auth', 'accountPolicies': [
-                {'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'}, 'priority': 2},
-                {'provider': 'xai-oauth', 'account': {'email': 'SECRET-XAI-A'},
-                 'priority': 3, 'reservePct': 5, 'reclaimAbovePct': 50},
-                {'provider': 'xai-oauth', 'account': {'accountId': 'SECRET-XAI-B'}, 'reservePct': 5},
-                {'provider': 'xai-oauth', 'account': {'email': 'SECRET-STALE-XAI'}, 'reservePct': 5}]},
+                {'provider': 'xai-oauth', 'account': {'accountId': self.xai_id}, 'reservePct': 5}]},
             'tools': {'custom': 'keep'}}
-        # The matched xAI rule keeps its selector and fields; only reservePct
-        # changes. Cursor has no rule, so the manifest rule is added.
-        self.expected_policies = copy.deepcopy(self.original_data['auth']['accountPolicies'])
-        self.expected_policies[1]['reservePct'] = 0
-        self.expected_policies.append(
-            {'provider': 'cursor', 'account': {'email': self.cursor_email}, 'reservePct': 0})
+        self.expected_policies = self.wanted['auth.accountPolicies']
         self.secrets = ['SECRET-MODEL', 'SECRET-CHAIN', 'SECRET-POOL', 'SECRET-ANTHROPIC',
-                        'SECRET-XAI-A', 'SECRET-XAI-B', 'SECRET-XAI-OLD', 'SECRET-STALE-XAI',
-                        'SECRET-TOKEN', 'SECRET-CURSOR-A', self.xai_id, self.cursor_email]
+                        'SECRET-XAI-B', 'SECRET-CURSOR-A', self.xai_id, self.cursor_email]
         self.original = (json.dumps(self.original_data, indent=3) + '\n').encode()
         self.config.write_bytes(self.original)
         self.config.chmod(0o600)
-        self.write_db(self.accounts)
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         (self.bin / 'omp').write_text(FAKE)
@@ -201,28 +204,19 @@ class EntrypointTests(unittest.TestCase):
         self.cwd = self.base / 'project'
         (self.cwd / '.omp').mkdir(parents=True)
         self.env = dict(os.environ, HOME=str(self.home), PI_CODING_AGENT_DIR=str(self.agent),
-                        PI_CONFIG_FILES='/secret/overlay.yml', XDG_DATA_HOME=str(self.base / 'data'),
+                        PI_CONFIG_FILES='/secret/overlay.yml',
                         PATH=str(self.bin) + os.pathsep + os.environ['PATH'])
         self.env['FAKE_TARGET'] = str(self.config)
+        self.env['FAKE_HOME'] = str(self.home)
+        self.env['XDG_DATA_HOME'] = self.env['FAKE_XDG_DATA'] = str(self.base / 'data')
         self.env['FAKE_CONTROL'] = str(self.base / 'capture-changed')
         self.env.pop('FAKE_MODE', None)
         self.env.pop('FAKE_STARTED', None)
-        self.env.pop('OMP_AUTH_BROKER_URL', None)
-
-    def write_db(self, accounts):
-        path = self.agent / 'agent.db'
-        path.unlink(missing_ok=True)
-        # OMP's agent.db is in WAL mode; closing the last connection removes
-        # the -wal/-shm sidecars, as on a quiescent host.
-        with contextlib.closing(sqlite3.connect(path)) as db:
-            db.execute('PRAGMA journal_mode=WAL')
-            db.execute('CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT,'
-                       ' credential_type TEXT, data TEXT, disabled_cause TEXT, identity_key TEXT)')
-            for provider, kind, identity, disabled, data in accounts:
-                db.execute('INSERT INTO auth_credentials (provider, credential_type, data,'
-                           ' disabled_cause, identity_key) VALUES (?, ?, ?, ?, ?)',
-                           (provider, kind, json.dumps(data), disabled, identity))
-            db.commit()
+        # Accounts the fake `omp usage` lists: provider, selector fields, redacted label.
+        self.env['FAKE_ACCOUNTS'] = json.dumps([
+            ['xai-oauth', {'accountId': self.xai_id}, 'xa*'],
+            ['cursor', {'email': self.cursor_email}, 'cu*'],
+            ['anthropic', {'email': 'SECRET-ANTHROPIC'}, 'an*']])
 
     def run_entry(self, *args, success=True, **env):
         result = subprocess.run([str(self.script), *map(str, args)], cwd=self.cwd,
@@ -263,7 +257,7 @@ class EntrypointTests(unittest.TestCase):
             self.assertNotIn(secret, result.stdout + result.stderr)
         self.assertEqual(before, self.snapshot())
 
-    def test_account_policies_update_matched_rule_and_keep_others(self):
+    def test_account_policies_replaced_as_whole_value(self):
         result = self.run_entry()
         self.assert_applied()
         for secret in self.secrets:
@@ -272,6 +266,13 @@ class EntrypointTests(unittest.TestCase):
         first = self.config.read_bytes()
         self.run_entry()
         self.assertEqual(json.loads(self.config.read_bytes()), json.loads(first))
+        # A converged preview still lists every live rule, without selector values.
+        preview = self.run_entry('--dry-run').stdout
+        self.assertIn('No changes', preview)
+        self.assertIn('"provider": "xai-oauth"', preview)
+        self.assertIn('"provider": "cursor"', preview)
+        for secret in self.secrets:
+            self.assertNotIn(secret, preview)
 
     def test_both_zero_reserve_rules_installed_with_selector_kinds(self):
         self.original_data['auth'] = {'custom': 'keep-auth'}
@@ -303,54 +304,56 @@ class EntrypointTests(unittest.TestCase):
         self.assertTrue(all(type(v) is str and v for rule in rules for v in rule['account'].values()),
                         'selector values must be non-empty strings')
 
-    def test_rows_only_in_live_wal_are_read(self):
-        # A running OMP holds the DB open: rows may be only in the -wal file.
-        self.write_db([a for a in self.accounts if a[2] != 'cursor'])
-        with contextlib.closing(sqlite3.connect(self.agent / 'agent.db')) as db:
-            db.execute('PRAGMA wal_autocheckpoint=0')
-            db.execute('INSERT INTO auth_credentials (provider, credential_type, data, identity_key)'
-                       ' VALUES (?, ?, ?, ?)', ('cursor', 'oauth',
-                                                json.dumps({'email': self.cursor_email}), 'cursor'))
-            db.commit()
-            self.assertTrue((self.agent / 'agent.db-wal').exists())
-            self.run_entry('--dry-run')
-
-    def test_ambiguous_or_unmatched_accounts_fail_before_backup(self):
-        rules = self.original_data['auth']['accountPolicies']
-        shared = [('xai-oauth', 'oauth', f'xai-shared-{n}', None,
-                   {'accountId': f'SECRET-XAI-B{n}', 'email': 'SECRET-XAI-B'}) for n in (1, 2)]
-        # Two Cursor accounts share the manifest email; an existing rule
-        # selects the first by accountId, so only the manifest check refuses.
-        cursor_pair = [a for a in self.accounts if a[2] != 'cursor'] + [
-            ('cursor', 'oauth', 'cursor-a', None, {'email': self.cursor_email, 'accountId': 'SECRET-CURSOR-A'}),
-            ('cursor', 'oauth', 'cursor-b', None, {'email': self.cursor_email})]
-        cases = {
-            'two rules select one account': (
-                rules + [{'provider': 'xai-oauth', 'account': {'accountId': self.xai_id}}], self.accounts),
-            'manifest matches no account': (rules, [a for a in self.accounts if a[0] != 'cursor']),
-            'manifest matches two accounts': (
-                rules + [{'provider': 'cursor', 'account': {'accountId': 'SECRET-CURSOR-A'}}], cursor_pair),
-            'rule matches two accounts': (
-                rules + [{'provider': 'xai-oauth', 'account': {'email': 'SECRET-XAI-B'}}],
-                [a for a in self.accounts if a[2] != 'xai-b'] + shared),
-            'two unmanaged rules select one account': (
-                rules + [{'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'}}], self.accounts),
-            'missing database': (rules, None),
-        }
-        for name, (policies, accounts) in cases.items():
-            with self.subTest(case=name):
+    def test_unmanaged_live_rule_refused_before_backup(self):
+        covered = self.original_data['auth']['accountPolicies'][0]
+        cases = {'anthropic': {'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'}},
+                 # A field the manifest rule lacks would be dropped by the write.
+                 'xai-oauth': dict(covered, priority=3),
+                 'cursor': {'provider': 'cursor', 'account': {'email': 'SECRET-CURSOR-A'},
+                            'reservePct': 0}}
+        for provider, rule in cases.items():
+            with self.subTest(provider=provider):
                 data = copy.deepcopy(self.original_data)
-                data['auth']['accountPolicies'] = policies
+                data['auth']['accountPolicies'].append(rule)
                 self.config.write_text(json.dumps(data))
-                if accounts is None:
-                    (self.agent / 'agent.db').unlink()
-                else:
-                    self.write_db(accounts)
                 for args in (('--dry-run',), ()):
                     before = self.snapshot()
                     result = self.run_entry(*args, success=False)
-                    self.assertRegex(result.stderr, 'account|agent database')
+                    self.assertIn(f'auth.accountPolicies[1] ({provider}) not in the manifest',
+                                  result.stderr)
+                    self.assertNotIn('[0]', result.stderr)
                     self.assert_refused(result, before)
+                    if args:
+                        # The preview lists every live rule, without selector values.
+                        self.assertIn(f'"provider": "{provider}"', result.stdout)
+
+    def test_usage_without_manifest_override_rolls_back(self):
+        accounts = json.loads(self.env['FAKE_ACCOUNTS'])
+        second_xai = accounts + [['xai-oauth', {'accountId': 'SECRET-XAI-B'}, 'xb*']]
+        cases = {'second xAI account': ({'FAKE_ACCOUNTS': json.dumps(second_xai)},
+                                        'xai-oauth account xb*'),
+                 'unreported xAI account': ({'FAKE_ACCOUNTS': json.dumps(
+                     accounts + [['xai-oauth', {}, 'xu*', 'unreported']])},
+                     'xai-oauth account xu*'),
+                 'unparsable output': ({'FAKE_MODE': 'usage-unparsable'}, 'omp usage'),
+                 'undecodable output': ({'FAKE_MODE': 'usage-undecodable'}, 'utf-8'),
+                 'no cursor account': ({'FAKE_ACCOUNTS': json.dumps(accounts[:1])},
+                                       'no cursor account')}
+        self.config.chmod(0o640)
+        for name, (env, message) in cases.items():
+            with self.subTest(case=name):
+                old = set(self.backups())
+                result = self.run_entry(success=False, **env)
+                self.assertIn(message, result.stderr)
+                self.assertIn('restored config.yml from the backup', result.stderr)
+                self.assertNotIn('Apply verified', result.stdout)
+                self.assertNotIn('Traceback', result.stderr)
+                for secret in self.secrets:
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+                self.assertEqual(self.config.read_bytes(), self.original)
+                self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o640)
+                self.assertEqual([p.read_bytes() for p in set(self.backups()) - old],
+                                 [self.original])
 
     def test_malformed_live_settings_fail_before_backup(self):
         rule = {'provider': 'anthropic', 'account': {'email': 'SECRET-ANTHROPIC'}}
@@ -362,8 +365,8 @@ class EntrypointTests(unittest.TestCase):
                     [dict(rule, reservePct=101)], [dict(rule, reservePct=True)],
                     [dict(rule, reservePct=20, reclaimAbovePct=20)],
                     [dict(rule, reclaimAbovePct=101)],
-                    # Without its own reservePct, the global reserve (10) bounds it.
-                    [dict(rule, reclaimAbovePct=5)])
+                    # Python ints beyond float range must not overflow math.isfinite.
+                    [dict(rule, priority=10 ** 400)])
         cases = [(f'policies {p!r}', 'auth.accountPolicies',
                   lambda d, p=p: d['auth'].__setitem__('accountPolicies', p)) for p in policies]
         cases += [('auth scalar', 'not a mapping', lambda d: d.__setitem__('auth', 5)),
@@ -372,15 +375,7 @@ class EntrypointTests(unittest.TestCase):
                   ('auth null', 'not a mapping', lambda d: d.__setitem__('auth', None)),
                   ('retry null', 'not a mapping', lambda d: d.__setitem__('retry', None)),
                   ('reserve policy', 'retry.usageReservePolicy',
-                   lambda d: d['retry'].__setitem__('usageReservePolicy', 'sometimes')),
-                  # The matched xAI rule is invalid as OMP reads it now (global
-                  # reserve 10); setting its reservePct to 0 must not repair it.
-                  ('matched rule reclaim', 'auth.accountPolicies',
-                   lambda d: d['auth']['accountPolicies'].__setitem__(1, {
-                       'provider': 'xai-oauth', 'account': {'email': 'SECRET-XAI-A'},
-                       'reclaimAbovePct': 5})),
-                  ('broker in config', 'auth broker',
-                   lambda d: d['auth'].__setitem__('broker', {'url': 'https://broker.invalid'}))]
+                   lambda d: d['retry'].__setitem__('usageReservePolicy', 'sometimes'))]
         for name, message, mutate in cases:
             with self.subTest(case=name):
                 data = copy.deepcopy(self.original_data)
@@ -390,17 +385,6 @@ class EntrypointTests(unittest.TestCase):
                 result = self.run_entry(success=False)
                 self.assertIn(message, result.stderr)
                 self.assert_refused(result, before)
-        self.config.write_bytes(self.original)
-        (self.base / 'data/omp').mkdir(parents=True)
-        for args in (('--dry-run',), ()):
-            before = self.snapshot()
-            result = self.run_entry(*args, success=False)
-            self.assertIn('XDG_DATA_HOME', result.stderr)
-            self.assert_refused(result, before)
-        before = self.snapshot()
-        result = self.run_entry(success=False, OMP_AUTH_BROKER_URL='https://broker.invalid')
-        self.assertIn('auth broker', result.stderr)
-        self.assert_refused(result, before)
         self.config.write_text('[1]')
         before = self.snapshot()
         self.assertIn('config root', self.run_entry(success=False).stderr.lower())
@@ -485,6 +469,21 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(recovery[0].read_bytes(), changed)
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
 
+    def test_file_mode_and_group_kept_through_apply_and_rollback(self):
+        # A replaced inode gets the default group; keep a chosen group too.
+        groups = [g for g in os.getgroups() if g != os.getegid()]
+        gid = groups[0] if groups else os.getegid()
+        os.chown(self.config, -1, gid)
+        self.config.chmod(0o640)
+        self.run_entry()
+        self.assert_applied()
+        info = self.config.stat()
+        self.assertEqual((stat.S_IMODE(info.st_mode), info.st_gid), (0o640, gid))
+        self.run_entry('--rollback', self.backups()[0])
+        self.assertEqual(self.config.read_bytes(), self.original)
+        info = self.config.stat()
+        self.assertEqual((stat.S_IMODE(info.st_mode), info.st_gid), (0o640, gid))
+
     def test_rollback_ignores_invalid_or_missing_current_config(self):
         backup = self.agent / 'config.yml.bak-original'
         backup.write_bytes(self.original)
@@ -556,19 +555,15 @@ class EntrypointTests(unittest.TestCase):
         for mode in ('ignore-write', 'bad-read', 'missing-read', 'failed-read', 'failed-write'):
             with self.subTest(mode=mode):
                 self.config.write_bytes(self.original)
+                self.config.chmod(0o640)
                 (self.agent / '.fake-set').unlink(missing_ok=True)
                 old = set(self.backups())
                 self.run_entry(success=False, FAKE_MODE=mode)
+                # failed-write fails after an earlier set republished the file.
+                self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o640)
                 new = set(self.backups()) - old
                 self.assertEqual(len(new), 1)
                 self.assertEqual(new.pop().read_bytes(), self.original)
-
-    def test_login_during_apply_never_reports_success(self):
-        result = self.run_entry(success=False, FAKE_MODE='login-during-apply')
-        self.assertIn('accounts changed during apply', result.stderr)
-        self.assertNotIn('Apply verified', result.stdout)
-        self.assertNotIn('SECRET-NEW', result.stdout + result.stderr)
-        self.assertEqual(len(self.backups()), 1)
 
     def test_invalid_arguments_and_backups_do_not_modify_target(self):
         foreign = self.base / 'foreign.yml'
@@ -622,7 +617,8 @@ class EntrypointTests(unittest.TestCase):
                          [dict(rule, provider=' xai-oauth')], [dict(rule, reservePct=101)],
                          [dict(rule, reservePct=-1)], [dict(rule, reservePct=True)],
                          [dict(rule, reservePct='0')], [dict(rule, reservePct=0.5)],
-                         [dict(rule, priority=1)], [{'provider': 'xai-oauth', 'reservePct': 0}],
+                         [dict(rule, label='x')], [dict(rule, priority=10 ** 400)],
+                         [{'provider': 'xai-oauth', 'reservePct': 0}],
                          [rule, dict(rule)]):
             bad = json.loads(original_manifest)
             bad['auth.accountPolicies'] = policies
@@ -637,6 +633,18 @@ class EntrypointTests(unittest.TestCase):
                 before = self.snapshot()
                 self.run_entry(success=False)
                 self.assertEqual(before, self.snapshot())
+
+    def test_manifest_float_numbers_refused_before_backup(self):
+        # OMP writes 1.0 back as 1, so the read-back would fail after the writes.
+        self.original_data['auth'] = {'custom': 'keep-auth'}
+        self.config.write_text(json.dumps(self.original_data))
+        manifest = json.loads(self.manifest.read_text())
+        manifest['auth.accountPolicies'][0]['priority'] = 1.0
+        self.manifest.write_text(json.dumps(manifest))
+        before = self.snapshot()
+        result = self.run_entry(success=False)
+        self.assertIn('numbers must be integers', result.stderr)
+        self.assert_refused(result, before)
 
     def test_bad_global_list_fails_before_backup(self):
         before = self.snapshot()
