@@ -24,6 +24,7 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
 | `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
 | `omarchy` | Omarchy 4 guest (Arch ARM in UTM) | standalone Home Manager (CLI only) | `omarchy.nix` |
+| — (no Nix) | ThinkPad on Omarchy (x86_64, hostname `omarchy`) | Omarchy app profile | `omarchy-apps.txt` via `scripts/omarchy-apply.sh` — see [Omarchy machines](#omarchy-machines) |
 
 The Mac mini's attr and hostname become `rouvens-mac-mini-m4` (the live
 machine's name) with `chore/326-315-flake-hygiene`; until that merges the flake
@@ -545,6 +546,37 @@ Two engines, both reproducible from the same manifest:
 every PWA. `brew install dockutil` is only needed for `--pin` (Dock pinning);
 without it the apps still build, just unpinned. First launch asks you to sign in
 once per app (each native app has its own cookie jar).
+
+## Omarchy machines
+
+On an Omarchy machine Omarchy owns the desktop, the packages and the updates;
+this repo only declares **which apps** it should carry, in
+[`configurations/linux/omarchy-apps.txt`](configurations/linux/omarchy-apps.txt)
+(Arch / AUR packages, Omarchy's own installers, web apps). It was derived from
+the main Mac's casks and `pwas.txt`, minus what Omarchy already ships.
+[`scripts/omarchy-apply.sh`](scripts/omarchy-apply.sh) hands whatever is missing
+to Omarchy's tools (`omarchy-pkg-add`, `omarchy-pkg-aur-add`, `omarchy-install-*`,
+`omarchy-webapp-install`). Additive only — removing a line uninstalls nothing.
+No Nix needed.
+
+```bash
+git clone https://github.com/rh7/dotfiles ~/dotfiles
+~/dotfiles/scripts/omarchy-apply.sh            # plan: what is missing
+~/dotfiles/scripts/omarchy-apply.sh --apply    # install it (asks for sudo once)
+~/dotfiles/scripts/omarchy-apply.sh --install  # once: post-update hook + daily audit timer
+```
+
+After `--install`:
+
+- every `omarchy update` ends by fetching `origin/main` and installing anything
+  newly listed there (the list is read from the commit, never the working tree);
+- a systemd **user** timer (`rh7-fleet-audit.timer`, daily, `Persistent=true`)
+  runs `scripts/collector-runner.sh`. The runner's own Linux schedule is cron,
+  which Omarchy does not ship, so without this the device never re-audited.
+
+Your own desktop settings stay yours, in `~/.config` (the Omarchy manual's
+[Dotfiles](https://omarchy.org/manual/dotfiles/) chapter); this repo does not
+manage them.
 
 ## Device Management
 

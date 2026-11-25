@@ -3,10 +3,16 @@
 # ── Omarchy 4 guest (Arch Linux ARM, aarch64, in UTM) ──────────────────────
 # Layered on configurations/linux/home.nix. The division of labour matters:
 # Omarchy owns the desktop — Hyprland's Lua config, quickshell, the themes and
-# the 442 omarchy-* commands in /usr/bin, all of which `omarchy-update`
-# rewrites. Home Manager owns the CLI environment and nothing else. Do not
-# manage ~/.config/hypr or ~/.bashrc from here; they will be overwritten and
-# you will be debugging a broken desktop.
+# the omarchy-* commands. Home Manager owns the CLI environment and nothing
+# else. Do not manage ~/.config/hypr or ~/.bashrc from here. Not because
+# `omarchy update` rewrites them (it does not — per the Omarchy manual,
+# ~/.config and ~/.bashrc are the user's; only /usr/share/omarchy is replaced),
+# but because Home Manager would make them read-only store links: Omarchy's own
+# Setup > Config editor then cannot save, and `omarchy reinstall configs` collides.
+#
+# Apps on an Omarchy machine (the ThinkPad) are not Home Manager's either:
+# configurations/linux/omarchy-apps.txt + scripts/omarchy-apply.sh hand them to
+# Omarchy's own installers, and need no Nix at all.
 {
   # nvim, not Zed. common.nix sets `zed --wait` for the Macs, and Zed has no
   # aarch64-linux build here; Omarchy ships neovim (as omarchy-nvim).
