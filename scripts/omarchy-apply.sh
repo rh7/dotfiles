@@ -202,15 +202,18 @@ command -v pacman >/dev/null 2>&1 || { warn "pacman not found — this is not an
 pkg_present() { pacman -Q -- "$1" >/dev/null 2>&1; }
 app_present() { [ -f "$APPS_DIR/$1.desktop" ]; }
 failed_marker() { printf '%s/failed/%s' "$STATE_DIR" "$(printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_')"; }
-present() {  # index
+sentinel_present() {  # index — the line's own check, ignoring any pending marker
   local i="$1"
   case "${KIND[$i]}" in
     pkg|aur) pkg_present "${F1[$i]}" ;;
-    omarchy)
-      [ ! -e "$(failed_marker "${F1[$i]}")" ] || return 1
-      if [[ ${F2[$i]} == app:* ]]; then app_present "${F2[$i]#app:}"; else pkg_present "${F2[$i]}"; fi ;;
+    omarchy) if [[ ${F2[$i]} == app:* ]]; then app_present "${F2[$i]#app:}"; else pkg_present "${F2[$i]}"; fi ;;
     webapp) app_present "${F1[$i]}" ;;
   esac
+}
+present() {  # index
+  local i="$1"
+  if [ "${KIND[$i]}" = omarchy ] && [ -e "$(failed_marker "${F1[$i]}")" ]; then return 1; fi
+  sentinel_present "$i"
 }
 label() {
   local i="$1"
@@ -275,19 +278,20 @@ for i in "${missing[@]}"; do
   case "${KIND[$i]}" in
     pkg) omarchy-pkg-add "${F1[$i]}" || rc=$? ;;
     aur) omarchy-pkg-aur-add "${F1[$i]}" || rc=$? ;;
-    omarchy) read -ra words <<<"${F1[$i]}"; run_installer "${words[@]}" || rc=$? ;;
+    omarchy)
+      # Marker first: an installer killed mid-run (reboot, closed terminal)
+      # never returns here, and its sentinel alone must not read as done.
+      mkdir -p "$STATE_DIR/failed" && : >"$(failed_marker "${F1[$i]}")"
+      read -ra words <<<"${F1[$i]}"; run_installer "${words[@]}" || rc=$? ;;
     webapp) omarchy-webapp-install "${F1[$i]}" "${F2[$i]}" "${F3[$i]}" || rc=$? ;;
   esac
   # Trust the presence check over the exit code: an installer can exit 0
   # without installing (pacman sometimes does), or launch-and-return. An
-  # installer's own marker is cleared first so the check sees the sentinel.
-  [ "${KIND[$i]}" != omarchy ] || rm -f "$(failed_marker "${F1[$i]}")"
-  if [ "$rc" -eq 0 ] && present "$i"; then
+  # installer's marker is cleared only after a verified success.
+  if [ "$rc" -eq 0 ] && sentinel_present "$i"; then
+    [ "${KIND[$i]}" != omarchy ] || rm -f "$(failed_marker "${F1[$i]}")"
     done_+=("$(label "$i")")
   else
-    if [ "${KIND[$i]}" = omarchy ]; then
-      mkdir -p "$STATE_DIR/failed" && : >"$(failed_marker "${F1[$i]}")"
-    fi
     failed+=("$(label "$i") (line ${LINENO_OF[$i]}, exit $rc)")
   fi
 done

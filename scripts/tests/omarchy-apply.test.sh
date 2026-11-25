@@ -35,6 +35,9 @@ stub omarchy-install-partial 'echo "installer partial" >>"$STATE/calls"; echo pa
 # Like omarchy-install-service-tailscale: no `set -e`, a middle step fails, the
 # script still ends with exit 0 after installing its sentinel.
 stub omarchy-install-swallow 'echo "installer swallow" >>"$STATE/calls"; echo swallow-pkg >>"$STATE/installed"; false; echo "later step"'
+# Killed mid-run (reboot / closed terminal): sentinel installed, then the
+# process dies, so omarchy-apply never sees it return.
+stub omarchy-install-killed 'echo "installer killed" >>"$STATE/calls"; echo killed-pkg >>"$STATE/installed"; [ -e "$STATE/fixed" ] || kill -9 "$PPID"'
 stub omarchy-hook-install 'echo "hook-install $1 $(basename "$2")" >>"$STATE/calls"; mkdir -p "$STATE/hooks/$1.d"; cp "$2" "$STATE/hooks/$1.d/"'
 stub systemctl 'echo "systemctl $*" >>"$STATE/calls"'
 stub sudo 'case "$1" in -v) exit 0;; -n) [ "${SUDO_OK:-1}" = 1 ];; *) exec "$@";; esac'
@@ -141,6 +144,19 @@ check "exits 1" "$RC" "1"
 has "reported" "$OUT" "FAILED: omarchy omarchy-install-swallow"
 run --list "$T/swallow.txt"
 has "still pending on the next run" "$OUT" "would install: omarchy omarchy-install-swallow"
+
+echo "== an installer killed mid-run stays pending"
+reset
+printf 'omarchy | omarchy-install-killed | killed-pkg\n' >"$T/killed.txt"
+run --list "$T/killed.txt" --apply
+hasnt "the run never reached its summary" "$OUT" "installed 1"
+run --list "$T/killed.txt"
+has "pending on the next run despite the sentinel" "$OUT" "would install: omarchy omarchy-install-killed"
+touch "$T/state/fixed"
+run --list "$T/killed.txt" --apply
+check "completes on re-run" "$RC" "0"
+run --list "$T/killed.txt"
+has "then done" "$OUT" "0 missing"
 
 echo "== a bad list installs nothing"
 for badline in \
