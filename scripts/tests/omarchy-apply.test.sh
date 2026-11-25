@@ -30,6 +30,8 @@ stub omarchy-webapp-install 'echo "webapp $1|$2|$3" >>"$STATE/calls"; mkdir -p "
 stub omarchy-install-service-demo 'echo "installer demo $*" >>"$STATE/calls"; echo demo-pkg >>"$STATE/installed"'
 stub omarchy-install-browser 'echo "installer browser $*" >>"$STATE/calls"; echo "$1" >>"$STATE/installed"'
 stub omarchy-install-noop 'echo "installer noop" >>"$STATE/calls"'   # exits 0, installs nothing
+# Installs its sentinel package, then fails a later step unless $STATE/fixed exists.
+stub omarchy-install-partial 'echo "installer partial" >>"$STATE/calls"; echo partial-pkg >>"$STATE/installed"; [ -e "$STATE/fixed" ]'
 stub omarchy-hook-install 'echo "hook-install $1 $(basename "$2")" >>"$STATE/calls"; mkdir -p "$STATE/hooks/$1.d"; cp "$2" "$STATE/hooks/$1.d/"'
 stub systemctl 'echo "systemctl $*" >>"$STATE/calls"'
 stub sudo 'case "$1" in -v) exit 0;; -n) [ "${SUDO_OK:-1}" = 1 ];; *) exec "$@";; esac'
@@ -105,6 +107,29 @@ run --list "$T/noop.txt" --apply
 check "exits 1" "$RC" "1"
 has "reported" "$OUT" "FAILED: omarchy omarchy-install-noop"
 
+echo "== a partly failed installer re-runs until it succeeds"
+reset
+printf 'omarchy | omarchy-install-partial | partial-pkg\n' >"$T/partial.txt"
+run --list "$T/partial.txt" --apply
+check "first run fails" "$RC" "1"
+: >"$T/state/calls"
+run --list "$T/partial.txt"
+has "sentinel present but still planned" "$OUT" "would install: omarchy omarchy-install-partial"
+touch "$T/state/fixed"
+run --list "$T/partial.txt" --apply
+check "re-run succeeds" "$RC" "0"
+has "installer ran again" "$(calls)" "installer partial"
+: >"$T/state/calls"
+run --list "$T/partial.txt" --apply
+has "then nothing missing" "$OUT" "0 missing"
+check "and no further runs" "$(calls)" ""
+
+echo "== a sentinel installed by hand counts as present"
+reset; echo partial-pkg >"$T/state/installed"
+run --list "$T/partial.txt" --apply
+has "nothing missing" "$OUT" "0 missing"
+check "installer not run" "$(calls)" ""
+
 echo "== a bad list installs nothing"
 for badline in \
   'brew | ghostty' \
@@ -152,11 +177,11 @@ has "post-update hook installed" "$(calls)" "hook-install post-update rh7-apps"
 hook="$T/state/hooks/post-update.d/rh7-apps"
 if bash -n "$hook" 2>/dev/null; then ok "hook is valid bash"; else bad "hook is valid bash" "$(cat "$hook")"; fi
 has "hook runs --from-hook" "$(cat "$hook")" "--from-hook"
-timer="$T/home/.config/systemd/user/rh7-fleet-audit.timer"
-service="$T/home/.config/systemd/user/rh7-fleet-audit.service"
+timer="$T/home/.config/systemd/user/fleet-audit.timer"
+service="$T/home/.config/systemd/user/fleet-audit.service"
 has "timer catches up missed runs" "$(cat "$timer")" "Persistent=true"
 has "service runs the collector runner" "$(cat "$service")" "scripts/collector-runner.sh"
-has "timer enabled" "$(calls)" "systemctl --user enable --now rh7-fleet-audit.timer"
+has "timer enabled under the name fleet-fix/enroll recognise" "$(calls)" "systemctl --user enable --now fleet-audit.timer"
 
 echo
 echo "omarchy-apply: $pass passed, $fail failed"

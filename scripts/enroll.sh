@@ -168,7 +168,10 @@ runner_scheduled() {
     launchctl print system/com.rh7.collector-runner >/dev/null 2>&1 \
       || launchctl list 2>/dev/null | grep -qE '(^|[[:space:]])com\.rh7\.collector-runner$'
   else
-    crontab -l 2>/dev/null | grep -q '# fleet-collector-runner'
+    # Omarchy ships no cron: there the runner is a systemd user timer
+    # (scripts/omarchy-apply.sh --install), the unit name fleet-fix.sh checks too.
+    systemctl --user is-enabled fleet-audit.timer >/dev/null 2>&1 \
+      || crontab -l 2>/dev/null | grep -q '# fleet-collector-runner'
   fi
 }
 legacy_schedule() {  # prints what unverified schedule is present; false if none

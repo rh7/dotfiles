@@ -529,7 +529,7 @@ schedule_state() { # prints a description and returns 0 when a schedule exists
     launchctl print "system/$RUNNER_LABEL" >/dev/null 2>&1 && { echo "LaunchDaemon $RUNNER_LABEL loaded (system domain)"; return 0; }
     launchctl print "gui/$(id -u)/$RUNNER_LABEL" >/dev/null 2>&1 && { echo "LaunchAgent $RUNNER_LABEL loaded"; return 0; }
   else
-    systemctl --user is-enabled fleet-audit.timer >/dev/null 2>&1 && { echo "systemd user timer fleet-audit.timer (nix-declared)"; return 0; }
+    systemctl --user is-enabled fleet-audit.timer >/dev/null 2>&1 && { echo "systemd user timer fleet-audit.timer (nix-declared, or omarchy-apply.sh --install)"; return 0; }
     crontab -l 2>/dev/null | grep -q 'fleet-collector-runner' && { echo "cron (fleet-collector-runner)"; return 0; }
   fi
   return 1

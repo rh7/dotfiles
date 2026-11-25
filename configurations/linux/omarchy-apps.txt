@@ -39,7 +39,6 @@ aur     | cursor-bin
 # ── AI (coding-agent CLIs come from Omarchy's mise / `omarchy agent`) ────────
 omarchy | omarchy-install-ai-claude              | claude-desktop
 pkg     | ollama
-pkg     | opencode
 # aur   | lmstudio-bin                           # only if the ThinkPad should run local models
 
 # ── CLI from modules/common.nix that Omarchy does not ship ───────────────────

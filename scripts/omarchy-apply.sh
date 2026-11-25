@@ -42,7 +42,15 @@ REPO_ROOT="${OMARCHY_APPLY_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 LIST_REL="configurations/linux/omarchy-apps.txt"
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-AUDIT_UNIT="rh7-fleet-audit"
+# The name fleet-fix.sh and enroll.sh already recognise as a Linux audit
+# schedule (they also accept the cron line collector-runner --install writes).
+AUDIT_UNIT="fleet-audit"
+# An omarchy-install-* installer can create its presence sentinel and then fail
+# on a later step (Microsoft creates Word before Excel; Tailscale installs the
+# package before `tailscale up`). A run that fails leaves a marker here; while
+# it exists the line counts as missing, so the installer re-runs until it
+# succeeds. A sentinel without a marker (installed by hand) counts as present.
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/rh7-omarchy-apply"
 HOOK_NAME="rh7-apps"
 
 say()  { printf '%s\n' "$*"; }
@@ -193,11 +201,14 @@ fi
 command -v pacman >/dev/null 2>&1 || { warn "pacman not found — this is not an Arch/Omarchy machine"; exit 2; }
 pkg_present() { pacman -Q -- "$1" >/dev/null 2>&1; }
 app_present() { [ -f "$APPS_DIR/$1.desktop" ]; }
+failed_marker() { printf '%s/failed/%s' "$STATE_DIR" "$(printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_')"; }
 present() {  # index
   local i="$1"
   case "${KIND[$i]}" in
     pkg|aur) pkg_present "${F1[$i]}" ;;
-    omarchy) if [[ ${F2[$i]} == app:* ]]; then app_present "${F2[$i]#app:}"; else pkg_present "${F2[$i]}"; fi ;;
+    omarchy)
+      [ ! -e "$(failed_marker "${F1[$i]}")" ] || return 1
+      if [[ ${F2[$i]} == app:* ]]; then app_present "${F2[$i]#app:}"; else pkg_present "${F2[$i]}"; fi ;;
     webapp) app_present "${F1[$i]}" ;;
   esac
 }
@@ -252,10 +263,15 @@ for i in "${missing[@]}"; do
     webapp) omarchy-webapp-install "${F1[$i]}" "${F2[$i]}" "${F3[$i]}" || rc=$? ;;
   esac
   # Trust the presence check over the exit code: an installer can exit 0
-  # without installing (pacman sometimes does), or launch-and-return.
+  # without installing (pacman sometimes does), or launch-and-return. An
+  # installer's own marker is cleared first so the check sees the sentinel.
+  [ "${KIND[$i]}" != omarchy ] || rm -f "$(failed_marker "${F1[$i]}")"
   if [ "$rc" -eq 0 ] && present "$i"; then
     done_+=("$(label "$i")")
   else
+    if [ "${KIND[$i]}" = omarchy ]; then
+      mkdir -p "$STATE_DIR/failed" && : >"$(failed_marker "${F1[$i]}")"
+    fi
     failed+=("$(label "$i") (line ${LINENO_OF[$i]}, exit $rc)")
   fi
 done

@@ -570,9 +570,10 @@ After `--install`:
 
 - every `omarchy update` ends by fetching `origin/main` and installing anything
   newly listed there (the list is read from the commit, never the working tree);
-- a systemd **user** timer (`rh7-fleet-audit.timer`, daily, `Persistent=true`)
+- a systemd **user** timer (`fleet-audit.timer`, daily, `Persistent=true`)
   runs `scripts/collector-runner.sh`. The runner's own Linux schedule is cron,
-  which Omarchy does not ship, so without this the device never re-audited.
+  which Omarchy does not ship, so without this the device never re-audited;
+  `enroll.sh` and `fleet-fix.sh` recognise this timer as the schedule.
 
 Your own desktop settings stay yours, in `~/.config` (the Omarchy manual's
 [Dotfiles](https://omarchy.org/manual/dotfiles/) chapter); this repo does not
