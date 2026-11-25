@@ -250,6 +250,22 @@ if [ "$needs_root" -eq 1 ]; then
 fi
 
 failed=(); skipped=(); done_=()
+# Several omarchy-install-* scripts have no `set -e` (Tailscale, Zed, VS Code,
+# Dropbox): a failed `tailscale up` is followed by steps that succeed, the
+# script exits 0, and the package sentinel would read as "done" forever. Run
+# bash installers under errexit so the first failing step is the exit status
+# and the failed-marker keeps the line pending. Steps an installer means to be
+# optional already carry `|| true`.
+run_installer() {
+  local path first
+  path="$(command -v "$1")" || { warn "installer $1 not found"; return 127; }
+  IFS= read -r first <"$path" || first=""
+  case "$first" in
+    '#!'*bash*) bash -e "$path" "${@:2}" ;;
+    *) "$@" ;;
+  esac
+}
+
 for i in "${missing[@]}"; do
   if [ "${KIND[$i]}" != webapp ] && [ "$can_root" -eq 0 ]; then
     skipped+=("$(label "$i")"); continue
@@ -259,7 +275,7 @@ for i in "${missing[@]}"; do
   case "${KIND[$i]}" in
     pkg) omarchy-pkg-add "${F1[$i]}" || rc=$? ;;
     aur) omarchy-pkg-aur-add "${F1[$i]}" || rc=$? ;;
-    omarchy) read -ra words <<<"${F1[$i]}"; "${words[@]}" || rc=$? ;;
+    omarchy) read -ra words <<<"${F1[$i]}"; run_installer "${words[@]}" || rc=$? ;;
     webapp) omarchy-webapp-install "${F1[$i]}" "${F2[$i]}" "${F3[$i]}" || rc=$? ;;
   esac
   # Trust the presence check over the exit code: an installer can exit 0

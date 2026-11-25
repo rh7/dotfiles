@@ -32,6 +32,9 @@ stub omarchy-install-browser 'echo "installer browser $*" >>"$STATE/calls"; echo
 stub omarchy-install-noop 'echo "installer noop" >>"$STATE/calls"'   # exits 0, installs nothing
 # Installs its sentinel package, then fails a later step unless $STATE/fixed exists.
 stub omarchy-install-partial 'echo "installer partial" >>"$STATE/calls"; echo partial-pkg >>"$STATE/installed"; [ -e "$STATE/fixed" ]'
+# Like omarchy-install-service-tailscale: no `set -e`, a middle step fails, the
+# script still ends with exit 0 after installing its sentinel.
+stub omarchy-install-swallow 'echo "installer swallow" >>"$STATE/calls"; echo swallow-pkg >>"$STATE/installed"; false; echo "later step"'
 stub omarchy-hook-install 'echo "hook-install $1 $(basename "$2")" >>"$STATE/calls"; mkdir -p "$STATE/hooks/$1.d"; cp "$2" "$STATE/hooks/$1.d/"'
 stub systemctl 'echo "systemctl $*" >>"$STATE/calls"'
 stub sudo 'case "$1" in -v) exit 0;; -n) [ "${SUDO_OK:-1}" = 1 ];; *) exec "$@";; esac'
@@ -129,6 +132,15 @@ reset; echo partial-pkg >"$T/state/installed"
 run --list "$T/partial.txt" --apply
 has "nothing missing" "$OUT" "0 missing"
 check "installer not run" "$(calls)" ""
+
+echo "== an installer that swallows a failed step does not count as done"
+reset
+printf 'omarchy | omarchy-install-swallow | swallow-pkg\n' >"$T/swallow.txt"
+run --list "$T/swallow.txt" --apply
+check "exits 1" "$RC" "1"
+has "reported" "$OUT" "FAILED: omarchy omarchy-install-swallow"
+run --list "$T/swallow.txt"
+has "still pending on the next run" "$OUT" "would install: omarchy omarchy-install-swallow"
 
 echo "== a bad list installs nothing"
 for badline in \
