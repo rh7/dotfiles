@@ -24,7 +24,8 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
 | `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
 | `omarchy` | Omarchy 4 guest (Arch ARM in UTM) | standalone Home Manager (CLI only) | `omarchy.nix` |
-| — (no Nix) | ThinkPad on Omarchy (x86_64, hostname `omarchy`) | Omarchy app profile | `omarchy-apps.txt` via `scripts/omarchy-apply.sh` — see [Omarchy machines](#omarchy-machines) |
+| — (no Nix) | ThinkPad X1 on Omarchy (x86_64, hostname `omarchy`) | workstation (Omarchy app profile) | `omarchy-apps.txt` via `scripts/omarchy-apply.sh` — see [Omarchy machines](#omarchy-machines) |
+| — (no Nix) | MacBook Air M2 on Omarchy / Asahi (aarch64, hostname `omarchy-m2air`) | workstation (Omarchy app profile; `@aarch64` web-app stand-ins) | same |
 
 The Mac mini's attr and hostname become `rouvens-mac-mini-m4` (the live
 machine's name) with `chore/326-315-flake-hygiene`; until that merges the flake

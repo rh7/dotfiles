@@ -49,7 +49,8 @@ reset() {
 }
 run() {  # args...; sets OUT, RC
   OUT="$(cd "$T" && STATE="$T/state" HOME="$T/home" XDG_DATA_HOME="$T/home/.local/share" \
-    XDG_CONFIG_HOME="$T/home/.config" PATH="$STUBS:/usr/bin:/bin" bash "$SCRIPT" "$@" </dev/null 2>&1)"
+    XDG_CONFIG_HOME="$T/home/.config" OMARCHY_APPLY_ARCH="${ARCH:-x86_64}" \
+    PATH="$STUBS:/usr/bin:/bin" bash "$SCRIPT" "$@" </dev/null 2>&1)"
   RC=$?
 }
 calls() { cat "$T/state/calls"; }
@@ -65,18 +66,43 @@ webapp  | Notion | https://www.notion.so/
 webapp  | Mercury | https://app.mercury.com/home | https://example.com/m.png
 EOF
 
-echo "== the committed list is valid"
+echo "== the committed list is valid on both architectures"
+for ARCH in x86_64 aarch64; do
+  reset
+  run
+  check "plan over the real list exits 0 ($ARCH)" "$RC" "0"
+  has "plan reports the real list ($ARCH)" "$OUT" "entries for $ARCH in configurations/linux/omarchy-apps.txt"
+  check "plan writes nothing ($ARCH)" "$(calls)" ""
+done
+unset ARCH
+
+echo "== kind@arch applies only on that architecture"
+cat >"$T/arch.txt" <<'EOF'
+pkg            | everywhere
+pkg@x86_64     | intel-only
+webapp@aarch64 | Arm Stand-in | https://example.com/
+EOF
 reset
-run
-check "plan over the real list exits 0" "$RC" "0"
-has "plan reports the real list" "$OUT" "entries in configurations/linux/omarchy-apps.txt"
-check "plan writes nothing" "$(calls)" ""
+ARCH=x86_64 run --list "$T/arch.txt"
+has "x86_64: own line planned" "$OUT" "would install: pkg     intel-only"
+hasnt "x86_64: aarch64 line skipped" "$OUT" "Arm Stand-in"
+has "x86_64: skipped line counted" "$OUT" "2 entries for x86_64 in $T/arch.txt, 2 missing (1 for another architecture)"
+ARCH=aarch64 run --list "$T/arch.txt"
+has "aarch64: web-app stand-in planned" "$OUT" "would install: webapp  Arm Stand-in"
+hasnt "aarch64: x86_64 line skipped" "$OUT" "intel-only"
+for badline in 'pkg@arm64 | x' 'pkg@ | x'; do
+  reset
+  printf '%s\n' "$badline" >"$T/badarch.txt"
+  ARCH=aarch64 run --list "$T/badarch.txt"
+  check "unknown arch rejected: $badline" "$RC" "2"
+done
+
 
 echo "== plan"
 reset; echo already-here >"$T/state/installed"
 run --list "$T/list.txt"
 check "plan exits 0" "$RC" "0"
-has "counts missing" "$OUT" "7 entries in $T/list.txt, 6 missing"
+has "counts missing" "$OUT" "7 entries for x86_64 in $T/list.txt, 6 missing"
 has "lists an AUR package" "$OUT" "would install: aur     slack-desktop"
 hasnt "present package not listed" "$OUT" "already-here"
 check "plan writes nothing" "$(calls)" ""
