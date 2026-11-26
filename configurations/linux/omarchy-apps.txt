@@ -1,0 +1,84 @@
+# Omarchy app profile — what scripts/omarchy-apply.sh keeps installed on an
+# Omarchy machine (the ThinkPad). Additive only: deleting a line never
+# uninstalls anything (use `omarchy pkg drop <pkg>` / Remove > Web App).
+#
+# Derived 2026-11-24 from rouven-m5-pro's Homebrew casks and pwas.txt, checked
+# against Omarchy 4's own defaults (install/omarchy-base.packages + the web apps
+# it ships) and the Arch / AUR package indexes. NOT repeated here because
+# Omarchy installs them itself: Google Chrome, Obsidian, LocalSend, LibreOffice,
+# Docker, mise, Neovim, herdr, Superwhisper, mpv, Disktree, and the web apps
+# ChatGPT, Grok, WhatsApp, X, YouTube, Zoom, Discord, Google apps, HEY, Basecamp.
+#
+# One entry per line, fields separated by `|`:
+#   pkg     | <arch package>                       official repos or Omarchy's repo
+#   aur     | <aur package>                        built by yay; not vetted by Arch
+#   omarchy | <omarchy-install-* command [args]> | <package> or app:<launcher name>
+#           Omarchy's own installer (adds extensions, bar plugins, services);
+#           the third field is how we know it already ran.
+#   webapp  | <launcher name> | <https url> [| <https icon url>]
+#           icon omitted = fetched from the site.
+
+# ── Security / network ───────────────────────────────────────────────────────
+omarchy | omarchy-install-service-1password      | 1password
+omarchy | omarchy-install-service-tailscale      | tailscale
+pkg     | proton-vpn-gtk-app
+aur     | cryptomator-bin
+
+# ── Browsers (Chrome is an Omarchy default) ──────────────────────────────────
+omarchy | omarchy-install-browser firefox        | firefox
+omarchy | omarchy-install-browser brave          | brave-bin
+omarchy | omarchy-install-browser zen            | zen-browser-bin
+
+# ── Development ──────────────────────────────────────────────────────────────
+pkg     | ghostty
+omarchy | omarchy-install-editor-zed             | zed
+omarchy | omarchy-install-editor-vscode          | visual-studio-code-bin
+aur     | cursor-bin
+# aur   | termius                                # AUR package flagged out of date
+
+# ── AI (coding-agent CLIs come from Omarchy's mise / `omarchy agent`) ────────
+omarchy | omarchy-install-ai-claude              | claude-desktop
+pkg     | ollama
+# aur   | lmstudio-bin                           # only if the ThinkPad should run local models
+
+# ── CLI from modules/common.nix that Omarchy does not ship ───────────────────
+# (rg, fd, bat, eza, fzf, zoxide, jq, tldr, btop are Omarchy defaults)
+pkg     | github-cli
+pkg     | go-yq
+pkg     | age
+pkg     | sops
+pkg     | wget
+pkg     | tree
+pkg     | bottom
+
+# ── Communication (WhatsApp, Discord, Zoom are Omarchy web apps) ─────────────
+omarchy | omarchy-install-service-signal         | signal-desktop
+pkg     | telegram-desktop
+pkg     | element-desktop
+aur     | slack-desktop
+
+# ── Files / office ───────────────────────────────────────────────────────────
+omarchy | omarchy-install-service-dropbox        | dropbox
+omarchy | omarchy-install-service-microsoft      | app:Microsoft Word
+
+# ── Media ────────────────────────────────────────────────────────────────────
+pkg     | spotify-launcher
+pkg     | vlc
+
+# ── Web apps (Mac apps without a Linux build, plus pwas.txt) ─────────────────
+webapp  | Notion          | https://www.notion.so/
+webapp  | Superhuman      | https://mail.superhuman.com/
+webapp  | Proton Mail     | https://mail.proton.me/
+webapp  | Readwise Reader | https://read.readwise.io/
+webapp  | Pocket Casts    | https://play.pocketcasts.com/
+webapp  | CC              | https://cc.rh7labs.com/
+webapp  | Penumbra        | https://messaging.rh7labs.com/
+webapp  | Kubera          | https://app.kubera.com/
+webapp  | Mercury         | https://app.mercury.com/home
+webapp  | Replit          | https://replit.com/~
+
+# ── Not ported, on purpose ───────────────────────────────────────────────────
+# Mac-only, Omarchy has its own: iStat Menus (btop / top bar), TripMode,
+# GrandPerspective / PearCleaner / PureMac / DevCleaner (Disktree), OrbStack /
+# UTM (native Docker / KVM), GPG Suite (gnupg), Tunnelblick, Commander One.
+# No Linux client: Granola, Grammarly, Franz, Clockify desktop, Sonos.

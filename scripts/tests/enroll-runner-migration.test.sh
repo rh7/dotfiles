@@ -69,6 +69,16 @@ case "${1:-}" in
   *)  exit 2 ;;
 esac
 EOF
+# systemctl: a user unit is enabled iff $HOME/<unit>.enabled exists, so the
+# host's own systemd-user state never leaks into a sandbox HOME.
+cat > "$BIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "--user" ] && shift
+case "${1:-}" in
+  is-enabled) [ -f "$HOME/${2:-}.enabled" ] ;;
+  *) exit 0 ;;
+esac
+EOF
 # launchctl: loaded labels are files in $LC_STATE (system-domain jobs in
 # $LC_STATE/system); every call is logged.
 cat > "$BIN/launchctl" <<'EOF'
@@ -367,6 +377,15 @@ check "exits 0" "rc=$RC out: $OUT" test "$RC" -eq 0
 check "cron runs the clone's runner" "crontab: $(cat "$H/crontab")" \
   grep -qF "bash $H/dotfiles/scripts/collector-runner.sh # fleet-collector-runner" "$H/crontab"
 check "runner not downloaded" "curl: $(cat "$H/curl.log")" bash -c "! grep -q 'collector-runner\$' '$H/curl.log'"
+
+echo ""
+echo "enroll (Linux, Omarchy): an enabled fleet-audit.timer is the verified schedule"
+H="$(new_home enroll-timer)"
+touch "$H/fleet-audit.timer.enabled"
+enroll "$H" Linux
+check "exits 0" "rc=$RC out: $OUT" test "$RC" -eq 0
+check "reports the verified runner as installed" "out: $OUT" grep -q "verified collector-runner installed" <<<"$OUT"
+check "no cron line written" "writes: $(writes "$H")" test "$(writes "$H")" -eq 0
 
 echo ""
 echo "enroll (macOS, no clone): legacy com.rh7.audit host migrates on a PLAIN run"
