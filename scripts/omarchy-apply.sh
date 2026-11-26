@@ -157,8 +157,13 @@ fi
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 
 PKG_RE='^[a-z0-9@._+-]+$'
+# `kind@<arch>` limits a line to one CPU architecture (the M2 Air runs Omarchy
+# on Apple Silicon; some apps have no aarch64 Linux build). Validated on every
+# machine, applied only where the arch matches. Override is for the tests.
+MACHINE_ARCH="${OMARCHY_APPLY_ARCH:-$(uname -m)}"
 KIND=(); F1=(); F2=(); F3=(); LINENO_OF=()
 errors=0
+other_arch=0
 n=0
 line=""
 bad() { warn "$LIST_DESC line $n: $1: $line"; errors=$((errors + 1)); }
@@ -168,6 +173,11 @@ while IFS= read -r raw || [ -n "$raw" ]; do
   case "$line" in ''|'#'*) continue ;; esac
   IFS='|' read -r k a b c extra <<<"$line"
   k="$(trim "$k")"; a="$(trim "${a:-}")"; b="$(trim "${b:-}")"; c="$(trim "${c:-}")"
+  only_arch=""
+  if [[ $k == *@* ]]; then
+    only_arch="${k#*@}"; k="${k%%@*}"
+    case "$only_arch" in x86_64|aarch64) ;; *) bad "unknown architecture '$only_arch' (x86_64 or aarch64)"; continue ;; esac
+  fi
   [ -z "${extra:-}" ] || { bad "too many fields"; continue; }
   case "$k" in
     pkg|aur)
@@ -189,6 +199,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       [[ -z $c || $c =~ ^https://[^[:space:]]+$ ]] || { bad "icon must be an https URL"; continue; } ;;
     *) bad "unknown kind '$k'"; continue ;;
   esac
+  if [ -n "$only_arch" ] && [ "$only_arch" != "$MACHINE_ARCH" ]; then other_arch=$((other_arch + 1)); continue; fi
   KIND+=("$k"); F1+=("$a"); F2+=("$b"); F3+=("$c"); LINENO_OF+=("$n")
 done <<<"$LIST_TEXT"
 
@@ -229,7 +240,9 @@ for i in ${KIND[@]+"${!KIND[@]}"}; do
   present "$i" || missing+=("$i")
 done
 
-say "omarchy-apply: ${#KIND[@]} entries in $LIST_DESC, ${#missing[@]} missing"
+arch_note=""
+[ "$other_arch" -eq 0 ] || arch_note=" ($other_arch for another architecture)"
+say "omarchy-apply: ${#KIND[@]} entries for $MACHINE_ARCH in $LIST_DESC, ${#missing[@]} missing$arch_note"
 if [ "${#missing[@]}" -eq 0 ]; then exit 0; fi
 
 if [ "$MODE" = plan ]; then
