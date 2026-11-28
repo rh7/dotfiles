@@ -13,6 +13,7 @@
     "reader"  # Readwise Reader
     # ulysses, remarkable — Mac App Store only
     "grammarly-desktop"
+    "localsend"  # AirDrop-like transfer with the Omarchy machines (Omarchy ships it; nixos/profiles/productivity.nix too)
     # NO "tripmode" cask here — deliberately. Its installer raises a system
     # extension approval dialog that hangs `brew bundle` during activation
     # (already hit once; see the note in core.nix). Declaring it would hang
