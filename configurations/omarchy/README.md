@@ -38,7 +38,8 @@ than quietly getting less.
 | `web-apps` | the owner's web apps (Mac apps with no Linux build, plus `pwas.txt`) |
 
 A new machine: add `hosts/<hostname>.txt` with the profiles it needs, then run
-the script there. A VM usually wants only `base-cli` and `dev`.
+the script there (`--apply`, then `--install` once: post-update hook, daily
+audit timer, and the machine's SSH key `~/.ssh/id_ed25519` if it has none). A VM usually wants only `base-cli` and `dev`.
 
 ## Line format
 

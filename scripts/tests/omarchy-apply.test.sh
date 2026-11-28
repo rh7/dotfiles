@@ -363,6 +363,23 @@ has "timer catches up missed runs" "$(cat "$timer")" "Persistent=true"
 has "service runs the collector runner" "$(cat "$service")" "scripts/collector-runner.sh"
 has "timer enabled under the name fleet-fix/enroll recognise" "$(calls)" "systemctl --user enable --now fleet-audit.timer"
 
+echo "== --install creates the machine's SSH key once, never replaces one"
+reset
+HOSTN=box run --install
+key="$T/home/.ssh/id_ed25519"
+if [ -f "$key" ] && [ -f "$key.pub" ]; then ok "key pair created"; else bad "key pair created" "$OUT"; fi
+has "key comment is user@host" "$(cat "$key.pub" 2>/dev/null)" "@box"
+check "private key is 600" "$(stat -c %a "$key" 2>/dev/null)" "600"
+check ".ssh is 700" "$(stat -c %a "$T/home/.ssh" 2>/dev/null)" "700"
+fp="$(cat "$key.pub")"
+HOSTN=box run --install
+has "second run leaves it" "$OUT" "exists, left as is"
+check "same key after second run" "$(cat "$key.pub")" "$fp"
+reset; mkdir -p "$T/home/.ssh"; echo "ssh-ed25519 AAAA existing" >"$T/home/.ssh/id_ed25519.pub"
+HOSTN=box run --install
+check "a lone existing .pub is not overwritten" "$(cat "$T/home/.ssh/id_ed25519.pub")" "ssh-ed25519 AAAA existing"
+if [ -e "$T/home/.ssh/id_ed25519" ]; then bad "no private key written next to a foreign .pub"; else ok "no private key written next to a foreign .pub"; fi
+
 echo
 echo "omarchy-apply: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
