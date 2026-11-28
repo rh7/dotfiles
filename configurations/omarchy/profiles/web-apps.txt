@@ -1,0 +1,12 @@
+# web-apps — the owner's web apps: Mac apps without a Linux build, plus pwas.txt.
+
+webapp  | Notion          | https://www.notion.so/
+webapp  | Superhuman      | https://mail.superhuman.com/
+webapp  | Proton Mail     | https://mail.proton.me/
+webapp  | Readwise Reader | https://read.readwise.io/
+webapp  | Pocket Casts    | https://play.pocketcasts.com/
+webapp  | CC              | https://cc.rh7labs.com/
+webapp  | Penumbra        | https://messaging.rh7labs.com/
+webapp  | Kubera          | https://app.kubera.com/
+webapp  | Mercury         | https://app.mercury.com/home
+webapp  | Replit          | https://replit.com/~

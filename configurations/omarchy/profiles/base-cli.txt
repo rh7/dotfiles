@@ -1,0 +1,15 @@
+# base-cli — every Omarchy machine, VMs included: what the fleet needs to reach
+# and audit it, plus the CLI from modules/common.nix that Omarchy does not ship
+# (rg, fd, bat, eza, fzf, zoxide, jq, tldr, btop are Omarchy defaults).
+# Format: configurations/omarchy/README.md.
+
+# Tailscale: the config service is reachable only over the tailnet.
+omarchy | omarchy-install-service-tailscale      | tailscale
+
+pkg     | github-cli
+pkg     | go-yq
+pkg     | age
+pkg     | sops
+pkg     | wget
+pkg     | tree
+pkg     | bottom

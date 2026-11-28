@@ -1,0 +1,5 @@
+# default — a machine with no host file of its own (a new VM, or a machine whose
+# hostname changed). Only what the fleet needs; add hosts/<hostname>.txt to give
+# it more. omarchy-apply.sh warns whenever it falls back to this file.
+
+profile | base-cli

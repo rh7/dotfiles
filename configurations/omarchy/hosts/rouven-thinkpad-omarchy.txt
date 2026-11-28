@@ -1,0 +1,8 @@
+# rouven-thinkpad-omarchy — ThinkPad X1 on Omarchy (x86_64).
+
+profile | base-cli
+profile | desktop
+profile | dev
+profile | comms
+profile | media
+profile | web-apps

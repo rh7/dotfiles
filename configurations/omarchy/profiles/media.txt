@@ -1,0 +1,5 @@
+# media
+
+pkg@x86_64     | spotify
+webapp@aarch64 | Spotify | https://open.spotify.com/
+pkg     | vlc

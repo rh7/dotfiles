@@ -1,0 +1,7 @@
+# comms — messaging. WhatsApp, Discord, Zoom are Omarchy web apps.
+
+omarchy | omarchy-install-service-signal         | signal-desktop
+pkg     | telegram-desktop
+pkg@x86_64     | element-desktop
+webapp@aarch64 | Element | https://app.element.io/
+pkg     | slack-desktop

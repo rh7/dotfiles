@@ -1,0 +1,10 @@
+# desktop — a machine a person sits at: passwords, browsers, files.
+# Chrome is an Omarchy default.
+
+omarchy | omarchy-install-service-1password      | 1password
+omarchy | omarchy-install-browser firefox        | firefox
+omarchy | omarchy-install-browser brave          | brave-bin
+omarchy | omarchy-install-browser zen            | zen-browser-bin
+omarchy | omarchy-install-service-dropbox        | dropbox
+# Proton VPN, Cryptomator: dropped by the owner 2026-11-26.
+# Microsoft 365 web apps: dropped by the owner 2026-11-26.

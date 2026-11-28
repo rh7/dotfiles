@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# scripts/omarchy-apply.sh — keep an Omarchy machine carrying the apps listed in
-# configurations/linux/omarchy-apps.txt.
+# scripts/omarchy-apply.sh — keep an Omarchy machine carrying the apps its host
+# file lists: configurations/omarchy/hosts/<hostname>.txt, which names profiles
+# in configurations/omarchy/profiles/ (see configurations/omarchy/README.md).
 #
 #   omarchy-apply.sh                  plan: show what is missing, change nothing
 #   omarchy-apply.sh --apply          install what is missing
@@ -8,7 +9,8 @@
 #   omarchy-apply.sh --install        install the post-update hook + the daily audit timer
 #   omarchy-apply.sh --from-hook      what the post-update hook runs: fetch origin,
 #                                     then --apply --ref origin/main
-#   omarchy-apply.sh --list <file>    use another list file
+#   omarchy-apply.sh --host <name>    plan or apply another host's list (default: this hostname)
+#   omarchy-apply.sh --list <file>    use one list file instead of a host file
 #
 # THE DIVISION OF LABOUR: Omarchy owns the desktop and does every install. This
 # script only decides WHAT is missing and hands it to Omarchy's own tools —
@@ -39,7 +41,12 @@
 set -euo pipefail
 
 REPO_ROOT="${OMARCHY_APPLY_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-LIST_REL="configurations/linux/omarchy-apps.txt"
+OMARCHY_REL="configurations/omarchy"
+HOSTS_REL="$OMARCHY_REL/hosts"
+PROFILES_REL="$OMARCHY_REL/profiles"
+# The single list every machine shared before host files; read only from a
+# commit that has no hosts/ directory yet.
+LEGACY_LIST_REL="configurations/linux/omarchy-apps.txt"
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # The name fleet-fix.sh and enroll.sh already recognise as a Linux audit
@@ -55,24 +62,28 @@ HOOK_NAME="rh7-apps"
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'omarchy-apply: %s\n' "$*" >&2; }
-usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 MODE=plan
 REF=""
 LIST_FILE=""
 FROM_HOOK=0
+HOST="${OMARCHY_APPLY_HOST:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) MODE=apply ;;
     --install) MODE=install ;;
     --from-hook) MODE=apply; FROM_HOOK=1 ;;
     --ref) [ $# -ge 2 ] || { usage >&2; exit 64; }; REF="$2"; shift ;;
+    --host) [ $# -ge 2 ] || { usage >&2; exit 64; }; HOST="$2"; shift ;;
     --list) [ $# -ge 2 ] || { usage >&2; exit 64; }; LIST_FILE="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) warn "unknown argument: $1"; usage >&2; exit 64 ;;
   esac
   shift
 done
+[ -n "$HOST" ] || HOST="$(hostnamectl hostname 2>/dev/null || uname -n)"
+HOST="${HOST%%.*}"
 
 # ── --install: post-update hook + daily audit timer ─────────────────────────
 install_hook_and_timer() {
@@ -84,7 +95,7 @@ install_hook_and_timer() {
   trap "rm -rf '$tmp'" RETURN
   {
     printf '#!/bin/bash\n'
-    printf '# rh7/dotfiles: keep the apps in %s installed after every omarchy update.\n' "$LIST_REL"
+    printf '# rh7/dotfiles: keep the apps in %s installed after every omarchy update.\n' "$HOSTS_REL/<hostname>.txt"
     printf '# Written by scripts/omarchy-apply.sh --install; re-run that to refresh it.\n'
     printf 'script=%q\n' "$REPO_ROOT/scripts/omarchy-apply.sh"
     # shellcheck disable=SC2016
@@ -130,6 +141,12 @@ if [ "$MODE" = install ]; then
 fi
 
 # ── Read the list ────────────────────────────────────────────────────────────
+# A machine's list is its host file, configurations/omarchy/hosts/<hostname>.txt.
+# A host file holds `profile | <name>` lines (each pulls in
+# configurations/omarchy/profiles/<name>.txt) and may add lines of its own.
+# Profiles hold only app lines: they cannot pull in other profiles. An app that
+# appears in two profiles is installed once. A machine with no host file gets
+# hosts/default.txt and a warning: it is not in the fleet's list yet.
 if [ "$FROM_HOOK" -eq 1 ]; then
   # New lines merged to main reach this machine on its next `omarchy update`
   # without anyone pulling the checkout. The list is read from the fetched ref,
@@ -140,68 +157,116 @@ if [ "$FROM_HOOK" -eq 1 ]; then
   REF="origin/main"
 fi
 
+# read_rel <path relative to the repo> — from $REF when set, else the working tree.
+read_rel() {
+  if [ -n "$REF" ]; then
+    git -C "$REPO_ROOT" show "$REF:$1" 2>/dev/null
+  else
+    [ -r "$REPO_ROOT/$1" ] && cat "$REPO_ROOT/$1"
+  fi
+}
+exists_rel() {
+  if [ -n "$REF" ]; then
+    git -C "$REPO_ROOT" cat-file -e "$REF:$1" 2>/dev/null
+  else
+    [ -e "$REPO_ROOT/$1" ]
+  fi
+}
+src_prefix() { [ -n "$REF" ] && printf '%s:' "$REF"; return 0; }
+
+[[ $HOST =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { warn "bad hostname '$HOST'"; exit 2; }
+HOST_NOTE=""
 if [ -n "$LIST_FILE" ]; then
   [ -r "$LIST_FILE" ] || { warn "cannot read $LIST_FILE"; exit 2; }
   LIST_TEXT="$(cat "$LIST_FILE")"
   LIST_DESC="$LIST_FILE"
-elif [ -n "$REF" ]; then
-  LIST_TEXT="$(git -C "$REPO_ROOT" show "$REF:$LIST_REL" 2>/dev/null)" \
-    || { warn "cannot read $LIST_REL at $REF"; exit 2; }
-  LIST_DESC="$REF:$LIST_REL"
+elif ! exists_rel "$HOSTS_REL" && exists_rel "$LEGACY_LIST_REL"; then
+  # A commit from before host files existed (a checkout on this version
+  # reading an older origin/main): its one flat list is every machine's list.
+  LIST_TEXT="$(read_rel "$LEGACY_LIST_REL")"
+  LIST_DESC="$(src_prefix)$LEGACY_LIST_REL"
+  HOST_NOTE="legacy flat list"
 else
-  [ -r "$REPO_ROOT/$LIST_REL" ] || { warn "cannot read $REPO_ROOT/$LIST_REL"; exit 2; }
-  LIST_TEXT="$(cat "$REPO_ROOT/$LIST_REL")"
-  LIST_DESC="$LIST_REL"
+  host_rel="$HOSTS_REL/$HOST.txt"
+  if ! exists_rel "$host_rel"; then
+    host_rel="$HOSTS_REL/default.txt"
+    HOST_NOTE="no host file for '$HOST' — using default (add $HOSTS_REL/$HOST.txt)"
+    warn "$HOST_NOTE"
+  fi
+  LIST_TEXT="$(read_rel "$host_rel")" || { warn "cannot read $(src_prefix)$host_rel"; exit 2; }
+  LIST_DESC="$(src_prefix)$host_rel"
 fi
 
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 
 PKG_RE='^[a-z0-9@._+-]+$'
+PROFILE_RE='^[a-z0-9][a-z0-9-]*$'
 # `kind@<arch>` limits a line to one CPU architecture (the M2 Air runs Omarchy
 # on Apple Silicon; some apps have no aarch64 Linux build). Validated on every
 # machine, applied only where the arch matches. Override is for the tests.
 MACHINE_ARCH="${OMARCHY_APPLY_ARCH:-$(uname -m)}"
-KIND=(); F1=(); F2=(); F3=(); LINENO_OF=()
+KIND=(); F1=(); F2=(); F3=(); SRC_OF=()
+declare -A SEEN=()
+PROFILES_USED=()
 errors=0
 other_arch=0
-n=0
-line=""
-bad() { warn "$LIST_DESC line $n: $1: $line"; errors=$((errors + 1)); }
-while IFS= read -r raw || [ -n "$raw" ]; do
-  n=$((n + 1))
-  line="$(trim "$raw")"
-  case "$line" in ''|'#'*) continue ;; esac
-  IFS='|' read -r k a b c extra <<<"$line"
-  k="$(trim "$k")"; a="$(trim "${a:-}")"; b="$(trim "${b:-}")"; c="$(trim "${c:-}")"
-  only_arch=""
-  if [[ $k == *@* ]]; then
-    only_arch="${k#*@}"; k="${k%%@*}"
-    case "$only_arch" in x86_64|aarch64) ;; *) bad "unknown architecture '$only_arch' (x86_64 or aarch64)"; continue ;; esac
-  fi
-  [ -z "${extra:-}" ] || { bad "too many fields"; continue; }
-  case "$k" in
-    pkg|aur)
-      [[ $a =~ $PKG_RE ]] || { bad "not a package name"; continue; }
-      [ -z "$b" ] || { bad "$k takes one field"; continue; } ;;
-    omarchy)
-      read -ra words <<<"$a"
-      [[ ${words[0]:-} =~ ^omarchy-install-[a-z0-9-]+$ ]] || { bad "must name an omarchy-install-* command"; continue; }
-      for w in "${words[@]:1}"; do [[ $w =~ ^[a-z0-9._-]+$ ]] || { bad "unsafe installer argument '$w'"; continue 2; }; done
-      if [[ $b == app:* ]]; then
-        [[ -n ${b#app:} && ${b#app:} != */* ]] || { bad "bad app: presence check"; continue; }
-      else
-        [[ $b =~ $PKG_RE ]] || { bad "needs a presence check: <package> or app:<launcher name>"; continue; }
-      fi
-      [ -z "$c" ] || { bad "omarchy takes two fields"; continue; } ;;
-    webapp)
-      [[ -n $a && $a != */* ]] || { bad "launcher name must be non-empty without '/'"; continue; }
-      [[ $b =~ ^https://[^[:space:]]+$ ]] || { bad "web app URL must be https"; continue; }
-      [[ -z $c || $c =~ ^https://[^[:space:]]+$ ]] || { bad "icon must be an https URL"; continue; } ;;
-    *) bad "unknown kind '$k'"; continue ;;
-  esac
-  if [ -n "$only_arch" ] && [ "$only_arch" != "$MACHINE_ARCH" ]; then other_arch=$((other_arch + 1)); continue; fi
-  KIND+=("$k"); F1+=("$a"); F2+=("$b"); F3+=("$c"); LINENO_OF+=("$n")
-done <<<"$LIST_TEXT"
+
+# `bad` reads parse's locals (bash scopes dynamically), so inside a nested
+# profile it names the profile's file and line, and the host file's after.
+bad() { warn "$desc line $n: $1: $line"; errors=$((errors + 1)); }
+# parse <description> <text> <may include profiles: 1|0>
+parse() {
+  local desc="$1" text="$2" includes="$3" n=0 raw line k a b c extra only_arch key ptext w words
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    n=$((n + 1))
+    line="$(trim "$raw")"
+    case "$line" in ''|'#'*) continue ;; esac
+    IFS='|' read -r k a b c extra <<<"$line"
+    k="$(trim "$k")"; a="$(trim "${a:-}")"; b="$(trim "${b:-}")"; c="$(trim "${c:-}")"
+    if [ "$k" = profile ]; then
+      [ "$includes" = 1 ] || { bad "a profile cannot pull in another profile"; continue; }
+      [[ $a =~ $PROFILE_RE ]] || { bad "not a profile name"; continue; }
+      [ -z "$b" ] && [ -z "${extra:-}" ] || { bad "profile takes one field"; continue; }
+      exists_rel "$PROFILES_REL/$a.txt" || { bad "no such profile ($PROFILES_REL/$a.txt)"; continue; }
+      ptext="$(read_rel "$PROFILES_REL/$a.txt")"
+      PROFILES_USED+=("$a")
+      parse "$(src_prefix)$PROFILES_REL/$a.txt" "$ptext" 0
+      continue
+    fi
+    only_arch=""
+    if [[ $k == *@* ]]; then
+      only_arch="${k#*@}"; k="${k%%@*}"
+      case "$only_arch" in x86_64|aarch64) ;; *) bad "unknown architecture '$only_arch' (x86_64 or aarch64)"; continue ;; esac
+    fi
+    [ -z "${extra:-}" ] || { bad "too many fields"; continue; }
+    case "$k" in
+      pkg|aur)
+        [[ $a =~ $PKG_RE ]] || { bad "not a package name"; continue; }
+        [ -z "$b" ] || { bad "$k takes one field"; continue; } ;;
+      omarchy)
+        read -ra words <<<"$a"
+        [[ ${words[0]:-} =~ ^omarchy-install-[a-z0-9-]+$ ]] || { bad "must name an omarchy-install-* command"; continue; }
+        for w in "${words[@]:1}"; do [[ $w =~ ^[a-z0-9._-]+$ ]] || { bad "unsafe installer argument '$w'"; continue 2; }; done
+        if [[ $b == app:* ]]; then
+          [[ -n ${b#app:} && ${b#app:} != */* ]] || { bad "bad app: presence check"; continue; }
+        else
+          [[ $b =~ $PKG_RE ]] || { bad "needs a presence check: <package> or app:<launcher name>"; continue; }
+        fi
+        [ -z "$c" ] || { bad "omarchy takes two fields"; continue; } ;;
+      webapp)
+        [[ -n $a && $a != */* ]] || { bad "launcher name must be non-empty without '/'"; continue; }
+        [[ $b =~ ^https://[^[:space:]]+$ ]] || { bad "web app URL must be https"; continue; }
+        [[ -z $c || $c =~ ^https://[^[:space:]]+$ ]] || { bad "icon must be an https URL"; continue; } ;;
+      *) bad "unknown kind '$k'"; continue ;;
+    esac
+    if [ -n "$only_arch" ] && [ "$only_arch" != "$MACHINE_ARCH" ]; then other_arch=$((other_arch + 1)); continue; fi
+    key="$k|$a"
+    [ -z "${SEEN[$key]+x}" ] || continue
+    SEEN[$key]=1
+    KIND+=("$k"); F1+=("$a"); F2+=("$b"); F3+=("$c"); SRC_OF+=("$desc line $n")
+  done <<<"$text"
+}
+parse "$LIST_DESC" "$LIST_TEXT" 1
 
 if [ "$errors" -gt 0 ]; then
   warn "$errors invalid line(s) in $LIST_DESC — nothing installed"
@@ -242,7 +307,13 @@ done
 
 arch_note=""
 [ "$other_arch" -eq 0 ] || arch_note=" ($other_arch for another architecture)"
+profile_note=""
+[ "${#PROFILES_USED[@]}" -eq 0 ] || profile_note=" (profiles: ${PROFILES_USED[*]})"
+say "omarchy-apply: host $HOST$profile_note"
 say "omarchy-apply: ${#KIND[@]} entries for $MACHINE_ARCH in $LIST_DESC, ${#missing[@]} missing$arch_note"
+if [ "$FROM_HOOK" -eq 1 ] && [[ $HOST_NOTE == no\ host\ file* ]] && command -v notify-send >/dev/null 2>&1; then
+  notify-send "rh7 apps" "$HOST_NOTE" || true
+fi
 if [ "${#missing[@]}" -eq 0 ]; then exit 0; fi
 
 if [ "$MODE" = plan ]; then
@@ -305,7 +376,7 @@ for i in "${missing[@]}"; do
     [ "${KIND[$i]}" != omarchy ] || rm -f "$(failed_marker "${F1[$i]}")"
     done_+=("$(label "$i")")
   else
-    failed+=("$(label "$i") (line ${LINENO_OF[$i]}, exit $rc)")
+    failed+=("$(label "$i") (${SRC_OF[$i]}, exit $rc)")
   fi
 done
 
