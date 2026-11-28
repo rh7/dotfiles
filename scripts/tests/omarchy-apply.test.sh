@@ -125,6 +125,37 @@ has "warns" "$OUT" "no host file for 'newvm' — using default"
 has "reads default" "$OUT" "2 entries for x86_64 in configurations/omarchy/hosts/default.txt"
 hasnt "nothing from gui" "$OUT" "gui-a"
 
+echo "== review fixes: case, refs, conflicts, extra fields, empty lists"
+reset
+REPO="$R" HOSTN=Box run
+check "uppercase hostname is lowercased" "$RC" "0"
+has "reads box.txt" "$OUT" "hosts/box.txt"
+REPO="$R" HOSTN=box run --ref no-such-ref
+check "unresolvable ref: exit 2" "$RC" "2"
+has "names the ref, not a missing host file" "$OUT" "ref 'no-such-ref' does not resolve"
+hasnt "no misleading host-file warning" "$OUT" "no host file"
+R3="$T/r3"; rm -rf "$R3"; mkrepo "$R3"
+printf 'webapp | Notion | https://a.example/\n' >"$R3/configurations/omarchy/profiles/base.txt"
+printf 'webapp | Notion | https://b.example/\n' >"$R3/configurations/omarchy/profiles/gui.txt"
+REPO="$R3" HOSTN=box run --apply
+check "same app, different URL in two profiles: exit 2" "$RC" "2"
+has "conflict names the earlier line" "$OUT" "conflicts with an earlier 'webapp | Notion' line"
+check "conflict: nothing installed" "$(calls)" ""
+mkrepo "$R3"
+printf 'omarchy | omarchy-install-browser  firefox | firefox\n' >"$R3/configurations/omarchy/profiles/base.txt"
+printf 'omarchy | omarchy-install-browser firefox | firefox\n' >"$R3/configurations/omarchy/profiles/gui.txt"
+REPO="$R3" HOSTN=box run
+check "installer spacing does not defeat dedup" "$(grep -c 'would install: omarchy' <<<"$OUT")" "1"
+for badline in 'pkg | zz | | ignored' 'profile | base | | junk'; do
+  mkrepo "$R3"; printf '%s\n' "$badline" >"$R3/configurations/omarchy/hosts/box.txt"
+  REPO="$R3" HOSTN=box run
+  check "extra field rejected: $badline" "$RC" "2"
+done
+mkrepo "$R3"; : >"$R3/configurations/omarchy/hosts/box.txt"
+REPO="$R3" HOSTN=box run
+check "empty host file: exit 0" "$RC" "0"
+has "empty host file: warned" "$OUT" "lists no apps"
+
 echo "== profile mistakes install nothing"
 reset; R2="$T/r2"; rm -rf "$R2"; mkrepo "$R2"
 printf 'profile | base\npkg | gui-a\n' >"$R2/configurations/omarchy/profiles/gui.txt"

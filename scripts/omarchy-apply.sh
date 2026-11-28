@@ -83,7 +83,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$HOST" ] || HOST="$(hostnamectl hostname 2>/dev/null || uname -n)"
+# The short name, lowercased: host files are named in lowercase, and a
+# hostname is case-insensitive (`Rouven-ThinkPad` and `rouven-thinkpad` are one machine).
 HOST="${HOST%%.*}"
+HOST="${HOST,,}"
 
 # ── --install: post-update hook + daily audit timer ─────────────────────────
 install_hook_and_timer() {
@@ -174,7 +177,13 @@ exists_rel() {
 }
 src_prefix() { [ -n "$REF" ] && printf '%s:' "$REF"; return 0; }
 
-[[ $HOST =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { warn "bad hostname '$HOST'"; exit 2; }
+[[ $HOST =~ ^[a-z0-9][a-z0-9-]*$ ]] || { warn "bad hostname '$HOST'"; exit 2; }
+# 4: a ref that does not resolve would read as "no host file" — say what is wrong.
+if [ -n "$REF" ] && ! git -C "$REPO_ROOT" rev-parse --quiet --verify "$REF^{commit}" >/dev/null; then
+  warn "ref '$REF' does not resolve in $REPO_ROOT"
+  [ "$FROM_HOOK" -eq 0 ] || ! command -v notify-send >/dev/null 2>&1 || notify-send "rh7 apps" "cannot read $REF — nothing installed" || true
+  exit 2
+fi
 HOST_NOTE=""
 if [ -n "$LIST_FILE" ]; then
   [ -r "$LIST_FILE" ] || { warn "cannot read $LIST_FILE"; exit 2; }
@@ -183,7 +192,7 @@ if [ -n "$LIST_FILE" ]; then
 elif ! exists_rel "$HOSTS_REL" && exists_rel "$LEGACY_LIST_REL"; then
   # A commit from before host files existed (a checkout on this version
   # reading an older origin/main): its one flat list is every machine's list.
-  LIST_TEXT="$(read_rel "$LEGACY_LIST_REL")"
+  LIST_TEXT="$(read_rel "$LEGACY_LIST_REL")" || { warn "cannot read $(src_prefix)$LEGACY_LIST_REL"; exit 2; }
   LIST_DESC="$(src_prefix)$LEGACY_LIST_REL"
   HOST_NOTE="legacy flat list"
 else
@@ -206,7 +215,7 @@ PROFILE_RE='^[a-z0-9][a-z0-9-]*$'
 # machine, applied only where the arch matches. Override is for the tests.
 MACHINE_ARCH="${OMARCHY_APPLY_ARCH:-$(uname -m)}"
 KIND=(); F1=(); F2=(); F3=(); SRC_OF=()
-declare -A SEEN=()
+declare -A SEEN=() SEEN_SRC=()
 PROFILES_USED=()
 errors=0
 other_arch=0
@@ -226,9 +235,9 @@ parse() {
     if [ "$k" = profile ]; then
       [ "$includes" = 1 ] || { bad "a profile cannot pull in another profile"; continue; }
       [[ $a =~ $PROFILE_RE ]] || { bad "not a profile name"; continue; }
-      [ -z "$b" ] && [ -z "${extra:-}" ] || { bad "profile takes one field"; continue; }
+      [ -z "$b" ] && [ -z "$c" ] && [ -z "${extra:-}" ] || { bad "profile takes one field"; continue; }
       exists_rel "$PROFILES_REL/$a.txt" || { bad "no such profile ($PROFILES_REL/$a.txt)"; continue; }
-      ptext="$(read_rel "$PROFILES_REL/$a.txt")"
+      ptext="$(read_rel "$PROFILES_REL/$a.txt")" || { bad "cannot read $(src_prefix)$PROFILES_REL/$a.txt"; continue; }
       PROFILES_USED+=("$a")
       parse "$(src_prefix)$PROFILES_REL/$a.txt" "$ptext" 0
       continue
@@ -242,11 +251,12 @@ parse() {
     case "$k" in
       pkg|aur)
         [[ $a =~ $PKG_RE ]] || { bad "not a package name"; continue; }
-        [ -z "$b" ] || { bad "$k takes one field"; continue; } ;;
+        [ -z "$b" ] && [ -z "$c" ] || { bad "$k takes one field"; continue; } ;;
       omarchy)
         read -ra words <<<"$a"
         [[ ${words[0]:-} =~ ^omarchy-install-[a-z0-9-]+$ ]] || { bad "must name an omarchy-install-* command"; continue; }
         for w in "${words[@]:1}"; do [[ $w =~ ^[a-z0-9._-]+$ ]] || { bad "unsafe installer argument '$w'"; continue 2; }; done
+        a="${words[*]}"
         if [[ $b == app:* ]]; then
           [[ -n ${b#app:} && ${b#app:} != */* ]] || { bad "bad app: presence check"; continue; }
         else
@@ -261,8 +271,14 @@ parse() {
     esac
     if [ -n "$only_arch" ] && [ "$only_arch" != "$MACHINE_ARCH" ]; then other_arch=$((other_arch + 1)); continue; fi
     key="$k|$a"
-    [ -z "${SEEN[$key]+x}" ] || continue
-    SEEN[$key]=1
+    if [ -n "${SEEN[$key]+x}" ]; then
+      # The same app twice is fine (two profiles may share it); the same app
+      # with a different URL/check is a contradiction, and which one wins
+      # would depend on profile order.
+      [ "${SEEN[$key]}" = "$b|$c" ] || bad "conflicts with an earlier '$k | $a' line (${SEEN_SRC[$key]})"
+      continue
+    fi
+    SEEN[$key]="$b|$c"; SEEN_SRC[$key]="$desc line $n"
     KIND+=("$k"); F1+=("$a"); F2+=("$b"); F3+=("$c"); SRC_OF+=("$desc line $n")
   done <<<"$text"
 }
@@ -271,6 +287,9 @@ parse "$LIST_DESC" "$LIST_TEXT" 1
 if [ "$errors" -gt 0 ]; then
   warn "$errors invalid line(s) in $LIST_DESC — nothing installed"
   exit 2
+fi
+if [ "${#KIND[@]}" -eq 0 ] && [ "$other_arch" -eq 0 ]; then
+  warn "$LIST_DESC lists no apps — is it truncated?"
 fi
 
 # ── Presence ─────────────────────────────────────────────────────────────────
