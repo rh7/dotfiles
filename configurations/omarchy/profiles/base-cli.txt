@@ -13,3 +13,5 @@ pkg     | sops
 pkg     | wget
 pkg     | tree
 pkg     | bottom
+# nano: Omarchy ships only nvim/vim/vi as terminal editors.
+pkg     | nano
