@@ -31,7 +31,7 @@ than quietly getting less.
 | Profile | For |
 |---------|-----|
 | `base-cli` | every machine, VMs included: Tailscale (the fleet reaches the config service over it) and the CLI tools from `modules/common.nix` Omarchy does not ship |
-| `desktop` | a machine a person sits at: 1Password, browsers, Dropbox |
+| `desktop` | a machine a person sits at: 1Password, browsers, Dropbox (x86_64; rclone on aarch64) |
 | `dev` | Ghostty, Zed, Cursor, Claude desktop, Herdr desktop app, Ollama, Termius (x86_64) |
 | `comms` | Signal, Telegram, Element, Slack |
 | `media` | Spotify, VLC |
