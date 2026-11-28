@@ -7,5 +7,7 @@ pkg     | cursor-bin
 omarchy | omarchy-install-ai-claude              | claude-desktop
 pkg     | ollama
 # VS Code: dropped by the owner 2026-11-26 (Zed + Cursor).
-# aur   | termius                                # AUR package flagged out of date
+# Termius: AUR only, x86_64 only (no aarch64 Linux build), so the ThinkPad gets
+# it and the M2 Air skips it. The AUR package lags upstream (flagged out of date).
+aur@x86_64 | termius
 # aur   | lmstudio-bin                           # only if a machine should run local models
