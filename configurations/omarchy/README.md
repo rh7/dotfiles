@@ -32,7 +32,7 @@ than quietly getting less.
 |---------|-----|
 | `base-cli` | every machine, VMs included: Tailscale (the fleet reaches the config service over it) and the CLI tools from `modules/common.nix` Omarchy does not ship |
 | `desktop` | a machine a person sits at: 1Password, browsers, Dropbox |
-| `dev` | Ghostty, Zed, Cursor, Claude desktop, Herdr desktop app, Ollama |
+| `dev` | Ghostty, Zed, Cursor, Claude desktop, Herdr desktop app, Ollama, Termius (x86_64) |
 | `comms` | Signal, Telegram, Element, Slack |
 | `media` | Spotify, VLC |
 | `web-apps` | the owner's web apps (Mac apps with no Linux build, plus `pwas.txt`) |
