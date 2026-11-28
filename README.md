@@ -24,8 +24,8 @@ gets sops-nix secrets (`needsSecrets = true`) unless marked otherwise.
 | `thinkpad` | ThinkPad (x86_64) | workstation-linux (NixOS) | `thinkpad.nix`, `home-assistant.nix` |
 | `linux`, `linux-rouven`, `linux-x86` | OrbStack VM / servers | standalone Home Manager | — |
 | `omarchy` | Omarchy 4 guest (Arch ARM in UTM) | standalone Home Manager (CLI only) | `omarchy.nix` |
-| — (no Nix) | ThinkPad X1 on Omarchy (x86_64, hostname `omarchy`) | workstation (Omarchy app profile) | `omarchy-apps.txt` via `scripts/omarchy-apply.sh` — see [Omarchy machines](#omarchy-machines) |
-| — (no Nix) | MacBook Air M2 on Omarchy / Asahi (aarch64, hostname `omarchy-m2air`) | workstation (Omarchy app profile; `@aarch64` web-app stand-ins) | same |
+| — (no Nix) | ThinkPad X1 on Omarchy (x86_64, hostname `rouven-thinkpad-omarchy`; live as `omarchy` until renamed) | workstation (Omarchy app profiles) | `configurations/omarchy/hosts/rouven-thinkpad-omarchy.txt` via `scripts/omarchy-apply.sh` — see [Omarchy machines](#omarchy-machines) |
+| — (no Nix) | MacBook Air M2, Omarchy / Asahi side of the dual boot (aarch64, hostname `rouven-air-m2-omarchy`; the macOS side is `rouven-air-m2`) | workstation (Omarchy app profiles; `@aarch64` web-app stand-ins) | `configurations/omarchy/hosts/rouven-air-m2-omarchy.txt`, same script |
 
 The Mac mini's attr and hostname become `rouvens-mac-mini-m4` (the live
 machine's name) with `chore/326-315-flake-hygiene`; until that merges the flake
@@ -551,10 +551,15 @@ once per app (each native app has its own cookie jar).
 ## Omarchy machines
 
 On an Omarchy machine Omarchy owns the desktop, the packages and the updates;
-this repo only declares **which apps** it should carry, in
-[`configurations/linux/omarchy-apps.txt`](configurations/linux/omarchy-apps.txt)
-(Arch / AUR packages, Omarchy's own installers, web apps). It was derived from
-the main Mac's casks and `pwas.txt`, minus what Omarchy already ships.
+this repo only declares **which apps** it should carry. Each machine has a host
+file, `configurations/omarchy/hosts/<hostname>.txt`, that names profiles
+(`base-cli`, `desktop`, `dev`, `comms`, `media`, `web-apps`) in
+`configurations/omarchy/profiles/`. The lines are Arch / AUR packages,
+Omarchy's own installers and web apps; the format, the profiles and the hosts
+are in [`configurations/omarchy/README.md`](configurations/omarchy/README.md).
+A machine with no host file gets `hosts/default.txt` (only `base-cli`) and a
+warning. Hostnames are `<hardware>-omarchy`; on a dual-boot Mac the macOS side
+keeps the Mac's name (`rouven-air-m2` / `rouven-air-m2-omarchy`).
 [`scripts/omarchy-apply.sh`](scripts/omarchy-apply.sh) hands whatever is missing
 to Omarchy's tools (`omarchy-pkg-add`, `omarchy-pkg-aur-add`, `omarchy-install-*`,
 `omarchy-webapp-install`). Additive only — removing a line uninstalls nothing.
@@ -562,7 +567,7 @@ No Nix needed.
 
 ```bash
 git clone https://github.com/rh7/dotfiles ~/dotfiles
-~/dotfiles/scripts/omarchy-apply.sh            # plan: what is missing
+~/dotfiles/scripts/omarchy-apply.sh            # plan: what is missing (--host <name> for another machine)
 ~/dotfiles/scripts/omarchy-apply.sh --apply    # install it (asks for sudo once)
 ~/dotfiles/scripts/omarchy-apply.sh --install  # once: post-update hook + daily audit timer
 ```

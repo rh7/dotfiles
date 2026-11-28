@@ -1,3 +1,11 @@
+# ─── FROZEN TRANSITION COPY — do not edit ────────────────────────────────────
+# The app lists moved to configurations/omarchy/ (host files + profiles). This
+# file stays only for Omarchy machines whose checkout still runs the old
+# omarchy-apply.sh: its post-update hook reads exactly this path from
+# origin/main, and would fail every update without it. The current script
+# never reads it from a commit that has configurations/omarchy/hosts/.
+# Delete it once every Omarchy machine's ~/dotfiles has pulled (rh7/dotfiles#157).
+# ──────────────────────────────────────────────────────────────────────────────
 # Omarchy app profile — what scripts/omarchy-apply.sh keeps installed on the
 # Omarchy machines: the ThinkPad (`omarchy`, x86_64) and the M2 Air
 # (`omarchy-m2air`, aarch64 / Apple Silicon). Additive only: deleting a line

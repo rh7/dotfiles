@@ -1,0 +1,8 @@
+# rouven-air-m2-omarchy — MacBook Air M2, Omarchy / Asahi side of the dual boot (aarch64). macOS side: rouven-air-m2.
+
+profile | base-cli
+profile | desktop
+profile | dev
+profile | comms
+profile | media
+profile | web-apps

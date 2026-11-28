@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # scripts/omarchy-apply.sh against stub pacman / omarchy-* / sudo / systemctl —
-# no Arch machine, no network. Checks: the committed list is valid, plan
+# no Arch machine, no network. Checks: every committed host file is valid, host
+# files pull in profiles (deduplicated, no nesting), an unknown host falls back
+# to default with a warning, a pre-profiles commit still reads, plan
 # changes nothing, apply installs only what is missing and is idempotent, one
 # failure does not stop the rest, a bad list installs nothing, without a
 # terminal only web apps install, --ref reads the commit not the working tree,
@@ -50,6 +52,7 @@ reset() {
 run() {  # args...; sets OUT, RC
   OUT="$(cd "$T" && STATE="$T/state" HOME="$T/home" XDG_DATA_HOME="$T/home/.local/share" \
     XDG_CONFIG_HOME="$T/home/.config" OMARCHY_APPLY_ARCH="${ARCH:-x86_64}" \
+    OMARCHY_APPLY_HOST="${HOSTN:-testhost}" OMARCHY_APPLY_REPO="${REPO:-$REPO_ROOT}" \
     PATH="$STUBS:/usr/bin:/bin" bash "$SCRIPT" "$@" </dev/null 2>&1)"
   RC=$?
 }
@@ -66,15 +69,112 @@ webapp  | Notion | https://www.notion.so/
 webapp  | Mercury | https://app.mercury.com/home | https://example.com/m.png
 EOF
 
-echo "== the committed list is valid on both architectures"
-for ARCH in x86_64 aarch64; do
-  reset
-  run
-  check "plan over the real list exits 0 ($ARCH)" "$RC" "0"
-  has "plan reports the real list ($ARCH)" "$OUT" "entries for $ARCH in configurations/linux/omarchy-apps.txt"
-  check "plan writes nothing ($ARCH)" "$(calls)" ""
+echo "== every committed host file is valid on both architectures"
+for hf in "$REPO_ROOT"/configurations/omarchy/hosts/*.txt; do
+  HOSTN="$(basename "$hf" .txt)"
+  for ARCH in x86_64 aarch64; do
+    reset
+    run
+    check "plan for $HOSTN exits 0 ($ARCH)" "$RC" "0"
+    has "plan reads its host file ($HOSTN, $ARCH)" "$OUT" "entries for $ARCH in configurations/omarchy/hosts/$HOSTN.txt"
+    hasnt "no fallback warning ($HOSTN, $ARCH)" "$OUT" "no host file"
+    check "plan writes nothing ($HOSTN, $ARCH)" "$(calls)" ""
+  done
 done
-unset ARCH
+unset ARCH HOSTN
+for p in "$REPO_ROOT"/configurations/omarchy/profiles/*.txt; do
+  name="$(basename "$p" .txt)"
+  if grep -qE "^profile[[:space:]]*\|[[:space:]]*$name[[:space:]]*$" "$REPO_ROOT"/configurations/omarchy/hosts/*.txt; then
+    ok "profile $name is used by a host file"
+  else
+    bad "profile $name is used by a host file" "no hosts/*.txt pulls it in"
+  fi
+done
+
+# A throwaway repo with the hosts/profiles layout.
+mkrepo() {  # dir
+  mkdir -p "$1/configurations/omarchy/hosts" "$1/configurations/omarchy/profiles"
+  printf 'pkg | base-a\npkg | shared\n' >"$1/configurations/omarchy/profiles/base.txt"
+  printf 'pkg | gui-a\npkg | shared\nwebapp@aarch64 | Arm App | https://example.com/\n' >"$1/configurations/omarchy/profiles/gui.txt"
+  printf '# a host\nprofile | base\nprofile | gui\npkg | host-extra\n' >"$1/configurations/omarchy/hosts/box.txt"
+  printf 'profile | base\n' >"$1/configurations/omarchy/hosts/default.txt"
+}
+
+echo "== a host file pulls in its profiles"
+reset; R="$T/r1"; rm -rf "$R"; mkrepo "$R"
+REPO="$R" HOSTN=box run
+check "exits 0" "$RC" "0"
+has "names host and profiles" "$OUT" "host box (profiles: base gui)"
+has "counts: an app in two profiles is listed once" "$OUT" "4 entries for x86_64 in configurations/omarchy/hosts/box.txt, 4 missing (1 for another architecture)"
+for p in base-a gui-a shared host-extra; do has "plans $p" "$OUT" "would install: pkg     $p"; done
+check "shared planned once" "$(grep -c 'pkg     shared' <<<"$OUT")" "1"
+REPO="$R" HOSTN=box run --apply
+check "apply exits 0" "$RC" "0"
+check "shared installed once" "$(grep -c 'pkg-add shared' "$T/state/calls")" "1"
+
+echo "== --host plans another machine's list"
+reset
+REPO="$R" HOSTN=elsewhere run --host box
+has "reads box" "$OUT" "in configurations/omarchy/hosts/box.txt"
+
+echo "== an unknown host falls back to default, with a warning"
+reset
+REPO="$R" HOSTN=newvm run
+check "exits 0" "$RC" "0"
+has "warns" "$OUT" "no host file for 'newvm' — using default"
+has "reads default" "$OUT" "2 entries for x86_64 in configurations/omarchy/hosts/default.txt"
+hasnt "nothing from gui" "$OUT" "gui-a"
+
+echo "== review fixes: case, refs, conflicts, extra fields, empty lists"
+reset
+REPO="$R" HOSTN=Box run
+check "uppercase hostname is lowercased" "$RC" "0"
+has "reads box.txt" "$OUT" "hosts/box.txt"
+REPO="$R" HOSTN=box run --ref no-such-ref
+check "unresolvable ref: exit 2" "$RC" "2"
+has "names the ref, not a missing host file" "$OUT" "ref 'no-such-ref' does not resolve"
+hasnt "no misleading host-file warning" "$OUT" "no host file"
+R3="$T/r3"; rm -rf "$R3"; mkrepo "$R3"
+printf 'webapp | Notion | https://a.example/\n' >"$R3/configurations/omarchy/profiles/base.txt"
+printf 'webapp | Notion | https://b.example/\n' >"$R3/configurations/omarchy/profiles/gui.txt"
+REPO="$R3" HOSTN=box run --apply
+check "same app, different URL in two profiles: exit 2" "$RC" "2"
+has "conflict names the earlier line" "$OUT" "conflicts with an earlier 'webapp | Notion' line"
+check "conflict: nothing installed" "$(calls)" ""
+mkrepo "$R3"
+printf 'omarchy | omarchy-install-browser  firefox | firefox\n' >"$R3/configurations/omarchy/profiles/base.txt"
+printf 'omarchy | omarchy-install-browser firefox | firefox\n' >"$R3/configurations/omarchy/profiles/gui.txt"
+REPO="$R3" HOSTN=box run
+check "installer spacing does not defeat dedup" "$(grep -c 'would install: omarchy' <<<"$OUT")" "1"
+for badline in 'pkg | zz | | ignored' 'profile | base | | junk'; do
+  mkrepo "$R3"; printf '%s\n' "$badline" >"$R3/configurations/omarchy/hosts/box.txt"
+  REPO="$R3" HOSTN=box run
+  check "extra field rejected: $badline" "$RC" "2"
+done
+mkrepo "$R3"; : >"$R3/configurations/omarchy/hosts/box.txt"
+REPO="$R3" HOSTN=box run
+check "empty host file: exit 0" "$RC" "0"
+has "empty host file: warned" "$OUT" "lists no apps"
+
+echo "== profile mistakes install nothing"
+reset; R2="$T/r2"; rm -rf "$R2"; mkrepo "$R2"
+printf 'profile | base\npkg | gui-a\n' >"$R2/configurations/omarchy/profiles/gui.txt"
+REPO="$R2" HOSTN=box run --apply
+check "nested profile: exit 2" "$RC" "2"
+has "nested profile: named with its file and line" "$OUT" "configurations/omarchy/profiles/gui.txt line 1: a profile cannot pull in another profile"
+check "nested profile: nothing installed" "$(calls)" ""
+mkrepo "$R2"; printf 'profile | nope\n' >"$R2/configurations/omarchy/hosts/box.txt"
+REPO="$R2" HOSTN=box run --apply
+check "missing profile: exit 2" "$RC" "2"
+has "missing profile: reported" "$OUT" "no such profile"
+mkrepo "$R2"; printf 'pkg | Bad Name\n' >"$R2/configurations/omarchy/profiles/gui.txt"
+REPO="$R2" HOSTN=box run --apply
+check "bad line in a profile: exit 2" "$RC" "2"
+has "bad line in a profile: named with the profile's file" "$OUT" "configurations/omarchy/profiles/gui.txt line 1: not a package name"
+check "bad line in a profile: nothing installed" "$(calls)" ""
+reset
+REPO="$R" HOSTN='Bad/Host' run
+check "unsafe hostname: exit 2" "$RC" "2"
 
 echo "== kind@arch applies only on that architecture"
 cat >"$T/arch.txt" <<'EOF'
@@ -129,7 +229,7 @@ echo "== one failure does not stop the rest"
 reset; echo slack-desktop >"$T/state/fail"
 run --list "$T/list.txt" --apply
 check "exits 1" "$RC" "1"
-has "failure named with its line" "$OUT" "FAILED: aur     slack-desktop (line 4, exit 1)"
+has "failure named with its file and line" "$OUT" "FAILED: aur     slack-desktop ($T/list.txt line 4, exit 1)"
 has "later lines still ran" "$(calls)" "webapp Mercury"
 
 echo "== an installer that exits 0 without installing counts as failed"
@@ -210,18 +310,44 @@ hasnt "no package install" "$(calls)" "pkg-add"
 has "skipped are reported" "$OUT" "needs a terminal 5"
 has "desktop notification" "$(calls)" "notify rh7 apps"
 
-echo "== --ref reads the committed list, not the working tree"
+gitc() { git -C "$1" -c user.name=t -c user.email=t@t -c init.defaultBranch=main "${@:2}"; }
+
+echo "== --ref reads the committed host file and profiles, not the working tree"
 reset
-G="$T/repo"; mkdir -p "$G/configurations/linux"
-git -C "$G" init -q
-printf 'pkg | committed-pkg\n' >"$G/configurations/linux/omarchy-apps.txt"
-git -C "$G" add -A && git -C "$G" -c user.name=t -c user.email=t@t commit -qm list
-printf 'pkg | working-tree-pkg\n' >"$G/configurations/linux/omarchy-apps.txt"
-OUT="$(cd "$T" && STATE="$T/state" HOME="$T/home" OMARCHY_APPLY_REPO="$G" PATH="$STUBS:/usr/bin:/bin" \
-  bash "$SCRIPT" --ref HEAD 2>&1)"; RC=$?
+G="$T/repo"; rm -rf "$G"; mkrepo "$G"
+gitc "$G" init -q && gitc "$G" add -A && gitc "$G" commit -qm list
+printf 'pkg | working-tree-pkg\n' >>"$G/configurations/omarchy/profiles/gui.txt"
+printf 'pkg | working-host-pkg\n' >>"$G/configurations/omarchy/hosts/box.txt"
+REPO="$G" HOSTN=box run --ref HEAD
 check "exits 0" "$RC" "0"
-has "committed line planned" "$OUT" "would install: pkg     committed-pkg"
-hasnt "working tree ignored" "$OUT" "working-tree-pkg"
+has "committed profile line planned" "$OUT" "would install: pkg     gui-a"
+has "source is the ref" "$OUT" "in HEAD:configurations/omarchy/hosts/box.txt"
+hasnt "working-tree profile ignored" "$OUT" "working-tree-pkg"
+hasnt "working-tree host file ignored" "$OUT" "working-host-pkg"
+
+echo "== a commit from before host files reads the old flat list"
+reset
+L="$T/legacy"; rm -rf "$L"; mkdir -p "$L/configurations/linux"
+printf 'pkg | legacy-pkg\n' >"$L/configurations/linux/omarchy-apps.txt"
+gitc "$L" init -q && gitc "$L" add -A && gitc "$L" commit -qm old
+REPO="$L" HOSTN=box run --ref HEAD
+check "exits 0" "$RC" "0"
+has "legacy line planned" "$OUT" "would install: pkg     legacy-pkg"
+has "legacy source named" "$OUT" "in HEAD:configurations/linux/omarchy-apps.txt"
+
+echo "== from the hook: origin/main, and a notification when the host has no file"
+reset
+B="$T/origin.git"; C="$T/clone"; rm -rf "$B" "$C"
+gitc "$T" init -q --bare "$B"
+mkrepo "$C"; gitc "$C" init -q && gitc "$C" add -A && gitc "$C" commit -qm list
+gitc "$C" remote add origin "$B" && gitc "$C" push -q origin HEAD:main
+REPO="$C" HOSTN=renamed-box run --from-hook
+check "exits 0" "$RC" "0"
+has "reads origin/main default" "$OUT" "in origin/main:configurations/omarchy/hosts/default.txt"
+has "notifies about the missing host file" "$(calls)" "notify rh7 apps no host file for 'renamed-box'"
+reset
+REPO="$C" HOSTN=box run --from-hook
+hasnt "no notification for a known host" "$(calls)" "notify"
 
 echo "== --install writes the hook and the audit timer"
 reset

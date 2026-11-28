@@ -1,0 +1,11 @@
+# dev — editors, terminal, AI desktop apps. Coding-agent CLIs come from
+# Omarchy's mise / `omarchy agent`, not from here.
+
+pkg     | ghostty
+omarchy | omarchy-install-editor-zed             | zed
+pkg     | cursor-bin
+omarchy | omarchy-install-ai-claude              | claude-desktop
+pkg     | ollama
+# VS Code: dropped by the owner 2026-11-26 (Zed + Cursor).
+# aur   | termius                                # AUR package flagged out of date
+# aur   | lmstudio-bin                           # only if a machine should run local models

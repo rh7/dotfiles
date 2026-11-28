@@ -10,9 +10,10 @@
 # but because Home Manager would make them read-only store links: Omarchy's own
 # Setup > Config editor then cannot save, and `omarchy reinstall configs` collides.
 #
-# Apps on an Omarchy machine (the ThinkPad) are not Home Manager's either:
-# configurations/linux/omarchy-apps.txt + scripts/omarchy-apply.sh hand them to
-# Omarchy's own installers, and need no Nix at all.
+# Apps on an Omarchy machine (the ThinkPad, the M2 Air) are not Home Manager's
+# either: configurations/omarchy/ (host files + profiles) and
+# scripts/omarchy-apply.sh hand them to Omarchy's own installers, and need no
+# Nix at all.
 {
   # nvim, not Zed. common.nix sets `zed --wait` for the Macs, and Zed has no
   # aarch64-linux build here; Omarchy ships neovim (as omarchy-nvim).
