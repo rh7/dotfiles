@@ -6,7 +6,8 @@
 #   omarchy-apply.sh                  plan: show what is missing, change nothing
 #   omarchy-apply.sh --apply          install what is missing
 #   omarchy-apply.sh --ref <ref>      read the list from a committed ref, not the working tree
-#   omarchy-apply.sh --install        install the post-update hook + the daily audit timer
+#   omarchy-apply.sh --install        install the post-update hook + the daily audit timer,
+#                                     and create this machine's SSH key if it has none
 #   omarchy-apply.sh --from-hook      what the post-update hook runs: fetch origin,
 #                                     then --apply --ref origin/main
 #   omarchy-apply.sh --host <name>    plan or apply another host's list (default: this hostname)
@@ -62,7 +63,7 @@ HOOK_NAME="rh7-apps"
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'omarchy-apply: %s\n' "$*" >&2; }
-usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 MODE=plan
 REF=""
@@ -136,6 +137,21 @@ EOF
   systemctl --user daemon-reload
   systemctl --user enable --now "$AUDIT_UNIT.timer"
   say "installed: post-update hook '$HOOK_NAME' and $AUDIT_UNIT.timer (daily, catches up after sleep)"
+
+  # The machine's own SSH key, as scripts/setup.sh makes one on the Macs:
+  # ed25519, <user>@<hostname>, no passphrase. The daily audit reports
+  # ~/.ssh/id_ed25519.pub to the registry (sync-ssh-keys.sh builds
+  # authorized_keys from it). An existing key is never touched.
+  local key="$HOME/.ssh/id_ed25519"
+  if [ -e "$key" ] || [ -e "$key.pub" ]; then
+    say "ssh key: $key exists, left as is"
+  elif command -v ssh-keygen >/dev/null 2>&1; then
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    ssh-keygen -q -t ed25519 -N "" -C "$(id -un)@$HOST" -f "$key"
+    say "ssh key: created $key ($(id -un)@$HOST); the next audit registers it"
+  else
+    warn "ssh-keygen not found — no SSH key created"
+  fi
 }
 
 if [ "$MODE" = install ]; then
