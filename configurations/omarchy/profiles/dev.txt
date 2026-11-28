@@ -5,6 +5,10 @@ pkg     | ghostty
 omarchy | omarchy-install-editor-zed             | zed
 pkg     | cursor-bin
 omarchy | omarchy-install-ai-claude              | claude-desktop
+# Herdr desktop app (the Macs get it as a cask, #139). The `herdr` CLI is an
+# Omarchy default. The installer puts the app in ~/.local/share/herdr-app and
+# updates it itself, so the launcher is the presence check.
+omarchy | omarchy-install-ai-herdr               | app:herdr-app
 pkg     | ollama
 # VS Code: dropped by the owner 2026-11-26 (Zed + Cursor).
 # aur   | termius                                # AUR package flagged out of date

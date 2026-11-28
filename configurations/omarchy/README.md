@@ -32,7 +32,7 @@ than quietly getting less.
 |---------|-----|
 | `base-cli` | every machine, VMs included: Tailscale (the fleet reaches the config service over it) and the CLI tools from `modules/common.nix` Omarchy does not ship |
 | `desktop` | a machine a person sits at: 1Password, browsers, Dropbox |
-| `dev` | Ghostty, Zed, Cursor, Claude desktop, Ollama |
+| `dev` | Ghostty, Zed, Cursor, Claude desktop, Herdr desktop app, Ollama |
 | `comms` | Signal, Telegram, Element, Slack |
 | `media` | Spotify, VLC |
 | `web-apps` | the owner's web apps (Mac apps with no Linux build, plus `pwas.txt`) |
@@ -67,7 +67,7 @@ webapp  | <launcher name> | <https url> [| <https icon url>]
 
 ## Not repeated here, because Omarchy installs them itself
 
-Google Chrome, Obsidian, LocalSend, LibreOffice, Docker, mise, Neovim, herdr,
+Google Chrome, Obsidian, LocalSend, LibreOffice, Docker, mise, Neovim, the herdr CLI,
 Superwhisper, mpv, Disktree, and the web apps ChatGPT, Grok, WhatsApp, X,
 YouTube, Zoom, Discord, Google apps, HEY, Basecamp.
 
