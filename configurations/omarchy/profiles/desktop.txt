@@ -5,6 +5,13 @@ omarchy | omarchy-install-service-1password      | 1password
 omarchy | omarchy-install-browser firefox        | firefox
 omarchy | omarchy-install-browser brave          | brave-bin
 omarchy | omarchy-install-browser zen            | zen-browser-bin
-omarchy | omarchy-install-service-dropbox        | dropbox
+# Dropbox ships x86_64 only; under box64 on the M2 Air's 16 KB-page kernel it
+# segfaults on every start (libffi writes into its R-X trampoline page).
+# This script only adds, so a machine that already has it (the M2 Air) drops
+# it once by hand: `omarchy pkg drop dropbox`.
+omarchy@x86_64 | omarchy-install-service-dropbox | dropbox
+# The M2 Air reaches Dropbox through rclone (Dropbox API) instead; the remote
+# is set up by hand once with `rclone config` (OAuth in the browser).
+pkg@aarch64    | rclone
 # Proton VPN, Cryptomator: dropped by the owner 2026-11-26.
 # Microsoft 365 web apps: dropped by the owner 2026-11-26.
